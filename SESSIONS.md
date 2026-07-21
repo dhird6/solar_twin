@@ -17,6 +17,37 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 2: Day-1 de-risk + ROS 2 install
+**Environment verified on the Spark (see `docs/ENVIRONMENT.md`):**
+- aarch64 · CUDA **13.0** · GB10 · Isaac Sim **6.0.1-rc.7** (⚠ NOT 5.1 — verify
+  APIs vs 6.0) · `python.sh` at `IsaacSim/_build/linux-aarch64/release/`.
+- **ROS 2 was absent** (no `/opt/ros`). Ubuntu **24.04 noble** → **Jazzy** is the
+  match, and Isaac 6.0's bridge bundles `jazzy` + `humble` internal libs.
+- Isaac Sim **not running** (live MCP refused) → sandbox render proof still TODO.
+- Local **Qwen2.5-VL-72B** vLLM on `:8000` (future `cosmos_reason.py` backend).
+
+**Actions:**
+- Wrote `plan.md` (divided workstreams A–F + Day-1 checklist).
+- User granted passwordless sudo (Option B, `/etc/sudoers.d/99-simulationhub-nopasswd`).
+- Wrote `tools/install_ros2_jazzy.sh`; installing **ros-jazzy-desktop + ros-dev-tools**.
+- **Lesson / near-miss:** first script version had `apt-get upgrade -y` → started a
+  359-pkg full-system upgrade (CUDA/nvidia/docker/systemd). Aborted in the
+  download phase (nothing installed; dpkg clean). Removed the upgrade line —
+  never blanket-upgrade this production box.
+- Committed Brain spine to branch `slice0-brain-spine`, pushed to origin
+  (`github.com/dhird6/solar_twin`). PR: /pull/new/slice0-brain-spine.
+
+**Env change — vLLM stopped (2026-07-21):** the `Qwen2.5-VL-72B` vLLM
+(`vllm.service`, was auto-restarting, held ~70% GPU) is **stopped + disabled +
+unit moved aside** to free the GB10 for Isaac Sim. Unit backed up at
+`/etc/systemd/system/vllm.service.disabled-by-claude-20260721`. Restore:
+`sudo mv .../vllm.service.disabled-by-claude-20260721 /etc/systemd/system/vllm.service && sudo systemctl daemon-reload && sudo systemctl enable --now vllm.service`.
+(Was the intended `cosmos_reason.py` backend — bring it back before that work.)
+
+**Next:** finish ROS install → `ros2 doctor`; launch Isaac Sim → prove render;
+enable `isaacsim.ros2.bridge`, publish a camera image, verify via `ros2 topic
+echo`/RViz2 (Best Effort); record outcome in ENVIRONMENT.md. Then Workstream B.
+
 ## 2026-07-21 — Session 1: Brain spine built end-to-end ✅
 **Done (all pure-python, no Isaac; 31 pytest tests green):**
 - `pyproject.toml` (pure-python deps only), package tree + `__init__`s.
