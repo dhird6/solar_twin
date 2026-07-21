@@ -17,6 +17,27 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 3: Workstream B — farm_builder (USD world)
+**Done:** `world/farm_builder.py` — authors the USD farm from `farm.yaml`, reusing
+`world/layout.py` so grid + seeded faults match the fake run (seed 20260721 →
+R00-C002, R00-C009 soiled, same as `--backend fake`). Pure pxr, **no SimulationApp**
+(fast). Per panel: `schema.create_panel` (pv: attrs + geo_position) + tilted box
+mesh + UsdPreviewSurface material (hotspot=emissive red, soiled=tan) +
+`UsdSemantics.LabelsAPI` label. Asserts Z-up/meters. Output `assets/farm.usd`
+(gitignored). Verified by reopening: 10 queryable panels, 2 faults, labels
+`[panel, soiled]`, material bound → **PASS**.
+- **Schema bug fixed:** `pv:grid_index` Int2 must be set via `Gf.Vec2i` — a bare
+  tuple made USD infer GfVec2d and raise. Pure tests can't catch it (no usd-core
+  on aarch64); caught by running under `./python.sh`. Added `tests/test_schema_usd.py`
+  (pxr-guarded; skips on aarch64, runs in x86 CI / Isaac python). 31 passed, 1 skip.
+- **Verified 6.0 APIs:** semantics = `isaacsim.core.experimental.utils.semantics.
+  add_labels` (or pure `pxr.UsdSemantics.LabelsAPI`); OpenUSD 0.25.5.
+
+**Next:** Workstream C — `world/sim_runtime.py` (load `assets/farm.usd` into a
+SimulationApp, add a camera render-product, step) + `transport/sim_native.py`
+(capture/pose/read_panel/write_panel/step) + `control/kinematic.py`. Then wire
+`sim_native` into `run._build_backend` for the full on-Spark mission.
+
 ## 2026-07-21 — Session 2: Day-1 de-risk + ROS 2 install
 **Environment verified on the Spark (see `docs/ENVIRONMENT.md`):**
 - aarch64 · CUDA **13.0** · GB10 · Isaac Sim **6.0.1-rc.7** (⚠ NOT 5.1 — verify

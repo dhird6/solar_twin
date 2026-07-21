@@ -193,11 +193,15 @@ def create_panel(
     geo_position: Optional[tuple[float, float, float]] = None,
 ):
     """Define a panel Xform prim and stamp the initial ``pv:`` attributes."""
-    from pxr import Sdf, UsdGeom  # noqa: PLC0415 — lazy Isaac import
+    from pxr import Gf, Sdf, UsdGeom  # noqa: PLC0415 — lazy Isaac import
 
     prim = UsdGeom.Xform.Define(stage, path).GetPrim()
     prim.CreateAttribute(ATTR_PANEL_ID, Sdf.ValueTypeNames.String).Set(pid)
-    prim.CreateAttribute(ATTR_GRID_INDEX, Sdf.ValueTypeNames.Int2).Set((row, col))
+    # Use explicit Gf types: a bare tuple makes USD infer double vectors and
+    # mismatch the declared Int2 (GfVec2i) / Double3 (GfVec3d) types.
+    prim.CreateAttribute(ATTR_GRID_INDEX, Sdf.ValueTypeNames.Int2).Set(
+        Gf.Vec2i(int(row), int(col))
+    )
     prim.CreateAttribute(ATTR_STATE, Sdf.ValueTypeNames.Token).Set(
         PanelState.HEALTHY.value
     )
@@ -207,7 +211,7 @@ def create_panel(
     prim.CreateAttribute(ATTR_INSPECTION_LOG, Sdf.ValueTypeNames.StringArray).Set([])
     if geo_position is not None:
         prim.CreateAttribute(ATTR_GEO_POSITION, Sdf.ValueTypeNames.Double3).Set(
-            geo_position
+            Gf.Vec3d(*(float(v) for v in geo_position))
         )
     return prim
 

@@ -71,20 +71,25 @@ run record with detection_rate 1.00.
 
 ---
 
-## Workstream B — WORLD scene / farm_builder  ·  where: spark
+## Workstream B — WORLD scene / farm_builder  ·  where: spark  ·  **[x] COMPLETE**
 **Satisfies:** produces a USD stage whose panels are readable by `schema` USD fns.
 **Reuses:** `world/layout.py` (identical grid + seeded faults as the fake run).
-- [ ] `world/farm_builder.py`: entry `python.sh -m solar_twin.world.farm_builder configs/farm.yaml`.
-  - [ ] Create stage; **assert Z-up + meters** (verify 6.0 stage API).
-  - [ ] For each `FarmLayout` site: define panel prim + `schema.create_panel`
-        (stamp `pv:` attrs incl. `geo_position`), place a textured box.
-  - [ ] Apply seeded faults: set `pv:state`, add an **emissive signature** for
-        hotspot/soiled (the visual the confirm pass reads).
-  - [ ] Add semantic labels to faulted panels (verify 6.0 semantics API) so
-        Replicator could read them later.
-  - [ ] Write stage to `assets/` or a `--out` path (gitignored `.usd`).
-- [ ] Test (spark smoke): build, reopen, assert 10 panels + states via `schema.read_panel`.
-- **Done when:** the builder produces a USD with N queryable panels; states on prims.
+- [x] `world/farm_builder.py`: `PYTHONPATH=src ./python.sh -m solar_twin.world.farm_builder configs/farm.yaml --out assets/farm.usd`.
+  Authors USD with pure pxr — **no SimulationApp needed** (fast).
+  - [x] Create stage; **assert Z-up + meters** (UsdGeom, verified 6.0).
+  - [x] Per `FarmLayout` site: `schema.create_panel` (pv: attrs incl geo_position)
+        + a box mesh (unit cube scaled to panel dims, tilted).
+  - [x] Seeded faults: set `pv:state` + **emissive material signature**
+        (hotspot = emissive red, soiled = tan) via UsdPreviewSurface.
+  - [x] Semantic labels via `pxr.UsdSemantics.LabelsAPI` (taxonomy "class").
+  - [x] Writes to `--out` (default `assets/farm.usd`, gitignored).
+- [x] Verified (spark): reopened, 10 queryable panels, 2 faults read back
+      (soiled), labels `[panel, soiled]`, material bound. Matches fake-run faults.
+- [x] Regression test `tests/test_schema_usd.py` (pxr-guarded; skips on aarch64).
+- **Fixed a real schema bug** found here: `pv:grid_index` Int2 needs `Gf.Vec2i`
+      (a bare tuple made USD infer double + raise). Pure tests couldn't catch it
+      (no usd-core on aarch64) — running under `./python.sh` did.
+- **Done.** ✅
 
 ---
 
