@@ -17,6 +17,32 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 4: Workstream C — sim loop runs end-to-end ✅ (Slice 0 gate MET)
+**Done:** `world/sim_runtime.py` (SimulationApp + open farm USD + robots w/ downward
+cameras + step/render/pose/capture), `transport/sim_native.py` (Transport on the
+live stage), `control/kinematic.py` (teleport RobotControl, pure-python + unit test),
+wired `sim_native` into `run._build_backend` (+ `--farm-usd/--gui/--width/--height`).
+**Full mission runs on the real USD world:** `./python.sh -m solar_twin.run ...
+--backend sim_native` → 10 panels, 2 faults escalated (R00-C002, R00-C009 soiled),
+**detection_rate 1.00**, sim_native run record written. Robots move to each panel,
+drone camera grabs real RGB (mean ~154), verdicts written back to USD prims.
+→ **Slice 0 gate MET** (bible §8 one-liner). 33 pytest + 1 pxr-skip.
+
+**Findings / bugs fixed this session:**
+- Standalone replicator annotators are filled by **`rep.orchestrator.step(rt_subframes,
+  pause_timeline=False)`**, NOT bare `app.update()` (capture returned None/empty until this).
+- **`SimulationApp.close()` terminates the process** → write+print the run record
+  BEFORE closing (it was being lost in a `finally` that closed the app first).
+- Camera-on-drone: mount the camera below the marker cube or it renders the cube
+  interior → all-black frame (mean 0).
+- Benign warning: usdrt/Fabric can't populate `pv:inspection_log` (string array);
+  the pxr stage write is unaffected.
+
+**Next (polish / Phase 1 on-ramp):** optional `--save-usd` to persist post-run
+stage; capture a demo video; swap ground-truth perception → `cosmos_reason.py`
+against the local Qwen VLM (bring the vLLM service back first); update bible/CLAUDE
+"5.1"→"6.0.1". Bigger: real panel assets + many rows (Phase 1).
+
 ## 2026-07-21 — Session 3: Workstream B — farm_builder (USD world)
 **Done:** `world/farm_builder.py` — authors the USD farm from `farm.yaml`, reusing
 `world/layout.py` so grid + seeded faults match the fake run (seed 20260721 →

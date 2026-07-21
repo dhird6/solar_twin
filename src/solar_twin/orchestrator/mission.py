@@ -134,10 +134,17 @@ class Mission:
         self.fleet = fleet
         self.clock = clock
 
-    def run(self, targets: list[InspectionTarget]) -> MissionResult:
+    def run(
+        self,
+        targets: list[InspectionTarget],
+        on_result: Optional[Callable[[int, PanelResult], None]] = None,
+    ) -> MissionResult:
         result = MissionResult()
-        for target in targets:
-            result.results.append(self._inspect(target, result))
+        for i, target in enumerate(targets):
+            panel_result = self._inspect(target, result)
+            result.results.append(panel_result)
+            if on_result is not None:
+                on_result(i, panel_result)
         result.steps = getattr(self.transport, "step_count", 0)
         return result
 

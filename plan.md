@@ -93,17 +93,25 @@ run record with detection_rate 1.00.
 
 ---
 
-## Workstream C — SIM runtime + sim-native transport  ·  where: spark
+## Workstream C — SIM runtime + sim-native transport  ·  where: spark  ·  **[x] COMPLETE**
 **Satisfies:** `Transport` (`transport/sim_native.py`) + drives stepping/sensors.
-- [ ] `world/sim_runtime.py`: launch `SimulationApp` (headless option), load the
-      built stage, add a camera render-product, step the world.
-- [ ] `transport/sim_native.py` implements `Transport`:
-  - [ ] `capture(robot_id)` → camera frame via annotator/render-product (⚠ 6.0 API).
-  - [ ] `pose(robot_id)` → read prim xform.
-  - [ ] `read_panel`/`write_panel` → `schema` USD fns on the live stage.
-  - [ ] `step(dt)` → advance the sim.
-- [ ] Wire `sim_native` into `run._build_backend` (replace the NotImplementedError).
-- **Done when:** the drone camera frame is grabbable in Python; poses read back.
+- [x] `world/sim_runtime.py`: launch `SimulationApp` (headless), open the built
+      farm USD, spawn robots (drones carry a downward camera), step/render, set/get
+      pose, capture RGB, get panel prim.
+  - [x] Capture uses `omni.replicator.core` render products + "rgb" annotator,
+        driven by **`rep.orchestrator.step(rt_subframes=4, pause_timeline=False)`**
+        (bare `app.update()` does NOT fill standalone annotators — key finding).
+- [x] `transport/sim_native.py` implements `Transport` (capture/pose/read_panel/
+      write_panel/step) via SimRuntime + schema on the live stage.
+- [x] `control/kinematic.py` implements `RobotControl` (teleport via set_pose);
+      pure-python (unit-tested with a fake runtime — `tests/test_kinematic.py`).
+- [x] Wired `sim_native` into `run._build_backend` (+ `--farm-usd/--gui/--width/--height`).
+- **Done.** Verified: drone frame grabbable (mean 154), poses read back, full
+  mission runs on the real USD world → sim_native run record, detection_rate 1.00.
+- **Bug fixed:** `SimulationApp.close()` terminates the process, so the run record
+  is now written+printed BEFORE closing the sim (was lost in a `finally`).
+- Camera-robot gotcha: mount the camera below the marker cube or it renders the
+  cube interior (black frame).
 
 ---
 
@@ -128,14 +136,16 @@ run record with detection_rate 1.00.
 
 ---
 
-## Workstream F — Integration + run record  ·  where: spark
-- [ ] `python.sh -m solar_twin.run configs/farm.yaml configs/mission.yaml`
-      (`--backend sim_native`) drives the full thread end to end.
-- [ ] Confirm USD reflects updated states + inspection logs after a run.
-- [ ] Assert run-record detection == injected (ground truth ⇒ 100%).
-- [ ] (Optional) capture a video/gif of a run.
-- [ ] Update `README.md`, `SESSIONS.md`, and the bible/`CLAUDE.md` with learnings.
-- **Done when:** Slice 0 gate met (bible §8 one-liner).
+## Workstream F — Integration + run record  ·  where: spark  ·  **[x] core met**
+- [x] `./python.sh -m solar_twin.run configs/farm.yaml configs/mission.yaml
+      --backend sim_native` drives the full thread end to end on the real USD world.
+- [x] Run-record detection == injected (ground truth ⇒ 1.00).
+- [ ] Confirm/save the live USD reflects updated states + logs after a run
+      (currently verdicts are written to the in-memory stage + the run record;
+      add an optional `--save-usd` to persist the post-run stage).
+- [ ] (Optional) capture a video/gif of a run (headless frame dump).
+- [ ] Update the bible/`CLAUDE.md` "5.1" → "6.0.1"; note ROS 2 works.
+- **Slice 0 gate: MET** (bible §8 one-liner). Remaining items are polish.
 
 ---
 

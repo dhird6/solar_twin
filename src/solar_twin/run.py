@@ -33,7 +33,7 @@ def _load_yaml(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict):
+def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: dict):
     """Return (transport, control). Both interfaces may be one object."""
     if name == "fake":
         from solar_twin.orchestrator.fake_backend import FakeSimBackend
@@ -42,11 +42,32 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict):
         return backend, backend
     if name == "sim_native":
         # Lazy Isaac import — only reached under ./python.sh on the Spark.
-        raise NotImplementedError(
-            "sim_native backend is the Spark half (Slice 0 Day 6-8): build "
-            "world/farm_builder.py + world/sim_runtime.py + transport/sim_native.py, "
-            "then wire them here. Use --backend fake to run the Brain spine now."
+        from pathlib import Path as _Path
+
+        from solar_twin.control.kinematic import KinematicControl
+        from solar_twin.schema import pv_module as pv
+        from solar_twin.transport.sim_native import SimNativeTransport
+        from solar_twin.world.sim_runtime import SimRuntime
+
+        farm_usd = sim_opts["farm_usd"]
+        if not _Path(farm_usd).exists():
+            raise FileNotFoundError(
+                f"{farm_usd} not found — build it first:\n"
+                f"  ./python.sh -m solar_twin.world.farm_builder <farm.yaml> --out {farm_usd}"
+            )
+        fleet = mission_cfg["fleet"]
+        runtime = SimRuntime(
+            farm_usd,
+            camera_robots=[fleet["screen_drone"], fleet["confirm_drone"]],
+            marker_robots=[fleet["ground_bot"]],
+            headless=sim_opts["headless"],
+            resolution=sim_opts["resolution"],
         )
+        panel_paths = {
+            s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
+            for s in layout.sites
+        }
+        return SimNativeTransport(runtime, panel_paths), KinematicControl(runtime)
     raise ValueError(f"unknown backend: {name!r}")
 
 
@@ -60,12 +81,20 @@ def _perception(name: str):
     )
 
 
-def run(farm_path: str, mission_path: str, backend_name: str, runs_dir: str) -> Path:
+def run(
+    farm_path: str,
+    mission_path: str,
+    backend_name: str,
+    runs_dir: str,
+    sim_opts: dict | None = None,
+) -> Path:
     farm_cfg = _load_yaml(farm_path)
     mission_cfg = _load_yaml(mission_path)
 
     layout = FarmLayout(farm_cfg)
-    transport, control = _build_backend(backend_name, layout, mission_cfg)
+    transport, control = _build_backend(
+        backend_name, layout, mission_cfg, sim_opts or {}
+    )
     perception = _perception(mission_cfg.get("perception", "ground_truth"))
     fleet_cfg = mission_cfg["fleet"]
     fleet = Fleet(
@@ -77,12 +106,18 @@ def run(farm_path: str, mission_path: str, backend_name: str, runs_dir: str) -> 
     targets = layout.inspection_targets(mission_cfg)
     faults = layout.seeded_faults()
 
+    def _progress(i: int, r) -> None:
+        tag = f"{r.detected_state} ESCALATED" if r.escalated else r.detected_state
+        print(f"  [{i + 1}/{len(targets)}] {r.panel_id}: {tag}", flush=True)
+
     mission = Mission(transport, control, perception, fleet)
     t0 = time.perf_counter()
-    result = mission.run(targets)
+    result = mission.run(targets, on_result=_progress)
     wall_s = time.perf_counter() - t0
 
     # ---- run record --------------------------------------------------- #
+    # Write (and print) the record BEFORE closing the sim: SimulationApp.close()
+    # terminates the process, so anything after it would never run.
     ts = time.strftime("%Y%m%dT%H%M%S")
     out = Path(runs_dir) / ts
     out.mkdir(parents=True, exist_ok=True)
@@ -107,6 +142,18 @@ def run(farm_path: str, mission_path: str, backend_name: str, runs_dir: str) -> 
         "fault_events": result.fault_events,
     }
     (out / "results.json").write_text(json.dumps(record, indent=2))
+    m = record["metrics"]
+    print(
+        f"run record: {out}\n"
+        f"panels={m['panels_inspected']} faults={m['faults_detected']} "
+        f"detection_rate={m['detection_rate']:.2f} "
+        f"injected={len(record['injected_faults'])}",
+        flush=True,
+    )
+
+    # Close the sim LAST (may terminate the process).
+    if hasattr(transport, "close"):
+        transport.close()
     return out
 
 
@@ -121,17 +168,24 @@ def main(argv: list[str] | None = None) -> int:
         help="sim_native = Isaac world (Spark); fake = pure-python spine",
     )
     ap.add_argument("--runs-dir", default="runs", help="where to write run records")
+    ap.add_argument(
+        "--farm-usd",
+        default="assets/farm.usd",
+        help="built USD farm (sim_native); build via world.farm_builder",
+    )
+    ap.add_argument("--gui", action="store_true", help="sim_native: show the Isaac window")
+    ap.add_argument("--width", type=int, default=640, help="sim_native camera width")
+    ap.add_argument("--height", type=int, default=480, help="sim_native camera height")
     args = ap.parse_args(argv)
 
-    out = run(args.farm, args.mission, args.backend, args.runs_dir)
-    record = json.loads((out / "results.json").read_text())
-    m = record["metrics"]
-    print(f"run record: {out}")
-    print(
-        f"panels={m['panels_inspected']} faults={m['faults_detected']} "
-        f"detection_rate={m['detection_rate']:.2f} "
-        f"injected={len(record['injected_faults'])}"
-    )
+    sim_opts = {
+        "farm_usd": args.farm_usd,
+        "headless": not args.gui,
+        "resolution": (args.width, args.height),
+    }
+    # run() writes + prints the record before closing the sim (which may
+    # terminate the process), so no extra printing is needed here.
+    run(args.farm, args.mission, args.backend, args.runs_dir, sim_opts)
     return 0
 
 
