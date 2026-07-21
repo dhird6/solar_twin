@@ -22,14 +22,17 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 
 ## Repo map
 - `configs/` — `farm.yaml`, `mission.yaml` (seeded, drive everything)
-- `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel contract)
-- `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound)
-- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default), `ros2_bridge.py`
-- `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub), `cosmos_reason.py` (later)
-- `src/solar_twin/control/` — `base.py`, `kinematic.py` (waypoint drone/bot)
+- `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel
+  contract) + `FaultReport` (the run-record/ROS 2 payload, §6.3)
+- `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound, built)
+- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, built), `ros2_bridge.py` (not yet built, see `docs/ROS2_CONTRACT.md`)
+- `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub, Slice 0
+  default), `cosmos_reason.py` (Cosmos Reason VLM skeleton, HTTP behind a fake-able client — wired into `run.py`, needs a NIM)
+- `src/solar_twin/control/` — `base.py`, `kinematic_math.py` (pure interp
+  math, Isaac-free), `kinematic.py` (Isaac-bound wrapper, built — teleport for Slice 0)
 - `src/solar_twin/orchestrator/` — `mission.py` (escalation FSM), `fake_backend.py` (for tests)
 - `src/solar_twin/run.py` — entry point → writes `runs/<ts>/`
-- `tests/` — pytest, Isaac-free · `docs/` — bible, ARCHITECTURE, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
+- `tests/` — pytest, Isaac-free · `docs/` — bible, TASKS, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
 
 ## Conventions
 - **USD: Z-up, meters.** Assert on load; farm sets it at build.
@@ -65,6 +68,7 @@ A change is done when: the closest `pytest` tests pass, new logic has a test tha
 - Rules: keep API keys (`NVIDIA_API_KEY`, etc.) out of the repo; an MCP-driven action must ALSO exist as a script + config — MCP is never the only way something happens.
 
 ## Where to go deeper (load on demand — don't pull these in every session)
+- Live per-person tasks, split by machine (Normal-machine vs DGX Spark) → `docs/TASKS.md`
 - Full plan, day-by-day Slice 0, architecture, contracts → `docs/PROJECT_BIBLE.md`
 - Full NVIDIA stack catalog (roles + adoption phase) → `docs/STACK.md`
 - Exact Spark build, versions, launch alias, ROS 2 status → `docs/ENVIRONMENT.md`

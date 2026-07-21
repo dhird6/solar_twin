@@ -17,6 +17,16 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 5: Integrate Track N (teammate) into main
+Merged `ID_1--Project-Setup` (Track N, normal-machine work) into the DGX branch
+on an integration branch. Kept both halves: my Isaac world (farm_builder,
+sim_runtime, sim_native, kinematic, artifacts) + their Brain follow-ups
+(FaultReport, cosmos_reason, kinematic_math, ROS2_CONTRACT.md, TASKS.md, tests).
+Fixes folded in during the merge: (1) `control/kinematic.py` now imports their
+`kinematic_math.py` (the N3→S4 handoff); (2) `cosmos_reason.py` retargeted from
+the local Qwen VLM → **Cosmos Reason** (per direction — Cosmos-only). Validated
+with full `pytest` + a `--backend sim_native` smoke run before landing to main.
+
 ## 2026-07-21 — Session 4: Workstream C — sim loop runs end-to-end ✅ (Slice 0 gate MET)
 **Done:** `world/sim_runtime.py` (SimulationApp + open farm USD + robots w/ downward
 cameras + step/render/pose/capture), `transport/sim_native.py` (Transport on the
@@ -63,6 +73,51 @@ mesh + UsdPreviewSurface material (hotspot=emissive red, soiled=tan) +
 SimulationApp, add a camera render-product, step) + `transport/sim_native.py`
 (capture/pose/read_panel/write_panel/step) + `control/kinematic.py`. Then wire
 `sim_native` into `run._build_backend` for the full on-Spark mission.
+
+## 2026-07-21 — Session 3 (Track N, parallel): Brain follow-ups + ROS2_CONTRACT
+Split work by machine this session: `docs/TASKS.md` re-cuts `plan.md`'s
+checklist into **Track N (normal machine, no Isaac)** and **Track S (DGX
+Spark)** so both people can work without touching the same files. This entry
+covers Track N's pass — all pure-python, done off the Spark.
+
+**Done (49 pytest tests green, up from 31; verified with a live `--backend
+fake` run):**
+- `FaultReport` dataclass (`schema/pv_module.py`) — the payload shape now
+  shared by the run record's `fault_events` and the future ROS 2
+  `/mission/fault` topic. Wired into `orchestrator/mission.py`'s `WRITEBACK`
+  phase and `run.py`'s record writer; round-trip tested
+  (`tests/test_fault_report.py`).
+- `perception/cosmos_reason.py` — `CosmosReasonPerception`, a `Perception`
+  impl targeting the local Qwen2.5-VL-72B server behind a `ChatClient`
+  protocol (stdlib `urllib`, no new dependency, network only touched inside
+  `.complete()`). Fails safe: unparseable/garbage responses escalate rather
+  than clearing a panel. Tested with a fake client, no network
+  (`tests/test_cosmos_reason.py`). **Not yet wired** into `run._perception()`
+  — `mission.yaml`'s `perception: cosmos_reason` still raises
+  `NotImplementedError` until someone adds that branch.
+- `control/kinematic_math.py` — pure waypoint interpolation (`step_towards`,
+  `reached`, `steps_to_reach`), Isaac-free, clamped against overshoot with
+  shortest-path yaw wraparound. Tested (`tests/test_kinematic_math.py`). The
+  Isaac-bound `control/kinematic.py` (Track S) should import this rather than
+  reimplementing the math.
+- `docs/ROS2_CONTRACT.md` — didn't exist before; full topic table,
+  `/mission/fault` locked to `FaultReport`, namespacing, the Best-Effort/
+  RViz2 QoS gotcha, the Play-before-publish timing gotcha, and one flagged
+  open question (`read_panel`/`write_panel` over ROS 2) for Track S.
+- `docs/TASKS.md` (new) + `plan.md`/`CLAUDE.md` updated to check off the
+  above and point at the new files.
+
+**Git:** merged `origin/main` (Track S's Session 2 Day-1 findings) into
+`ID_1--Project-Setup` — no conflicts, disjoint file sets. Local commits not
+yet pushed as of this entry.
+
+**Next (Track S, on the Spark):** WS0 remaining boxes (Isaac launch/render
+smoke test, ROS 2 camera publish check), then WS B (`farm_builder.py`) reusing
+`world/layout.py` unchanged. When WS D lands, import `kinematic_math.py`
+rather than rewriting it. When WS E lands, resolve `docs/ROS2_CONTRACT.md`'s
+open question before writing `ros2_bridge.py`.
+
+---
 
 ## 2026-07-21 — Session 2: Day-1 de-risk + ROS 2 install
 **Environment verified on the Spark (see `docs/ENVIRONMENT.md`):**

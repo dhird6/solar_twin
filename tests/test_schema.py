@@ -1,7 +1,5 @@
 """Pure-python contract tests for the PVModule schema (no pxr / no Isaac)."""
 
-import math
-
 import pytest
 
 from solar_twin.schema.pv_module import (

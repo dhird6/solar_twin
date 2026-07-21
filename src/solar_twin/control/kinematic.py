@@ -11,6 +11,7 @@ in the sim, or a fake in tests) — no Isaac import here.
 from __future__ import annotations
 
 from solar_twin.control.base import RobotControl, Waypoint
+from solar_twin.control.kinematic_math import reached
 
 
 class KinematicControl(RobotControl):
@@ -20,14 +21,13 @@ class KinematicControl(RobotControl):
         self._rt = runtime
 
     def move_to(self, robot_id: str, waypoint: Waypoint) -> None:
+        # Slice 0 = teleport (one-shot placement). To upgrade to smooth motion,
+        # step `kinematic_math.step_towards` per tick instead of set_pose here.
         self._rt.set_pose(
             robot_id, waypoint.x, waypoint.y, waypoint.z, waypoint.yaw
         )
 
     def at_goal(self, robot_id: str, waypoint: Waypoint, tol: float = 0.05) -> bool:
-        x, y, z, _ = self._rt.get_pose(robot_id)
-        return (
-            abs(x - waypoint.x) <= tol
-            and abs(y - waypoint.y) <= tol
-            and abs(z - waypoint.z) <= tol
-        )
+        # Share one tolerance definition with the interp math (the N3->S4 seam).
+        x, y, z, yaw = self._rt.get_pose(robot_id)
+        return reached(Waypoint(x, y, z, yaw), waypoint, tol)

@@ -77,11 +77,28 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
     raise ValueError(f"unknown backend: {name!r}")
 
 
-def _perception(name: str):
+def _perception(name: str, opts: dict | None = None):
+    opts = opts or {}
     if name == "ground_truth":
         from solar_twin.perception.ground_truth import GroundTruthPerception
 
         return GroundTruthPerception()
+    if name == "cosmos_reason":
+        # Config-driven: endpoint/model/timeout come from mission.yaml
+        # perception_opts, not hardcoded. Requires a Cosmos Reason NIM
+        # (⚠ verify served-model-name — see docs/ENVIRONMENT.md).
+        from solar_twin.perception.cosmos_reason import (
+            DEFAULT_BASE_URL,
+            DEFAULT_MODEL,
+            DEFAULT_TIMEOUT_S,
+            CosmosReasonPerception,
+        )
+
+        return CosmosReasonPerception(
+            base_url=opts.get("base_url", DEFAULT_BASE_URL),
+            model=opts.get("model", DEFAULT_MODEL),
+            timeout=float(opts.get("timeout", DEFAULT_TIMEOUT_S)),
+        )
     raise NotImplementedError(
         f"perception {name!r} not wired yet (Slice 0 uses ground_truth)."
     )
@@ -101,7 +118,10 @@ def run(
     transport, control = _build_backend(
         backend_name, layout, mission_cfg, sim_opts or {}
     )
-    perception = _perception(mission_cfg.get("perception", "ground_truth"))
+    perception = _perception(
+        mission_cfg.get("perception", "ground_truth"),
+        mission_cfg.get("perception_opts", {}),
+    )
     fleet_cfg = mission_cfg["fleet"]
     fleet = Fleet(
         ground_bot=fleet_cfg["ground_bot"],
@@ -153,7 +173,7 @@ def run(
             "wall_seconds": round(wall_s, 4),
         },
         "panels": [asdict(r) for r in result.results],
-        "fault_events": result.fault_events,
+        "fault_events": [e.to_dict() for e in result.fault_events],
     }
     (out / "results.json").write_text(json.dumps(record, indent=2))
     m = record["metrics"]

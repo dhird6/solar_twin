@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from solar_twin.control.base import RobotControl, Waypoint
 from solar_twin.perception.base import Diagnosis, PanelContext, Perception, Verdict
-from solar_twin.schema.pv_module import PanelState, coerce_state
+from solar_twin.schema.pv_module import FaultReport, PanelRecord, PanelState, coerce_state
 from solar_twin.transport.base import Transport
 
 
@@ -67,7 +67,7 @@ class PanelResult:
 @dataclass
 class MissionResult:
     results: list[PanelResult] = field(default_factory=list)
-    fault_events: list[dict] = field(default_factory=list)
+    fault_events: list[FaultReport] = field(default_factory=list)
     steps: int = 0
 
     @property
@@ -154,6 +154,7 @@ class Mission:
         injected = PanelState.UNKNOWN
         verdict: Optional[Verdict] = None
         diagnosis: Optional[Diagnosis] = None
+        record: Optional[PanelRecord] = None
 
         while phase is not Phase.DONE:
             if phase is Phase.ADVANCE:
@@ -190,13 +191,14 @@ class Mission:
                 self.transport.write_panel(pid, detected, note, ts)
                 if escalated:
                     result.fault_events.append(
-                        {
-                            "panel_id": pid,
-                            "state": detected.value,
-                            "note": note,
-                            "timestamp": ts,
-                            "confidence": diagnosis.confidence if diagnosis else 0.0,
-                        }
+                        FaultReport(
+                            panel_id=pid,
+                            fault_type=detected.value,
+                            confidence=diagnosis.confidence if diagnosis else 0.0,
+                            note=note,
+                            timestamp=ts,
+                            panel_geo_position=record.geo_position if record else None,
+                        )
                     )
                 phase = Phase.DONE
 
