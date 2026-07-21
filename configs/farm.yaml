@@ -1,0 +1,34 @@
+# Slice 0 farm — one row, ~10 panels. Seeded so a run is replayable from
+# (config + seed + build). Consumed by world/farm_builder.py (Isaac-bound) and
+# by run.py to lay out inspection targets.
+
+seed: 20260721
+
+# Grid layout (Z-up, meters). Slice 0 is a single row.
+grid:
+  rows: 1
+  cols: 10
+  row_pitch: 6.0      # meters between rows (front-to-back)
+  col_pitch: 2.2      # meters between panels along a row
+  origin: [0.0, 0.0, 0.0]
+
+# Panel geometry (a textured box is fine for Slice 0).
+panel:
+  width: 1.0          # x, meters
+  length: 2.0         # y, meters
+  height: 0.05        # z, meters
+  tilt_deg: 20.0      # south-facing tilt about the row axis
+
+# Georef anchor (§6.2): farm origin (0,0,0) -> this lat/lon/elev, with +Y
+# pointing at heading_deg (compass bearing, 0 = north, clockwise).
+georef:
+  lat0: 33.4484       # placeholder site (Phoenix, AZ-ish)
+  lon0: -112.0740
+  elev0: 331.0
+  heading_deg: 0.0
+
+# Fault injection (ground truth). Seeded selection of panels flipped off-healthy.
+# Slice 0 taxonomy subset: healthy | hotspot | soiled.
+faults:
+  rate: 0.2           # fraction of panels to fault (seeded pick)
+  states: [hotspot, soiled]

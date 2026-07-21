@@ -1,0 +1,29 @@
+# Slice 0 mission — one ground bot, one screening drone, one confirm drone,
+# scripted waypoints down the single row. Drives orchestrator/mission.py.
+
+seed: 20260721
+
+# Default transport is sim-native (Spark ROS 2 sensor quirks are unverified —
+# see docs/ENVIRONMENT.md). Flip to ros2 only once Day-1 camera publishing is
+# confirmed on this Spark.
+transport: sim_native   # sim_native | ros2
+
+# Perception behind the interface: ground-truth stub for Slice 0.
+perception: ground_truth  # ground_truth | cosmos_reason
+
+fleet:
+  ground_bot: ground_bot
+  screen_drone: drone1
+  confirm_drone: drone2
+
+# Kinematic motion (Slice 0). Speeds are advisory for the interp controller.
+kinematics:
+  bot_speed: 1.0        # m/s
+  drone_speed: 2.0      # m/s
+  screen_standoff: 3.0  # meters above panel for the screening pass
+  confirm_standoff: 1.0 # meters above panel for the close confirm pass
+
+# Escalation: with the ground-truth stub every non-healthy panel is suspect.
+# Kept explicit so a real detector can gate on confidence later.
+escalation:
+  screen_suspect_confidence: 0.5   # assess() >= this and status=suspect -> escalate
