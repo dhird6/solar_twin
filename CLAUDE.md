@@ -65,6 +65,7 @@ A change is done when: the closest `pytest` tests pass, new logic has a test tha
 - Rules: keep API keys (`NVIDIA_API_KEY`, etc.) out of the repo; an MCP-driven action must ALSO exist as a script + config — MCP is never the only way something happens.
 
 ## Where to go deeper (load on demand — don't pull these in every session)
+- Live per-person tasks, split by machine (Normal-machine vs DGX Spark) → `docs/TASKS.md`
 - Full plan, day-by-day Slice 0, architecture, contracts → `docs/PROJECT_BIBLE.md`
 - Full NVIDIA stack catalog (roles + adoption phase) → `docs/STACK.md`
 - Exact Spark build, versions, launch alias, ROS 2 status → `docs/ENVIRONMENT.md`

@@ -4,7 +4,9 @@
 > **workstreams** that can be assigned to different people/sessions. Strategy is
 > in `docs/PROJECT_BIBLE.md` §8; status/history is in `SESSIONS.md`; exact box
 > facts are in `docs/ENVIRONMENT.md`. When a spec here and the code disagree, fix
-> one in the same commit.
+> one in the same commit. **For the live, per-person/per-machine cut of this
+> same checklist (Normal machine vs DGX Spark, exact commands, handoff points),
+> see `docs/TASKS.md` — keep both files' `[ ]` boxes in sync.**
 
 ## Legend
 - **[ ]** todo · **[x]** done · **[~]** in progress · **[!]** blocked
