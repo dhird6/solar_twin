@@ -99,3 +99,52 @@ def test_config_driven_overrides():
     assert p.base_url == "http://cosmos-nim:9000"
     assert p.model == "cosmos-reason-x"
     assert p.timeout == 5.0
+
+
+# --- frame encoding (the sim-native camera path) ------------------------- #
+
+
+def test_no_frame_sends_text_only_message():
+    # frame=None must keep the message a plain text string (Slice 0 behavior).
+    resp = json.dumps({"status": "clean", "confidence": 1.0, "note": "ok"})
+    perception, client = _perception(resp)
+    perception.assess(None, CONTEXT)
+    assert isinstance(client.last_messages[0]["content"], str)
+
+
+def test_rgba_frame_is_attached_as_png_image_url():
+    import numpy as np
+
+    frame = np.zeros((4, 4, 4), dtype=np.uint8)  # H x W x 4 (RGBA), like capture()
+    frame[..., 3] = 255
+    resp = json.dumps({"status": "suspect", "confidence": 0.7, "note": "dust"})
+    perception, client = _perception(resp)
+    perception.assess(frame, CONTEXT)
+
+    content = client.last_messages[0]["content"]
+    assert isinstance(content, list)
+    kinds = {part["type"] for part in content}
+    assert kinds == {"text", "image_url"}
+    text_part = next(p for p in content if p["type"] == "text")
+    assert "R01-C003" in text_part["text"]  # prompt still carries the context
+    image_part = next(p for p in content if p["type"] == "image_url")
+    assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_rgb_frame_without_alpha_is_also_encoded():
+    import numpy as np
+
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)  # H x W x 3 (RGB)
+    perception, client = _perception(json.dumps({"fault_type": "hotspot", "confidence": 0.8, "note": "x"}))
+    perception.diagnose(frame, CONTEXT)
+    assert isinstance(client.last_messages[0]["content"], list)
+
+
+def test_malformed_frame_falls_back_to_text_only():
+    import numpy as np
+
+    frame = np.zeros((4, 4), dtype=np.uint8)  # 2-D: not a valid image frame
+    perception, client = _perception(json.dumps({"status": "clean", "confidence": 1.0, "note": "ok"}))
+    perception.assess(frame, CONTEXT)
+    # Degrades to a text prompt rather than raising.
+    assert isinstance(client.last_messages[0]["content"], str)
