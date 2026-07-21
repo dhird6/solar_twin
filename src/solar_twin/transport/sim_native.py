@@ -47,5 +47,12 @@ class SimNativeTransport(Transport):
         self._rt.step()
         self.step_count += 1
 
+    # --- extras used by run.py for artifacts (not part of the Transport API) --
+    def capture_overview(self):
+        return self._rt.capture_overview()
+
+    def export_usd(self, path: str) -> None:
+        self._rt.export(path)
+
     def close(self) -> None:
         self._rt.close()

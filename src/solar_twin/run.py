@@ -56,12 +56,18 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
                 f"  ./python.sh -m solar_twin.world.farm_builder <farm.yaml> --out {farm_usd}"
             )
         fleet = mission_cfg["fleet"]
+        overview_pose = None
+        if sim_opts.get("record"):
+            xs = [s.position[0] for s in layout.sites]
+            cx = (min(xs) + max(xs)) / 2 if xs else 0.0
+            overview_pose = (cx, 0.0, 30.0)  # bird's-eye over the row
         runtime = SimRuntime(
             farm_usd,
             camera_robots=[fleet["screen_drone"], fleet["confirm_drone"]],
             marker_robots=[fleet["ground_bot"]],
             headless=sim_opts["headless"],
             resolution=sim_opts["resolution"],
+            overview_pose=overview_pose,
         )
         panel_paths = {
             s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
@@ -106,9 +112,17 @@ def run(
     targets = layout.inspection_targets(mission_cfg)
     faults = layout.seeded_faults()
 
+    sim_opts = sim_opts or {}
+    record = sim_opts.get("record") and hasattr(transport, "capture_overview")
+    frames: list = []
+
     def _progress(i: int, r) -> None:
         tag = f"{r.detected_state} ESCALATED" if r.escalated else r.detected_state
         print(f"  [{i + 1}/{len(targets)}] {r.panel_id}: {tag}", flush=True)
+        if record:
+            fr = transport.capture_overview()
+            if fr is not None:
+                frames.append(fr[..., :3])
 
     mission = Mission(transport, control, perception, fleet)
     t0 = time.perf_counter()
@@ -151,6 +165,25 @@ def run(
         flush=True,
     )
 
+    # ---- optional artifacts (before close) ---------------------------- #
+    if sim_opts.get("save_usd") and hasattr(transport, "export_usd"):
+        usd_out = out / "farm_post.usda"
+        transport.export_usd(str(usd_out))
+        print(f"saved post-run USD (verdicts on prims): {usd_out}", flush=True)
+
+    if record_frames := (frames if record else []):
+        try:
+            import imageio.v2 as imageio
+
+            vid = out / "run.mp4"
+            writer = imageio.get_writer(str(vid), fps=2, macro_block_size=None)
+            for fr in record_frames:
+                writer.append_data(fr)
+            writer.close()
+            print(f"wrote run video ({len(record_frames)} frames): {vid}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — video is a nice-to-have
+            print(f"[warn] video write failed: {exc}", flush=True)
+
     # Close the sim LAST (may terminate the process).
     if hasattr(transport, "close"):
         transport.close()
@@ -176,12 +209,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gui", action="store_true", help="sim_native: show the Isaac window")
     ap.add_argument("--width", type=int, default=640, help="sim_native camera width")
     ap.add_argument("--height", type=int, default=480, help="sim_native camera height")
+    ap.add_argument(
+        "--save-usd",
+        action="store_true",
+        help="sim_native: export the post-run stage (verdicts on prims) to the run dir",
+    )
+    ap.add_argument(
+        "--record",
+        action="store_true",
+        help="sim_native: capture a bird's-eye run video (run.mp4) to the run dir",
+    )
     args = ap.parse_args(argv)
 
     sim_opts = {
         "farm_usd": args.farm_usd,
         "headless": not args.gui,
         "resolution": (args.width, args.height),
+        "save_usd": args.save_usd,
+        "record": args.record,
     }
     # run() writes + prints the record before closing the sim (which may
     # terminate the process), so no extra printing is needed here.

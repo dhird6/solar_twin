@@ -30,6 +30,7 @@ class SimRuntime:
         marker_robots: list[str],
         headless: bool = True,
         resolution: tuple[int, int] = (640, 480),
+        overview_pose: Optional[tuple[float, float, float]] = None,
     ):
         from isaacsim import SimulationApp
 
@@ -87,6 +88,18 @@ class SimRuntime:
             self._add_marker(path, size=0.4)
             self._robot_paths[rid] = path
 
+        # Optional fixed bird's-eye camera for a run video.
+        self._overview_annot = None
+        if overview_pose is not None:
+            ov = UsdGeom.Camera.Define(self._stage, "/World/Overview")
+            UsdGeom.XformCommonAPI(ov).SetTranslate(Gf.Vec3d(*overview_pose))
+            ov.CreateFocalLengthAttr(15.0)
+            ov.CreateHorizontalApertureAttr(36.0)
+            ov.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
+            ov_rp = rep.create.render_product("/World/Overview", (960, 540))
+            self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+            self._overview_annot.attach([ov_rp])
+
         # Warm up the renderer so the first capture is valid.
         self.step(_RENDER_SETTLE_UPDATES + 2)
 
@@ -141,6 +154,22 @@ class SimRuntime:
         if data.size == 0:
             return None
         return data
+
+    def capture_overview(self):
+        """RGB from the fixed bird's-eye camera (H x W x 4 uint8), or None."""
+        import numpy as np
+
+        if self._overview_annot is None:
+            return None
+        self._rep.orchestrator.step(
+            rt_subframes=self._rt_subframes, pause_timeline=False
+        )
+        data = np.asarray(self._overview_annot.get_data())
+        return None if data.size == 0 else data
+
+    def export(self, path: str) -> None:
+        """Save the current (post-run) stage — panels now hold verdicts."""
+        self._stage.Export(path)
 
     def get_prim(self, prim_path: str):
         return self._stage.GetPrimAtPath(prim_path)

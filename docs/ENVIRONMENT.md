@@ -20,10 +20,15 @@
 - **PyTorch (cu13):** lives in Isaac's bundled Python — not yet captured.
 - **Isaac Sim build commit:** `045ca8b` ("Isaac Sim Update 6.0.1", 2026-06-22).
 - **ROS 2 bridge extension:** `isaacsim.ros2.bridge-5.1.2` (loads system rclpy).
-- **Local VLM (bonus):** a `Qwen2.5-VL-72B-AWQ` vLLM server runs on
-  `localhost:8000` (OpenAI-compatible, served name `qwen2.5-vl-72b`). Candidate
-  backend for `perception/cosmos_reason.py` when we swap the ground-truth stub.
-  Note it holds ~70% of GPU memory — Isaac Sim launches must share the GB10.
+- **Perception backend = Cosmos Reason (NOT Qwen).** `perception/cosmos_reason.py`
+  targets **NVIDIA Cosmos Reason** (physical-AI VLM, served via NIM / an
+  OpenAI-compatible endpoint) — that is the intended brain behind the
+  `Perception` interface. A `Qwen2.5-VL-72B` vLLM that was running on
+  `localhost:8000` is unrelated to this project and has been **stopped/disabled**
+  (see the vLLM note in SESSIONS.md) to free the GB10 for Isaac Sim; do not wire
+  it into perception. Cosmos was never a system-wide service here yet — standing
+  up the Cosmos Reason NIM is a prerequisite before flipping
+  `mission.yaml: perception: cosmos_reason`.
 
 ## Key finding — `usd-core` has no aarch64 wheel
 `pip install usd-core` fails on this box (`No matching distribution found`, py3.12
