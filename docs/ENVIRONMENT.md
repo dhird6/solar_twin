@@ -60,16 +60,27 @@ Writes `runs/<ts>/` with `results.json` (injected-vs-detected, detection_rate).
 `world/farm_builder.py`, `world/sim_runtime.py`, and `transport/sim_native.py`
 are built and wired into `run._build_backend`.
 
-## ROS 2 status — ⚠ UNVERIFIED (Day-1 de-risk task)
-Has the camera → ROS 2 publish path ever worked on this Spark? **Not checked yet.**
-Until it is: sim-native is the only Transport; `transport/ros2_bridge.py` stays a
-thin stub behind the interface. Day-1 task (bible §8): enable
-`isaacsim.ros2.bridge`, publish a camera image from a sample scene, confirm with
-`ros2 topic echo` / RViz2 (image Reliability = **Best Effort**), and record the
-outcome + build commit here.
+## ROS 2 status (updated 2026-07-21)
+- **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).
+  Installed via `tools/install_ros2_jazzy.sh` → `/opt/ros/jazzy`, 201 pkgs.
+  `ros2 doctor` = **all 5 checks passed**; `rclpy` imports; `sensor_msgs` /
+  `geometry_msgs` present. Source with `source /opt/ros/jazzy/setup.bash`.
+- **Installed `ros-jazzy-ros-base`, NOT `-desktop`:** desktop pulls
+  `python3-vtk9`, which **conflicts with the system `python3-paraview 5.11.2`**
+  (OpenFOAM CFD tooling). So RViz2/VTK is deferred; use `ros2 topic echo`/`hz`
+  for the camera check. (To get RViz2 later: resolve the paraview/vtk conflict
+  in an isolated env or container — do not remove python3-paraview, it's not ours.)
+- **Do NOT `apt upgrade` this box.** Near-miss on 2026-07-21: a blanket upgrade
+  would bump CUDA/nvidia/docker/systemd under the source-built Isaac Sim + live
+  vLLM. Install scoped packages only.
+
+### Still open (Day-1 remainder)
 ```
-[ ] ROS 2 camera publish works on this Spark?   result: UNKNOWN
-[ ] ROS 2 distro installed:                       ____
-[ ] Isaac Sim build commit:                        ____
-[ ] CUDA / PyTorch(cu13) versions:                 ____
+[ ] ROS 2 camera publish works from Isaac Sim 6.0 on this Spark?   result: UNKNOWN
+[x] ROS 2 distro installed:                        jazzy (/opt/ros/jazzy)
+[ ] Isaac Sim build commit:                        (git -C ~/IsaacSim rev-parse HEAD)
+[ ] PyTorch(cu13) version (Isaac python):           ____
+[ ] Isaac Sim launches + renders a sample:          not yet (sim not running)
 ```
+Next: launch Isaac Sim, enable `isaacsim.ros2.bridge`, publish a camera image,
+verify with `ros2 topic echo` (image QoS = **Best Effort**), record result here.

@@ -40,9 +40,15 @@ apt-get install -y /tmp/ros2-apt-source.deb
 
 echo "==> Install ROS 2 Jazzy desktop + dev tools"
 apt-get update
-apt-get upgrade -y
-# desktop = ros-base + RViz2 + demos (RViz2 needed for the Day-1 camera check).
-apt-get install -y ros-jazzy-desktop ros-dev-tools
+# NOTE: deliberately NO 'apt-get upgrade' here. This is a production DGX Spark
+# with a source-built Isaac Sim + a running vLLM; a blanket upgrade would bump
+# CUDA/nvidia/docker/systemd and risk that stack. Install only ROS + its deps.
+# ros-base (NOT desktop): desktop pulls python3-vtk9 which CONFLICTS with the
+# system's python3-paraview (OpenFOAM CFD tooling) — so RViz2/VTK is deferred.
+# ros-base gives ros2 CLI + rclpy + messages; ros-dev-tools gives colcon. That
+# is enough to build the ROS 2 bridge seam and verify camera topics with
+# `ros2 topic echo` (RViz2 image display is a later nice-to-have).
+apt-get install -y ros-jazzy-ros-base ros-dev-tools
 
 echo
 echo "==> Done. ROS 2 Jazzy installed at /opt/ros/jazzy"
