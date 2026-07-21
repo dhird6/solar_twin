@@ -44,9 +44,19 @@ unit moved aside** to free the GB10 for Isaac Sim. Unit backed up at
 `sudo mv .../vllm.service.disabled-by-claude-20260721 /etc/systemd/system/vllm.service && sudo systemctl daemon-reload && sudo systemctl enable --now vllm.service`.
 (Was the intended `cosmos_reason.py` backend — bring it back before that work.)
 
-**Next:** finish ROS install → `ros2 doctor`; launch Isaac Sim → prove render;
-enable `isaacsim.ros2.bridge`, publish a camera image, verify via `ros2 topic
-echo`/RViz2 (Best Effort); record outcome in ENVIRONMENT.md. Then Workstream B.
+**Day-1 COMPLETE ✅ (camera→ROS 2 verified):** installed ROS 2 Jazzy (ros-base;
+desktop conflicts with system python3-paraview) — `ros2 doctor` 5/5. Launched
+Isaac Sim **6.0.1** (build `045ca8b`) headless via `tools/day1_ros2_camera_check.py`
+(self-contained scene, no asset download), bridge `isaacsim.ros2.bridge-5.1.2`.
+Verified from a sourced Jazzy shell: `/rgb` + `/camera_info` in `topic list`,
+`/rgb` at **~50 Hz**, `/camera_info` echoes 640x480 + K matrix. **The feared Spark
+ROS-2 sensor quirk does NOT affect this build** → ROS 2 is a viable Transport;
+`ros2_bridge.py` can be real, not a stub (Slice 0 still defaults sim-native).
+Sim stopped after; GPU free. Details in `docs/ENVIRONMENT.md`.
+
+**Next:** Workstream B — `world/farm_builder.py` (build the USD farm from
+`farm.yaml`, reuse `world/layout.py`, stamp PVModule prims). Then WS-C sim_runtime
++ sim_native transport. Optionally capture PyTorch cu13 version from Isaac python.
 
 ## 2026-07-21 — Session 1: Brain spine built end-to-end ✅
 **Done (all pure-python, no Isaac; 31 pytest tests green):**

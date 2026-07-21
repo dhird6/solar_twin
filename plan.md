@@ -38,16 +38,16 @@
 ## Workstream 0 — Environment / Day-1 de-risk  ·  where: spark
 Owner: whoever has the box. Prereq for all `spark` work.
 - [x] Capture arch/CUDA/GPU/Isaac version/python.sh path → `docs/ENVIRONMENT.md`.
-- [x] Determine ROS 2 status: **absent** → sim-native confirmed for Slice 0.
-- [~] Install ROS 2 Jazzy (`tools/install_ros2_jazzy.sh`).
-- [ ] `source /opt/ros/jazzy/setup.bash && ros2 doctor` clean.
-- [ ] Capture Isaac build commit, Isaac Lab symlink, PyTorch cu13 version.
-- [ ] Launch Isaac Sim once; run a stock sample; confirm physics + render.
-- [ ] Enable `isaacsim.ros2.bridge`; publish a camera image from a sample scene;
-      confirm with `ros2 topic echo` / RViz2 (image Reliability = **Best Effort**).
-- [ ] Record the ROS-2-camera outcome (works? / quirks?) in `docs/ENVIRONMENT.md`.
+- [x] Determine ROS 2 status: was **absent** → installed Jazzy.
+- [x] Install ROS 2 Jazzy (`tools/install_ros2_jazzy.sh`, ros-base).
+- [x] `source /opt/ros/jazzy/setup.bash && ros2 doctor` → all 5 checks passed.
+- [x] Capture Isaac build commit (045ca8b, 6.0.1). [ ] Isaac Lab symlink + PyTorch cu13 version.
+- [x] Launch Isaac Sim headless; confirmed render (~14s warm start).
+- [x] Enable `isaacsim.ros2.bridge`; publish a camera; confirmed via
+      `ros2 topic list` + `hz /rgb` (~50 Hz) + `echo /camera_info`.
+- [x] **Result recorded: ROS 2 camera path WORKS on this Spark** (ENVIRONMENT.md).
 - [ ] Decide: update the "5.1" references in CLAUDE.md/bible to 6.0.1?
-- **Done when:** we know if the ROS 2 camera path works on this box; sandbox proven.
+- **Done:** ✅ ROS 2 camera path proven; sandbox proven. WS0 complete.
 
 ---
 
@@ -112,7 +112,7 @@ run record with detection_rate 1.00.
 
 ---
 
-## Workstream E — ROS 2 seam  ·  where: spark  ·  **[!] blocked on WS0 ROS 2 install**
+## Workstream E — ROS 2 seam  ·  where: spark  ·  **UNBLOCKED (camera path proven Day-1)**
 **Satisfies:** `Transport` (`transport/ros2_bridge.py`), same interface as sim_native.
 - [ ] After Jazzy install + Day-1 camera check passes: build `ros2_bridge.py`
       (camera sub, `cmd_vel` pub, `pose`, `/mission/fault`) per §6.3.

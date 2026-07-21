@@ -18,7 +18,8 @@
   the 5.1 references in CLAUDE.md/bible to 6.0.1.)
 - **Isaac Lab:** not yet verified (symlink `_isaac_sim`).
 - **PyTorch (cu13):** lives in Isaac's bundled Python — not yet captured.
-- **Isaac Sim build commit:** ⚠ not yet captured (`git -C ~/IsaacSim rev-parse HEAD`).
+- **Isaac Sim build commit:** `045ca8b` ("Isaac Sim Update 6.0.1", 2026-06-22).
+- **ROS 2 bridge extension:** `isaacsim.ros2.bridge-5.1.2` (loads system rclpy).
 - **Local VLM (bonus):** a `Qwen2.5-VL-72B-AWQ` vLLM server runs on
   `localhost:8000` (OpenAI-compatible, served name `qwen2.5-vl-72b`). Candidate
   backend for `perception/cosmos_reason.py` when we swap the ground-truth stub.
@@ -74,13 +75,29 @@ are built and wired into `run._build_backend`.
   would bump CUDA/nvidia/docker/systemd under the source-built Isaac Sim + live
   vLLM. Install scoped packages only.
 
-### Still open (Day-1 remainder)
+### Day-1 result — ✅ ROS 2 camera path WORKS (verified 2026-07-21)
 ```
-[ ] ROS 2 camera publish works from Isaac Sim 6.0 on this Spark?   result: UNKNOWN
+[x] ROS 2 camera publish works from Isaac Sim 6.0 on this Spark?   result: YES
 [x] ROS 2 distro installed:                        jazzy (/opt/ros/jazzy)
-[ ] Isaac Sim build commit:                        (git -C ~/IsaacSim rev-parse HEAD)
-[ ] PyTorch(cu13) version (Isaac python):           ____
-[ ] Isaac Sim launches + renders a sample:          not yet (sim not running)
+[x] Isaac Sim build commit:                        045ca8b (6.0.1)
+[x] Isaac Sim launches + renders headless:         yes (~14s warm start)
+[ ] PyTorch(cu13) version (Isaac python):          not yet captured
 ```
-Next: launch Isaac Sim, enable `isaacsim.ros2.bridge`, publish a camera image,
-verify with `ros2 topic echo` (image QoS = **Best Effort**), record result here.
+Reproduce with `tools/day1_ros2_camera_check.py` (self-contained scene, no asset
+download). Steps:
+```
+source /opt/ros/jazzy/setup.bash
+/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh \
+    tools/day1_ros2_camera_check.py        # publishes /rgb + /camera_info, loops
+# in another sourced shell:
+ros2 topic list          # -> /rgb /camera_info
+ros2 topic hz /rgb       # -> ~50 Hz, real frames flowing
+ros2 topic echo /camera_info --once   # -> 640x480, frame_id sim_camera, K populated
+```
+**Conclusion:** the feared Spark "ROS 2 sensor-rendering quirk" does NOT affect
+this box/build. ROS 2 is a viable Transport, not just sim-native — so
+`transport/ros2_bridge.py` can be built for real (not left a stub). Slice 0 still
+defaults to sim-native for simplicity, but the seam is proven.
+Note: sourcing system ROS 2 Jazzy before launch makes the bridge + `ros2` CLI
+share middleware. RViz2 image display still needs the deferred VTK/paraview fix;
+`ros2 topic echo/hz` is sufficient for verification.
