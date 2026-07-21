@@ -1,0 +1,42 @@
+# Run records + heavy artifacts (source of truth is USD + configs, not these)
+runs/
+*.mp4
+*.gif
+*.webm
+
+# Large binaries — regenerate via farm_builder.py, never commit
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.exr
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local env / secrets (keep NVIDIA_API_KEY etc. out of the repo)
+.env
+*.local
