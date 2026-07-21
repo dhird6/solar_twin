@@ -17,6 +17,51 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 3: Track N (normal machine) — Brain follow-ups + ROS2_CONTRACT
+Split work by machine this session: `docs/TASKS.md` re-cuts `plan.md`'s
+checklist into **Track N (normal machine, no Isaac)** and **Track S (DGX
+Spark)** so both people can work without touching the same files. This entry
+covers Track N's pass — all pure-python, done off the Spark.
+
+**Done (49 pytest tests green, up from 31; verified with a live `--backend
+fake` run):**
+- `FaultReport` dataclass (`schema/pv_module.py`) — the payload shape now
+  shared by the run record's `fault_events` and the future ROS 2
+  `/mission/fault` topic. Wired into `orchestrator/mission.py`'s `WRITEBACK`
+  phase and `run.py`'s record writer; round-trip tested
+  (`tests/test_fault_report.py`).
+- `perception/cosmos_reason.py` — `CosmosReasonPerception`, a `Perception`
+  impl targeting the local Qwen2.5-VL-72B server behind a `ChatClient`
+  protocol (stdlib `urllib`, no new dependency, network only touched inside
+  `.complete()`). Fails safe: unparseable/garbage responses escalate rather
+  than clearing a panel. Tested with a fake client, no network
+  (`tests/test_cosmos_reason.py`). **Not yet wired** into `run._perception()`
+  — `mission.yaml`'s `perception: cosmos_reason` still raises
+  `NotImplementedError` until someone adds that branch.
+- `control/kinematic_math.py` — pure waypoint interpolation (`step_towards`,
+  `reached`, `steps_to_reach`), Isaac-free, clamped against overshoot with
+  shortest-path yaw wraparound. Tested (`tests/test_kinematic_math.py`). The
+  Isaac-bound `control/kinematic.py` (Track S) should import this rather than
+  reimplementing the math.
+- `docs/ROS2_CONTRACT.md` — didn't exist before; full topic table,
+  `/mission/fault` locked to `FaultReport`, namespacing, the Best-Effort/
+  RViz2 QoS gotcha, the Play-before-publish timing gotcha, and one flagged
+  open question (`read_panel`/`write_panel` over ROS 2) for Track S.
+- `docs/TASKS.md` (new) + `plan.md`/`CLAUDE.md` updated to check off the
+  above and point at the new files.
+
+**Git:** merged `origin/main` (Track S's Session 2 Day-1 findings) into
+`ID_1--Project-Setup` — no conflicts, disjoint file sets. Local commits not
+yet pushed as of this entry.
+
+**Next (Track S, on the Spark):** WS0 remaining boxes (Isaac launch/render
+smoke test, ROS 2 camera publish check), then WS B (`farm_builder.py`) reusing
+`world/layout.py` unchanged. When WS D lands, import `kinematic_math.py`
+rather than rewriting it. When WS E lands, resolve `docs/ROS2_CONTRACT.md`'s
+open question before writing `ros2_bridge.py`.
+
+---
+
 ## 2026-07-21 — Session 2: Day-1 de-risk + ROS 2 install
 **Environment verified on the Spark (see `docs/ENVIRONMENT.md`):**
 - aarch64 · CUDA **13.0** · GB10 · Isaac Sim **6.0.1-rc.7** (⚠ NOT 5.1 — verify

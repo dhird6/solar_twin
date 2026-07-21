@@ -19,7 +19,7 @@ falls directly out of the code layout instead of being an arbitrary task split.
 | | **Track N — Normal machine (you)** | **Track S — DGX Spark (teammate)** |
 |---|---|---|
 | Needs | Python 3.10+, `pytest`, `pyyaml`. Nothing else. | The Spark: aarch64, CUDA 13, Isaac Sim `6.0.1-rc.7`, `./python.sh`. |
-| Touches | `src/solar_twin/schema/`, `perception/` (non-Isaac files), `control/base.py` + pure-math parts of `control/kinematic.py`, `orchestrator/`, `tests/`, `configs/`, `docs/` | `src/solar_twin/world/`, `transport/sim_native.py`, `transport/ros2_bridge.py`, Isaac-only parts of `control/kinematic.py` |
+| Touches | `src/solar_twin/schema/`, `perception/` (non-Isaac files), `control/base.py` + `control/kinematic_math.py`, `orchestrator/`, `tests/`, `configs/`, `docs/` | `src/solar_twin/world/`, `transport/sim_native.py`, `transport/ros2_bridge.py`, `control/kinematic.py` (imports `kinematic_math.py`) |
 | Verifies with | `pytest` (no GPU) | manual smoke test on the Spark (headless run + `runs/<ts>/results.json`) |
 | Cannot do here | Anything importing `pxr`/`omni`/`isaacsim` — will simply fail to import off the Spark. Don't try to work around this; it's the intended boundary. | — |
 
@@ -35,77 +35,99 @@ Setup once:
 ```bash
 pip install --break-system-packages --user pytest pyyaml   # or a venv, your call
 cd solar_twin
-pytest                                                       # should show 31 passed
+pytest                                                       # 49 passed as of 2026-07-21
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
 ```
 
-### N1 — `FaultReport` payload dataclass  ·  plan.md Workstream A follow-up
+### N1 — `FaultReport` payload dataclass  ·  plan.md Workstream A follow-up  ·  **[x] DONE 2026-07-21**
 **Owner interface:** a plain dataclass, shared later by the run record writer
 (`run.py`) and the ROS 2 seam (`transport/ros2_bridge.py`'s `/mission/fault`
 topic, §6.3 of the bible) — so both serialize the exact same shape.
-- [ ] Add `FaultReport` to `src/solar_twin/schema/pv_module.py` (or a new
-      `schema/fault_report.py` if it gets big): `panel_id`, `fault_type`,
-      `confidence`, `note`, `timestamp`, `panel_geo_position`.
-- [ ] `run.py` build its `results.json` entries from `FaultReport` instances
-      (not ad-hoc dicts) so the shape is enforced in one place.
-- [ ] Unit test: round-trip a `FaultReport` to dict/JSON and back.
-- **Done when:** `orchestrator/mission.py`'s escalation path emits
-  `FaultReport`s and a test asserts the shape; `docs/ROS2_CONTRACT.md` (below)
-  can then just say "payload = `FaultReport`" instead of inventing JSON shape twice.
+- [x] Added `FaultReport` to `src/solar_twin/schema/pv_module.py`: `panel_id`,
+      `fault_type`, `confidence`, `note`, `timestamp`, `panel_geo_position`,
+      plus `to_dict()`/`from_dict()`.
+- [x] `orchestrator/mission.py`'s `WRITEBACK` phase now emits `FaultReport`
+      instances (`MissionResult.fault_events: list[FaultReport]`); `run.py`
+      serializes them with `[e.to_dict() for e in result.fault_events]`.
+- [x] Round-trip unit tests: `tests/test_fault_report.py` (dict, JSON,
+      optional `panel_geo_position`); existing `tests/test_mission.py`
+      assertions updated from dict-indexing to attribute access.
+- **Verified:** `pytest` (49 passed) + a live `--backend fake` run whose
+  `results.json.fault_events` shows the exact shape above.
+- `docs/ROS2_CONTRACT.md` (N4, below) now says "payload = `FaultReport`"
+  instead of inventing the JSON shape a second time.
 
-### N2 — `perception/cosmos_reason.py` skeleton  ·  plan.md Workstream A follow-up
+### N2 — `perception/cosmos_reason.py` skeleton  ·  plan.md Workstream A follow-up  ·  **[x] DONE 2026-07-21**
 **Owner interface:** `Perception` (`assess`/`diagnose`, `perception/base.py`) —
-must be a drop-in swap for `ground_truth.py` with zero orchestration changes.
-- [ ] `perception/cosmos_reason.py`: a class implementing `Perception` that
-      calls the local Qwen2.5-VL-72B server (`docs/ENVIRONMENT.md`,
-      OpenAI-compatible, `:8000`) via HTTP — **but stub/mock the HTTP call**
-      here, since that server only exists on the Spark. Use `requests` or
-      stdlib `urllib` behind a small client you can fake in tests.
-  - [ ] Constructor takes `base_url`, `model_name`, `timeout` — defaults match
-        `docs/ENVIRONMENT.md` (`http://localhost:8000`, `qwen2.5-vl-72b`).
-  - [ ] `assess`/`diagnose` build a prompt from `PanelContext` + encode `frame`
-        (skip real image encoding for now — accept `None`/placeholder frames
-        in tests); parse the response into `Verdict`/`Diagnosis`.
-- [ ] Test with a fake HTTP client (no network) asserting prompt shape and
-      response parsing — this is exactly the "logic without the simulator"
-      principle (bible §2.6), just applied to the VLM call instead of Isaac.
-- **Done when:** the class satisfies `Perception`, imports with no network/GPU,
-  and a swap in `mission.yaml` (`perception: cosmos_reason`) is a config flip
-  once the Spark half wires it in — Track S does NOT need to write this file,
-  only point `run._build_backend`/whatever wiring exists at it later.
+a drop-in swap for `ground_truth.py` with zero orchestration changes.
+- [x] `perception/cosmos_reason.py`: `CosmosReasonPerception` implements
+      `Perception`, talks to an OpenAI-compatible `/v1/chat/completions`
+      endpoint (Qwen2.5-VL-72B on `:8000` per `docs/ENVIRONMENT.md`) via a
+      `ChatClient` protocol. Real HTTP goes through `_HttpChatClient` (stdlib
+      `urllib`, no new dependency, network only touched inside `.complete()`).
+  - [x] Constructor: `base_url`, `model`, `timeout`, `client` — defaults match
+        `docs/ENVIRONMENT.md`.
+  - [x] `assess`/`diagnose` build a text prompt from `PanelContext` (taxonomy
+        spelled out for `diagnose` so the model can't invent a fault type);
+        frame image-encoding is left a `# TODO (Track S...)` for when a real
+        camera frame exists — Slice 0 tests pass `frame=None`.
+  - [x] Fail-safe parsing: any HTTP exception, malformed JSON, or JSON
+        wrapped in prose is tolerated (`_parse_json_response` extracts the
+        first `{...}` block); an unparseable `assess` escalates
+        (`status="suspect"`) rather than silently clearing a panel, and an
+        invalid `diagnose` fault type reports `unknown`.
+- [x] `tests/test_cosmos_reason.py`: fake `ChatClient`, no network — asserts
+      prompt content, clean/suspect parsing, prose-wrapped JSON extraction,
+      and both fail-safe paths.
+- **Not yet done (Track S, later):** wiring `perception: cosmos_reason` from
+  `mission.yaml` into `run._perception()` (currently only `ground_truth` is
+  wired — see Handoff §4 below), and real frame→image encoding.
 
-### N3 — `control/kinematic.py` — the pure-math half  ·  plan.md Workstream D
+### N3 — `control/kinematic_math.py` — the pure-math half  ·  plan.md Workstream D  ·  **[x] DONE 2026-07-21**
 **Owner interface:** `RobotControl` (`move_to`/`at_goal`, `control/base.py`).
-Split this file in two conceptually even if it's one file: interpolation math
-(Track N) vs. the actual Xform prim it moves (Track S, needs `pxr`).
-- [ ] Write the waypoint interpolation as a **pure function** taking
-      `(current_pose, target: Waypoint, speed, dt) -> next_pose`  — no Isaac
-      import, testable with plain floats.
-- [ ] `at_goal(...)` tolerance check — also pure math.
-- [ ] Tests: straight-line interp reaches target within N steps; `at_goal`
-      tolerance edge cases; yaw wraparound if you implement rotation.
-- **Handoff to Track S:** they import your pure function inside the class that
-  actually owns an Xform prim and calls `prim.GetAttribute(...).Set(...)` each
-  step — they should not need to touch the math, only wire it to USD.
-- **Done when:** the interp function + tests exist and are Isaac-free; leave a
-  one-line note in this file's docstring for Track S on how to wire it to a prim.
+Split into two files, not two halves of one file: `kinematic_math.py` (Track
+N, no Isaac) vs. the future `control/kinematic.py` (Track S, needs `pxr`,
+wraps this module around an Xform prim).
+- [x] `step_towards(current: Waypoint, target: Waypoint, speed, dt,
+      angular_speed=pi) -> Waypoint` — pure function, clamped so it never
+      overshoots position or yaw; yaw takes the shortest wrapped direction.
+- [x] `reached(current, target, tol=0.05) -> bool` — position-only tolerance
+      check (matches `FakeSimBackend.at_goal`).
+- [x] `steps_to_reach(...)` helper (simulate to convergence; used by tests and
+      usable by Track S for timing estimates).
+- [x] `tests/test_kinematic_math.py`: straight-line + diagonal convergence,
+      overshoot clamping, zero-speed non-convergence (capped, not infinite),
+      tolerance edges, yaw wraparound (170°→−170° turns +20°, not −340°).
+- **Handoff to Track S:** `control/kinematic.py` should `import
+  step_towards, reached from kinematic_math` and wrap an Xform prim around
+  it — not reimplement the math. Signature is the seam; flag before changing it.
 
-### N4 — `docs/ROS2_CONTRACT.md` draft  ·  plan.md Workstream E prep
-Referenced by `CLAUDE.md` and the bible (§6.3) but not yet created.
-- [ ] Create it: expand the §6.3 topic table (topic, type, direction, QoS) into
-      a full contract — add message field definitions for `/mission/fault`
-      once N1's `FaultReport` shape is locked, namespacing convention,
-      and the Best-Effort/Reliable QoS rule with the RViz2 gotcha spelled out.
-- [ ] Mark it explicitly: "seam validated once Track S completes WS0's Day-1
-      camera check; do not implement `ros2_bridge.py` against this until then."
+### N4 — `docs/ROS2_CONTRACT.md` draft  ·  plan.md Workstream E prep  ·  **[x] DONE 2026-07-21**
+Referenced by `CLAUDE.md` and the bible (§6.3); did not exist before this session.
+- [x] Full topic table (topic, type, direction, QoS) plus namespacing
+      convention (`/<robot_ns>/...` from `mission.yaml`'s `fleet:` ids),
+      the Best-Effort/Reliable QoS split with the RViz2 "silently see
+      nothing" gotcha, and the "OmniGraph only publishes after Play" timing
+      gotcha.
+- [x] `/mission/fault` payload locked to `FaultReport.to_dict()` (N1) — one
+      shape, not invented twice, with a worked JSON example.
+- [x] Explicit banner: do not implement `ros2_bridge.py` against this until
+      Track S's WS0 Day-1 camera check passes.
+- [x] One flagged open question for Track S to resolve when building the
+      bridge: how `read_panel`/`write_panel` (USD-backed, not a real topic in
+      the table) work when `Transport` is ROS 2 — recommendation given
+      (keep as a direct side-channel), decision left to Track S.
 - **Done when:** Track S can implement `transport/ros2_bridge.py` straight
-  from this doc without guessing message shapes.
+  from this doc without guessing message shapes. *(Doc is ready; Track S
+  still needs to actually build against it once WS0 unblocks.)*
 
 ### N5 — Docs upkeep (ongoing, either track can also do this)
-- [ ] Keep `SESSIONS.md` current — newest entry on top, one paragraph per session.
-- [ ] Update `plan.md` `[ ]`→`[x]` in the same commit as the code that finishes it.
+- [x] `plan.md` boxes for the WS A follow-ups, WS D math half, and WS E prep
+      flipped to `[x]` in the same session as the code (this pass).
+- [ ] Keep `SESSIONS.md` current — newest entry on top, one paragraph per
+      session (add the Track N session entry — see below).
 - [ ] If a spec here and the code disagree, fix one in the same commit
-      (repo-wide rule, `CLAUDE.md` line 1).
+      (repo-wide rule, `CLAUDE.md` line 1) — ongoing, not a one-time task.
 
 ---
 
@@ -151,15 +173,17 @@ panels/faults — do not reimplement the grid/fault logic here, import it).
 - [ ] Wire into `run._build_backend` (replaces the current `NotImplementedError`).
 
 ### S4 — WS D: `control/kinematic.py` — the Isaac half
-- [ ] Import Track N's pure interpolation function (N3); wrap it around an
-      actual Xform prim + `.Set()` calls per tick.
+- [ ] Import `step_towards`/`reached` from `control/kinematic_math.py` (N3,
+      already built + tested); wrap them around an actual Xform prim +
+      `.Set()` calls per tick — do not reimplement the interpolation math.
 - [ ] Ground base asset (Jetbot/Carter v1) + drone Xform + camera.
 - [ ] Smoke test: both robots reach each panel's waypoints in sim.
 
 ### S5 — WS E: ROS 2 seam  (blocked on S1)
 - [ ] After Jazzy install + Day-1 camera check passes: build
-      `transport/ros2_bridge.py` from `docs/ROS2_CONTRACT.md` (N4) — camera
-      sub, `cmd_vel` pub, `pose`, `/mission/fault`.
+      `transport/ros2_bridge.py` from `docs/ROS2_CONTRACT.md` (N4, drafted —
+      resolve its §8 open question on `read_panel`/`write_panel` over ROS 2
+      first) — camera sub, `cmd_vel` pub, `pose`, `/mission/fault`.
 - [ ] Smoke-test against the sim if the camera path works; else keep it a
       validated-but-unused stub and log why in `docs/ENVIRONMENT.md`.
 
@@ -175,17 +199,23 @@ panels/faults — do not reimplement the grid/fault logic here, import it).
 
 ## Handoff points (where the two tracks touch)
 
-1. **N1 → S6:** `FaultReport` shape must land before `run.py`'s writer and the
-   Spark's real run both serialize results the same way. Land N1 early.
-2. **N3 → S4:** Track S imports Track N's pure interp function rather than
-   rewriting it — keep the function's signature stable once written; if it
-   must change, flag it (Track S is depending on it).
-3. **N4 → S5:** `ros2_bridge.py` should not start until `docs/ROS2_CONTRACT.md`
-   is drafted, so Track S isn't guessing message shapes mid-implementation.
+1. **N1 → S6 — READY.** `FaultReport` shape has landed (`schema/pv_module.py`,
+   wired into `mission.py`/`run.py`, tested). Track S's real run already
+   produces the same shape once `--backend sim_native` exists — nothing
+   further needed from Track N here.
+2. **N3 → S4 — READY.** `control/kinematic_math.py`'s `step_towards`/`reached`
+   exist and are tested. Track S: import them into `control/kinematic.py`
+   rather than rewriting the math; if the signature must change, flag it here
+   (Track N depends on it staying stable for its tests).
+3. **N4 → S5 — READY.** `docs/ROS2_CONTRACT.md` is drafted, including one
+   open question (§8, `read_panel`/`write_panel` over ROS 2) Track S should
+   resolve *before* writing `ros2_bridge.py`, not while guessing mid-build.
 4. **N2 stays inert until Track S** wires `perception: cosmos_reason` into
-   whatever builds the `Perception` instance from `mission.yaml` — that wiring
-   itself is a small S-track task not yet in `plan.md`; add it under S6 once
-   S1–S5 land.
+   `run._perception()` (`src/solar_twin/run.py` — currently only
+   `"ground_truth"` is a valid choice, `mission.yaml`'s `perception:
+   cosmos_reason` would raise `NotImplementedError` today). That wiring is a
+   small S-track task not yet in `plan.md`; add it under S6 once S1–S5 land.
+   Track N also owes real frame→image encoding once a camera frame exists.
 
 ## Branch convention (observed in this repo)
 Existing history uses `ID_<n>--<Short-Description>` branch names merged via PR

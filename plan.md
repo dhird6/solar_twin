@@ -66,10 +66,24 @@ run record with detection_rate 1.00.
 - [x] `configs/farm.yaml`, `configs/mission.yaml` (seeded).
 - [x] `run.py` — config → mission → `runs/<ts>/results.json`.
 - [x] `tests/` — schema, georef, perception, mission, layout.
-- **Follow-ups (small, anywhere):**
-  - [ ] Custom `FaultReport` payload dataclass shared by run record + ROS 2 seam.
-  - [ ] `perception/cosmos_reason.py` skeleton targeting the local Qwen VLM
-        (`:8000`, OpenAI-compatible) behind the `Perception` interface.
+- **Follow-ups (small, anywhere)  ·  done 2026-07-21 (Track N):**
+  - [x] `FaultReport` payload dataclass (`schema/pv_module.py`) shared by the
+        run record's `fault_events` and the future ROS 2 `/mission/fault`
+        topic; wired into `orchestrator/mission.py` + `run.py`; round-trip
+        tested in `tests/test_fault_report.py`.
+  - [x] `perception/cosmos_reason.py` skeleton targeting the local Qwen VLM
+        (`:8000`, OpenAI-compatible) behind the `Perception` interface —
+        HTTP call isolated behind a `ChatClient` protocol so it's testable
+        with a fake client (`tests/test_cosmos_reason.py`); fails safe
+        (escalates / reports `unknown`) on any parse or network failure.
+        Frame→image encoding is a Track S TODO once real frames exist.
+  - [x] `control/kinematic_math.py` — pure waypoint interpolation
+        (`step_towards`/`reached`, no Isaac import), tested in
+        `tests/test_kinematic_math.py`. Track S's `control/kinematic.py`
+        (Isaac-bound) should import this rather than reimplementing the math.
+  - [x] `docs/ROS2_CONTRACT.md` drafted (Workstream E prep, below) — locks the
+        `/mission/fault` payload to `FaultReport`, plus namespacing/QoS/timing
+        gotchas and one open question for Track S to decide.
 
 ---
 
@@ -106,19 +120,25 @@ run record with detection_rate 1.00.
 
 ## Workstream D — CONTROL (kinematic)  ·  where: spark (impl) / anywhere (math)
 **Satisfies:** `RobotControl` (`control/kinematic.py`).
-- [ ] `control/kinematic.py`: `move_to` teleports/interps an Xform toward the
-      waypoint at the configured speed; `at_goal` checks tolerance.
+- [x] Pure-python interp math (`control/kinematic_math.py`: `step_towards`,
+      `reached`, `steps_to_reach`) — unit-tested `anywhere` (no Isaac), done
+      2026-07-21 (Track N). Handles overshoot clamping + yaw wraparound.
+- [ ] `control/kinematic.py` (Isaac-bound): wraps `kinematic_math.step_towards`
+      around an actual Xform prim per tick; `at_goal` can delegate to
+      `kinematic_math.reached`. Do not reimplement the interpolation math here.
 - [ ] Ground base asset (simple: Jetbot/Carter v1) + a drone Xform + camera.
-- [ ] Pure-python interp math can be unit-tested `anywhere` (no Isaac).
 - **Done when:** both robots reach each panel's waypoints in sim.
 
 ---
 
 ## Workstream E — ROS 2 seam  ·  where: spark  ·  **[!] blocked on WS0 ROS 2 install**
 **Satisfies:** `Transport` (`transport/ros2_bridge.py`), same interface as sim_native.
+- [x] `docs/ROS2_CONTRACT.md` drafted (Track N, 2026-07-21) — topic table,
+      `/mission/fault` = `FaultReport` payload, namespacing, QoS + timing
+      gotchas, and one open question (`read_panel` over ROS 2) for Track S.
 - [ ] After Jazzy install + Day-1 camera check passes: build `ros2_bridge.py`
-      (camera sub, `cmd_vel` pub, `pose`, `/mission/fault`) per §6.3.
-- [ ] `docs/ROS2_CONTRACT.md` — finalize the topic/message contract.
+      (camera sub, `cmd_vel` pub, `pose`, `/mission/fault`) per
+      `docs/ROS2_CONTRACT.md` — resolve its open question first.
 - [ ] Smoke-test against the sim if the camera path works; else keep it a
       validated-but-unused stub and log why.
 - **Done when:** the seam exists; used only once proven (Slice 0 stays sim-native).

@@ -13,7 +13,7 @@ at module top with no Isaac import. The USD read/write functions import pxr
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
@@ -124,6 +124,40 @@ def append_inspection(
         last_inspected=timestamp,
         inspection_log=[*record.inspection_log, line],
     )
+
+
+# --------------------------------------------------------------------------- #
+# FaultReport — the payload shape shared by the run record's `fault_events`
+# AND the future ROS 2 `/mission/fault` topic (§6.3, docs/ROS2_CONTRACT.md).
+# Defined once here so `orchestrator/mission.py`, `run.py`, and (later)
+# `transport/ros2_bridge.py` never independently invent the JSON shape.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class FaultReport:
+    panel_id: str
+    fault_type: str  # a PanelState value (§6.5)
+    confidence: float
+    note: str
+    timestamp: str
+    panel_geo_position: Optional[tuple[float, float, float]] = None  # (lat, lon, elev)
+
+    def to_dict(self) -> dict:
+        """JSON-serializable dict — the exact `/mission/fault` payload shape."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FaultReport":
+        geo = data.get("panel_geo_position")
+        return cls(
+            panel_id=data["panel_id"],
+            fault_type=data["fault_type"],
+            confidence=float(data["confidence"]),
+            note=data.get("note", ""),
+            timestamp=data.get("timestamp", ""),
+            panel_geo_position=tuple(geo) if geo is not None else None,
+        )
 
 
 # --------------------------------------------------------------------------- #

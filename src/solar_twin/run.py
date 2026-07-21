@@ -104,7 +104,7 @@ def run(farm_path: str, mission_path: str, backend_name: str, runs_dir: str) -> 
             "wall_seconds": round(wall_s, 4),
         },
         "panels": [asdict(r) for r in result.results],
-        "fault_events": result.fault_events,
+        "fault_events": [e.to_dict() for e in result.fault_events],
     }
     (out / "results.json").write_text(json.dumps(record, indent=2))
     return out

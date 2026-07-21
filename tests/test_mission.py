@@ -87,7 +87,7 @@ def test_fault_escalates_and_writes_back():
     assert "hotspot" in stored.inspection_log[0]
     # One fault event emitted (the /mission/fault payload).
     assert len(result.fault_events) == 1
-    assert result.fault_events[0]["panel_id"] == pid
+    assert result.fault_events[0].panel_id == pid
 
 
 def test_mixed_row_detection_rate_is_one():
@@ -102,7 +102,7 @@ def test_mixed_row_detection_rate_is_one():
     assert result.panels_inspected == 5
     assert result.faults_detected == 2
     assert result.detection_rate == pytest.approx(1.0)
-    assert {e["panel_id"] for e in result.fault_events} == {
+    assert {e.panel_id for e in result.fault_events} == {
         panel_id(1, 1),
         panel_id(1, 3),
     }

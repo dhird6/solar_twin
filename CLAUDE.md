@@ -22,14 +22,17 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 
 ## Repo map
 - `configs/` — `farm.yaml`, `mission.yaml` (seeded, drive everything)
-- `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel contract)
-- `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound)
-- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default), `ros2_bridge.py`
-- `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub), `cosmos_reason.py` (later)
-- `src/solar_twin/control/` — `base.py`, `kinematic.py` (waypoint drone/bot)
+- `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel
+  contract) + `FaultReport` (the run-record/ROS 2 payload, §6.3)
+- `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound, not yet built)
+- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, not yet built), `ros2_bridge.py` (not yet built, see `docs/ROS2_CONTRACT.md`)
+- `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub, Slice 0
+  default), `cosmos_reason.py` (VLM skeleton, HTTP behind a fake-able client — not yet wired into `run.py`)
+- `src/solar_twin/control/` — `base.py`, `kinematic_math.py` (pure interp
+  math, Isaac-free), `kinematic.py` (Isaac-bound wrapper, not yet built)
 - `src/solar_twin/orchestrator/` — `mission.py` (escalation FSM), `fake_backend.py` (for tests)
 - `src/solar_twin/run.py` — entry point → writes `runs/<ts>/`
-- `tests/` — pytest, Isaac-free · `docs/` — bible, ARCHITECTURE, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
+- `tests/` — pytest, Isaac-free · `docs/` — bible, TASKS, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
 
 ## Conventions
 - **USD: Z-up, meters.** Assert on load; farm sets it at build.
