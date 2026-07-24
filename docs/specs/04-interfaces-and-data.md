@@ -88,50 +88,50 @@ keys (`dict.get`); `SLICE-3`'s false-fault harness is the first consumer.
 
 ### IF-03 — Scenario/hazard config schema (new `configs/` surface, additive)
 
-**Need:** `FR-16` (graded scenario suite) needs a config surface parallel to
-existing `farm.yaml`/`mission.yaml`, not folded into either (farm = static
-layout, mission = fleet/perception/transport wiring; hazards are a third,
-orthogonal axis that composes with both).
+**Need:** `FR-16` (graded scenario suite) needs a config surface for the
+*dynamic* hazard axis, seeded and composable, without forking `farm.yaml`.
 
-**Proposal:** `configs/scenarios/<name>.yaml`, seeded like its siblings:
+**Site vs. scenario split (revised 2026-07-24 to match shipped code).** The
+original draft folded *everything* hazard-related into a scenario file. That
+overshoots: terrain and turbine **placement** are **site geography**, not test
+knobs — the real farm sits on real ground next to real turbines at fixed
+positions. So the boundary is:
 
-```yaml
-# configs/scenarios/gust_and_shadow.yaml
-seed: 20260724
-extends: [configs/farm.yaml, configs/mission.yaml]   # composition, not duplication
+- **`farm.yaml` owns the static site** — grid, panels, georef, faults, **and now
+  `terrain:` + `turbines:` (structure: position, hub height, blade length).**
+  *This shipped* (commit `7894eb3`): `farm_builder.py` authors the heightfield
+  mesh + turbine proxies from these blocks; `world/keepout.py` derives the
+  no-fly volumes from the same `turbines:` list. Actual shipped schema:
 
-wind:
-  average_speed: 6.0        # m/s
-  speed_variation: 3.0      # gust magnitude
-  direction_variation_deg: 20.0
+  ```yaml
+  # configs/farm.yaml (excerpt, as implemented)
+  terrain:  { kind: heightfield, amplitude: 0.6, wavelength: 14.0 }
+  turbines:
+    - { pos: [9.5, -14.0], hub_height: 18.0, blade_len: 8.0, rpm: 12.0 }
+  ```
 
-turbine:
-  count: 1
-  hub_height_m: 80.0
-  rotor_diameter_m: 100.0
-  rpm: 12.0
-  thrust_coefficient: 0.8   # feeds the parametric wake model (HAZ-02)
-  position: [40.0, -30.0, 0.0]
+- **`configs/scenarios/<name>.yaml` owns the dynamic axis** — what *varies* per
+  test: wind/gust, sun/shadow angle, dust, birds, per-run turbine spin/wake
+  toggles, and `kpi_gates`. It `extends` farm + mission rather than forking them:
 
-birds:
-  count: 3
-  spawn_rate_hz: 0.1
-  trajectory: scripted      # scripted | randomized
+  ```yaml
+  # configs/scenarios/sweeping_shadow.yaml  (illustrative — loader lands SLICE-3)
+  seed: 20260724
+  extends: [configs/farm.yaml, configs/mission.yaml]
+  sun:   { elevation_deg: 12.0 }        # low sun -> long sweeping blade shadow
+  wind:  { average_speed: 0.0, speed_variation: 0.0 }
+  turbine_dynamics: { spin: true }      # rpm comes from farm.yaml turbines[]
+  kpi_gates: { false_fault_rate_max: 0.05 }
+  ```
 
-terrain:
-  source: procedural        # procedural | dem
-  max_grade_deg: 15.0
+**Field-naming note:** the shipped `turbines[]` uses `pos` / `blade_len`. When
+the parametric wake model lands (`HAZ-02`, `SLICE-2`) it will additively need
+`rotor_diameter_m` and `thrust_coefficient`; add them then (rotor_diameter ≈
+2·blade_len) rather than renaming working fields now — per the README rule that
+**the source wins and this doc follows it**.
 
-kpi_gates:                   # ties this scenario to 06-scenario-suite-and-kpis.md
-  collision_free_flight_rate: 1.0
-  false_fault_rate_max: 0.05
-```
-
-This keeps `farm.yaml` (layout/faults) and `mission.yaml` (fleet/perception/
-transport) unchanged and composable — a scenario references both rather than
-forking them.
-
-**Status:** Proposed. **Slice:** `SLICE-3`.
+**Status:** Site half (`terrain`/`turbines` in `farm.yaml`) **Locked/shipped**;
+scenario-file half **Proposed** (no loader yet). **Slice:** `SLICE-3`.
 
 ### IF-04 — Multi-robot fleet generalization (design tension — flagged, not resolved)
 
@@ -189,6 +189,40 @@ the interface layer, which is good — it means physics fidelity work in
 
 **Status:** Proposed (as a design constraint on how `SLICE-2` is implemented,
 not as a new interface). **Slice:** `SLICE-2`.
+
+### IF-07 — Keep-out enforcement (SHIPPED — recorded here for traceability)
+
+**What shipped** (commit `7894eb3`, ahead of `SLICE-2`): turbine no-fly is
+enforced at the **planning layer**, control-agnostic, satisfying `FR-09` today
+without waiting on flight dynamics.
+
+- `world/keepout.py` — pure, Isaac-free geometry: each turbine's forbidden
+  volume = rotor-swept **sphere** (`blade_len + margin`) ∪ **tower cylinder**;
+  `violation` / `clamp_out` / `segment_clear` helpers. Derived from the same
+  `farm.yaml` `turbines:` list the builder uses (single source of truth).
+- `control/safe.py::SafeControl` — wraps any `RobotControl`, vets every
+  `move_to` waypoint, **clamps** violations to the nearest safe point, logs a
+  `KeepoutEvent`, and tracks `min_clearance_m`. It is additive (`NFR-04`): the
+  ABC is unchanged; `kinematic.py` is untouched; a future Pegasus impl is
+  wrapped identically.
+- `run.py` writes a `keepout` block into the run record
+  (`{turbines, waypoints_clamped, min_clearance_m, events}`) — the direct feed
+  for `KPI-04`.
+- `farm_builder.py` additionally authors **PhysX colliders** on tower/nacelle/
+  blades + a translucent no-fly **viz sphere**. Colliders are **inert under
+  kinematic teleport**; they only physically bite once the drone has rigid-body
+  dynamics (the Pegasus graduation, `FR-06`/`SLICE-2`).
+
+**Why this is the planning layer, not physics:** with teleport control a
+collider stops nothing — the drone ignores physics. The valuable, buildable-now
+guarantee is a constraint on the *plan*, which protects the kinematic drone
+today and the PX4 drone later, unchanged. `FR-15`'s "USD invisible-collider
+zone / PX4 geofence" is the *deployment* enforcement point; `SafeControl` is the
+*planner* enforcement point — same logical constraint, complementary.
+
+**Status:** Locked (planning layer). Physics-collision + articulation remain
+Proposed at `SLICE-2` (`HAZ-01`, `RISK-11`). **Slice:** delivered early;
+tracked under `SLICE-2`.
 
 ## USD schema: explicitly NOT extended
 

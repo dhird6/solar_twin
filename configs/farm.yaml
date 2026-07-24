@@ -48,6 +48,10 @@ terrain:
 # Wind turbines co-located with the farm. Tall, with turning blades → moving
 # shadows sweep the panels (the key false-fault test) + (later) collision/wake.
 # Positions are stage-local meters (x along the row, y front-to-back).
+# This block is SITE GEOGRAPHY (fixed placement). The DYNAMIC hazard axis —
+# wind, sun/shadow angle, dust, birds, per-run spin/wake toggles — belongs in
+# configs/scenarios/*.yaml (see docs/specs/04-interfaces-and-data.md IF-03),
+# not here, so scenarios compose the farm rather than forking it.
 turbines:
   - { pos: [9.5, -14.0], hub_height: 18.0, blade_len: 8.0, rpm: 12.0 }
   - { pos: [2.0, 16.0],  hub_height: 16.0, blade_len: 7.0, rpm: 10.0 }

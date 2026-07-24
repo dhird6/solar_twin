@@ -42,6 +42,12 @@ explicitly multi-quarter — do not compress it.
 - **Deliverables:** Pegasus-backed `RobotControl` impl; `world/hazard_builder.py`
   (or equivalent) for turbine + force fields; `SC-02`, `SC-03`, `SC-04`,
   `SC-08` scenario configs.
+- **Precursors already shipped (2026-07-24, commit `7894eb3`):** the
+  planning-layer keep-out (`SafeControl` + `world/keepout.py`, `IF-07`) — `FR-09`
+  is done; kinematic spun-turbine proxies + a heightfield **mesh**; PhysX
+  colliders authored (inert). **Remaining for this slice:** Pegasus/PX4 control,
+  `omni.physx.forcefields` wind/wake, turbine as a real *articulation* whose
+  colliders fire (`RISK-11`), and heightfield **trimesh collision** (`RISK-14`).
 - **Exit criteria:** drone flies a coverage pass under gust, holds station
   within `KPI-05` bounds, avoids the keep-out (`KPI-04` = 1.0 on `SC-03`/
   `SC-04`); ground bot passes `SC-08` at the declared max grade.
@@ -57,6 +63,11 @@ explicitly multi-quarter — do not compress it.
   exists).
 - **Deliverables:** `SC-05`, `SC-06` scenario configs; `IF-02` (environment
   context enrichment) implemented; `KPI-03` measurement harness.
+- **Precursors already shipped (2026-07-24):** blade-shadow-casting geometry
+  (spun turbines over the panel row) and a first `KPI-03` datapoint — live
+  Cosmos Reason held "clean" 0/6 under moderate sweeping shadow. This slice
+  extends that to a proper harness (low-sun `SC-05`, motion blur `SC-06`,
+  worst-case shadow bisecting the cells) via Sensor RTX/`ovrtx`.
 - **Exit criteria:** `KPI-03` measured and reported (no fixed pass/fail
   threshold yet — this slice establishes the baseline the project will drive
   down); `KPI-01` on `SC-01`/`SC-02` has not regressed.

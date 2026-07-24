@@ -15,6 +15,14 @@ tracking rather than narrative.
   collision, **plus** a precomputed conservative swept-disk keep-out
   cylinder/annulus that the planner treats as a hard no-fly constraint — the
   planner must never rely on instantaneous collision alone (`FR-09`, `FR-11`).
+- **Status (2026-07-24):** the **planning-layer keep-out is already shipped and
+  enforced** — `world/keepout.py` (rotor-sphere∪tower) + `control/safe.py`
+  (`SafeControl` clamps every waypoint) + a run-record `keepout` audit block
+  (`IF-07`). PhysX colliders + a no-fly viz sphere are authored but **inert
+  under kinematic teleport**. Still **pending** (`SLICE-2`): the turbine as a
+  real *articulation* (today it's a kinematic spun Xform — shadow-adequate for
+  `HAZ-07`, not yet a physics collider that fires) and collision verification
+  (`RISK-11`).
 - **Fidelity trade-off:** none claimed here — this is meant to be a real
   safety margin, not an approximation. The open item is whether articulation
   collider cooking behaves as expected on the installed build.
