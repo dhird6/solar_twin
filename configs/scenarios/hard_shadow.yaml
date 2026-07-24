@@ -1,0 +1,34 @@
+# hard_shadow — reliable worst-case KPI-03 false-fault test (HAZ-07).
+#
+# Option B for the false-fault stressor: instead of an intermittent, geometry-
+# sensitive turbine blade shadow (SC-05, which sailed over the elevated panels
+# onto the ground), a thin occluder bar is suspended UP-SUN of the row so its
+# shadow lands as a hard line ACROSS every panel surface — reliable, phase-
+# independent, and hitting all 10 healthy panels. Any fault verdict is a FALSE
+# fault. Tests the shading-vs-soiling distinction added to the taxonomy prompt.
+#
+#   ./python.sh -m solar_twin.world.farm_builder --scenario configs/scenarios/hard_shadow.yaml --out assets/scn.usd
+#   ./python.sh -m solar_twin.run --scenario configs/scenarios/hard_shadow.yaml --backend sim_native --farm-usd assets/scn.usd
+
+name: hard_shadow
+seed: 20260724
+
+extends:
+  farm: configs/farm.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM
+
+farm_overrides:
+  faults:
+    rate: 0.0            # all healthy -> any fault = false fault
+    states: []
+  sun:
+    elevation_deg: 45.0  # occluder placement is derived from this
+    azimuth_deg: 0.0
+  turbines: []           # isolate the shading stressor (no turbine)
+  shading:
+    enabled: true
+    height: 2.4          # bar height (m); placement up-sun is derived from sun elev
+    thickness: 0.18      # a crisp, hard shadow line across the panels
+
+kpi_gates:
+  false_fault_rate_max: 0.05

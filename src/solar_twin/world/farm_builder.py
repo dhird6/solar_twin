@@ -45,6 +45,7 @@ _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
     "frame": ((0.62, 0.63, 0.66), (0.0, 0.0, 0.0), 0.3, 0.9),           # aluminium rail
     "ground": ((0.17, 0.14, 0.10), (0.0, 0.0, 0.0), 1.0, 0.0),          # dry earth (kept dark so the sun doesn't blow it out)
     "turbine": ((0.9, 0.9, 0.92), (0.0, 0.0, 0.0), 0.35, 0.0),          # off-white tower/blade
+    "structure": ((0.30, 0.30, 0.33), (0.0, 0.0, 0.0), 0.6, 0.4),       # dark strut / occluder
 }
 
 # How finely to tessellate the heightfield ground mesh (verts per axis).
@@ -215,6 +216,44 @@ def _keepout_viz_material(stage) -> UsdShade.Material:
     return mat
 
 
+def _build_shading_occluder(stage, farm_cfg, layout, material) -> bool:
+    """Author a thin bar suspended UP-SUN of the row so its shadow falls as a hard
+    line ACROSS the elevated panel surfaces (not the ground).
+
+    The subtlety SC-05 exposed: a distant turbine's shadow sails over the ~0.8 m
+    panels onto the ground. To land a shadow ON the tilted panel plane, the
+    occluder must sit on the sun side, just above panel height, so the cast ray
+    intersects the panel. Placement is derived from the sun angle in `sun:` so it
+    stays correct if the elevation changes. This is the reliable, phase-independent
+    'shading' stressor for KPI-03 (vs the turbine's intermittent blade shadow)."""
+    spec = farm_cfg.get("shading", {}) or {}
+    if not spec.get("enabled", False):
+        return False
+    import math
+
+    sun = farm_cfg.get("sun", {}) or {}
+    elev = math.radians(float(sun.get("elevation_deg", 45.0)))
+    panel = farm_cfg.get("panel", {})
+    h_p = float(panel.get("mount_height", 0.75)) + float(panel.get("height", 0.05))
+    # Bar height above ground, and how far up-sun (+Y) it must sit so its shadow
+    # lands on the row at panel height: dY = (z_bar - h_p) / tan(elev).
+    z_bar = float(spec.get("height", h_p + 1.6))
+    dy = (z_bar - h_p) / max(0.2, math.tan(elev))
+    thick = float(spec.get("thickness", 0.18))
+    # Span the whole row in X (plus overhang) so every panel gets the shadow line.
+    ox = layout.origin[0]
+    span_x = layout.cols * layout.col_pitch + 2.0
+    cx = ox + (layout.cols - 1) * layout.col_pitch / 2.0
+    bar = UsdGeom.Cube.Define(stage, "/World/ShadingBar")
+    bar.CreateSizeAttr(1.0)
+    api = UsdGeom.XformCommonAPI(bar)
+    api.SetTranslate(Gf.Vec3d(cx, layout.origin[1] + dy, z_bar))
+    api.SetScale(Gf.Vec3f(span_x, thick, thick))
+    _bind(bar.GetPrim(), material)
+    print(f"  shading occluder: bar at y={dy:.2f} z={z_bar:.2f} (sun elev {math.degrees(elev):.0f})")
+    return True
+
+
 def _build_ground_heightfield(stage, farm_cfg, layout, material) -> None:
     """A tessellated ground mesh sampling the SAME terrain_height() the panels and
     waypoints use, so the visible ground matches where things are mounted. Flat
@@ -329,12 +368,18 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
     # --- lighting: a directional sun (relief/shadows) + dome ambient fill ----
     sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
-    sun.CreateIntensityAttr(2400.0)
     sun.CreateAngleAttr(0.53)  # sun's angular diameter -> soft shadow edges
     sun.CreateColorAttr(Gf.Vec3f(1.0, 0.97, 0.9))
-    # Point it down from the south-west (elevation ~50°): tilt about X, spin about Z.
+    # Sun elevation/azimuth are scenario knobs: a LOW sun casts long turbine-blade
+    # shadows across the row (the SC-05 false-fault stressor). elevation_deg maps
+    # to -X tilt (90 = overhead/noon, ~14 = near horizon); azimuth_deg to Z spin.
+    sun_cfg = farm_cfg.get("sun", {}) or {}
+    elev = float(sun_cfg.get("elevation_deg", 50.0))
+    azim = float(sun_cfg.get("azimuth_deg", 25.0))
+    # Dim a low sun a little (grazing light is less intense) so frames don't blow out.
+    sun.CreateIntensityAttr(2400.0 if elev >= 30.0 else 1700.0)
     UsdGeom.XformCommonAPI(sun).SetRotate(
-        (-50.0, 0.0, 25.0), UsdGeom.XformCommonAPI.RotationOrderXYZ
+        (-elev, 0.0, azim), UsdGeom.XformCommonAPI.RotationOrderXYZ
     )
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
     dome.CreateIntensityAttr(300.0)  # ambient fill only; sun does the modelling
@@ -348,6 +393,9 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
     # --- ground: heightfield mesh sampling the shared terrain function --------
     _build_ground_heightfield(stage, farm_cfg, layout, looks["ground"])
+
+    # --- optional shading occluder (KPI-03 hard-shadow stressor) --------------
+    _build_shading_occluder(stage, farm_cfg, layout, looks["structure"])
 
     pdim = farm_cfg.get("panel", {})
     tilt_deg = float(pdim.get("tilt_deg", 20.0))
@@ -461,10 +509,23 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Build the procedural USD farm.")
-    ap.add_argument("farm", help="path to farm.yaml")
+    ap.add_argument("farm", nargs="?", help="path to farm.yaml (omit with --scenario)")
+    ap.add_argument(
+        "--scenario",
+        help="build the composed farm from a scenario YAML (sun/faults/turbine "
+        "overrides applied) instead of a bare farm.yaml",
+    )
     ap.add_argument("--out", default="assets/farm.usd", help="output USD path")
     args = ap.parse_args(argv)
-    build(_load_farm_cfg(args.farm), args.out)
+    if args.scenario:
+        from solar_twin.scenario import load_scenario
+
+        farm_cfg = load_scenario(args.scenario).farm_cfg
+    elif args.farm:
+        farm_cfg = _load_farm_cfg(args.farm)
+    else:
+        ap.error("provide a farm.yaml path, or --scenario")
+    build(farm_cfg, args.out)
     return 0
 
 

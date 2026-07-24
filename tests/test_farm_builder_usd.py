@@ -104,6 +104,29 @@ def test_healthy_panel_has_no_dust_film(tmp_path):
     assert not [p for p in stage.Traverse() if p.GetName() == "DustFilm"]
 
 
+def test_shading_occluder_authored_only_when_enabled(tmp_path):
+    # Off by default (base FARM has no `shading` block).
+    base = _build(tmp_path)
+    assert not [p for p in base.Traverse() if p.GetName() == "ShadingBar"]
+
+    # Enabled -> a renderable bar suspended up-sun (+Y) and above the panels.
+    farm = dict(
+        FARM,
+        sun={"elevation_deg": 45.0, "azimuth_deg": 0.0},
+        shading={"enabled": True, "height": 2.4, "thickness": 0.18},
+    )
+    out = tmp_path / "shaded.usd"
+    farm_builder.build(farm, str(out))
+    stage = Usd.Stage.Open(str(out))
+    bars = [p for p in stage.Traverse() if p.GetName() == "ShadingBar"]
+    assert len(bars) == 1
+    t, _, _, _, _ = UsdGeom.XformCommonAPI(bars[0]).GetXformVectors(Usd.TimeCode.Default())
+    assert t[1] > 0.0, "occluder must sit up-sun (+Y) of the row to shadow it"
+    assert t[2] > 0.8, "occluder must be above panel height to cast onto the surface"
+    purpose = UsdGeom.Imageable(bars[0]).GetPurposeAttr().Get()
+    assert purpose in (None, UsdGeom.Tokens.default_), "occluder must be renderable"
+
+
 def test_turbine_and_panels_are_renderable(tmp_path):
     """The inverse guard: real scene content must NOT be guide-purpose, or the
     turbine would stop casting the blade shadows the false-fault test needs."""

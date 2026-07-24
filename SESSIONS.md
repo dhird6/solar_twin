@@ -17,6 +17,43 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-24 — Session 8: SLICE-3 false-fault harness (KPI-03) — built, first measurement is a honest null
+**Built + tested (74 Isaac-free tests pass), on branch `feat/slice3-false-fault-kpi03` (stacked on #4):**
+- **Scenario layer** `src/solar_twin/scenario.py` (IF-03): composes `farm.yaml` +
+  `mission.yaml` and deep-merges a dynamic-hazard override layer (`farm_overrides`
+  / `mission_overrides`) + `kpi_gates`. Pure, Isaac-free. `--scenario` flag added to
+  both `farm_builder` and `run`.
+- **KPI-03** `MissionResult.false_fault_rate` = fraction of HEALTHY panels misread
+  as faulted; in the run record. Sun elevation now a config knob in `farm_builder`.
+- **SC-05** `configs/scenarios/sweeping_shadow.yaml`: all-healthy panels + low-ish
+  sun + one turbine, blades spinning → a blade shadow meant to sweep the row.
+
+**⚠ FIRST MEASUREMENT = KPI-03 0.00, but it's a HOLLOW null — do not trust it as
+"VLM is shadow-robust".** Root cause found by looking at the actual frame: **the
+turbine shadow lands on the GROUND, not on the panels.** Panels are mounted ~0.8 m
+up and tilted toward the sun, so a distant occluder's shadow sails *over* them onto
+the ground beyond. The drone (straight down over a panel) sees a fully-lit panel
+with shadow on the surrounding ground; the VLM correctly reported *"no signs of
+shadows"*. My brightness-dip check (C004/C005 ~85 vs ~120) was measuring the dark
+GROUND in-frame, not a shadowed panel — a near-miss that would have shipped a
+confidently-wrong "0% false faults, shadow-robust" claim. (This is the exact
+`NFR-07`/"no silent caps" failure the harness exists to prevent — the metric was
+right, the STIMULUS was absent.)
+
+**Geometry lessons banked:** shadow LENGTH must match turbine→row distance (elev 16°
+overshot a 12 m-away row by ~40 m); shadow DIRECTION = -Y for a +X sun tilt, so the
+turbine must sit on the +Y side to cast back across the row; and landing a shadow on
+the ELEVATED tilted panel surface (not the ground) is precise, intermittent geometry
+for a thin spinning blade.
+
+**Open decision (asked user):** how to make the KPI-03 stimulus real —
+(A) precise blade-on-panel turbine geometry [faithful, fiddly, intermittent];
+(B) a dedicated close occluder casting a hard shadow across each panel surface
+[reliable worst-case, = the "shading" hazard, one-shot]; or (C) ship SC-05 honestly
+as a weak stimulus and track "shadow-on-panel" as a refinement. Recommended **B first**
+(real number, tests the shading-vs-soiling distinction) then **A** as the turbine version.
+Nothing committed yet on this branch.
+
 ## 2026-07-24 — Session 7: Environment realism + turbine keep-out + vision/specs ✅ (PR #2 merged to main)
 **Done — all merged to `main` via PR #2. Made the sim world recognizable + safe, and wrote down where it's going.**
 - **Render fix — the "featureless frame" bug.** The pre-fix Cosmos run saw flat

@@ -112,9 +112,14 @@ def run(
     backend_name: str,
     runs_dir: str,
     sim_opts: dict | None = None,
+    farm_cfg: dict | None = None,
+    mission_cfg: dict | None = None,
+    scenario_name: str | None = None,
 ) -> Path:
-    farm_cfg = _load_yaml(farm_path)
-    mission_cfg = _load_yaml(mission_path)
+    # Pre-composed dicts (from a scenario) win over path loading, so a scenario
+    # variant runs through the exact same pipeline without temp config files.
+    farm_cfg = farm_cfg if farm_cfg is not None else _load_yaml(farm_path)
+    mission_cfg = mission_cfg if mission_cfg is not None else _load_yaml(mission_path)
 
     layout = FarmLayout(farm_cfg)
     transport, control = _build_backend(
@@ -169,6 +174,7 @@ def run(
     record = {
         "timestamp": ts,
         "backend": backend_name,
+        "scenario": scenario_name,
         "seed": farm_cfg.get("seed"),
         "n_panels": layout.n_panels,
         "injected_faults": {pid: s.value for pid, s in faults.items()},
@@ -176,6 +182,7 @@ def run(
             "panels_inspected": result.panels_inspected,
             "faults_detected": result.faults_detected,
             "detection_rate": result.detection_rate,
+            "false_fault_rate": result.false_fault_rate,  # KPI-03
             "sim_steps": result.steps,
             "wall_seconds": round(wall_s, 4),
         },
@@ -229,8 +236,13 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run a Slice 0 inspection mission.")
-    ap.add_argument("farm", help="path to farm.yaml")
-    ap.add_argument("mission", help="path to mission.yaml")
+    ap.add_argument("farm", nargs="?", help="path to farm.yaml (omit with --scenario)")
+    ap.add_argument("mission", nargs="?", help="path to mission.yaml (omit with --scenario)")
+    ap.add_argument(
+        "--scenario",
+        help="path to a scenario YAML (composes farm+mission + hazard overrides "
+        "+ kpi_gates, per docs/specs IF-03). Overrides the positional configs.",
+    )
     ap.add_argument(
         "--backend",
         default="sim_native",
@@ -265,9 +277,29 @@ def main(argv: list[str] | None = None) -> int:
         "save_usd": args.save_usd,
         "record": args.record,
     }
+
+    farm_cfg = mission_cfg = scenario_name = None
+    if args.scenario:
+        from solar_twin.scenario import load_scenario
+
+        scn = load_scenario(args.scenario)
+        farm_cfg, mission_cfg, scenario_name = scn.farm_cfg, scn.mission_cfg, scn.name
+        print(f"scenario: {scn.name}  kpi_gates={scn.kpi_gates or '{}'}", flush=True)
+    elif not (args.farm and args.mission):
+        ap.error("provide farm and mission paths, or --scenario")
+
     # run() writes + prints the record before closing the sim (which may
     # terminate the process), so no extra printing is needed here.
-    run(args.farm, args.mission, args.backend, args.runs_dir, sim_opts)
+    run(
+        args.farm,
+        args.mission,
+        args.backend,
+        args.runs_dir,
+        sim_opts,
+        farm_cfg=farm_cfg,
+        mission_cfg=mission_cfg,
+        scenario_name=scenario_name,
+    )
     return 0
 
 

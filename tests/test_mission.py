@@ -123,3 +123,35 @@ def test_steps_counted():
     backend, result = _run([PanelState.HEALTHY, PanelState.HOTSPOT])
     # 2 steps for healthy (advance+screen), 3 for fault (advance+screen+confirm).
     assert result.steps == 5
+
+
+def test_false_fault_rate_counts_only_misread_healthy_panels():
+    from solar_twin.orchestrator.mission import MissionResult, PanelResult
+
+    def pr(pid, injected, detected):
+        return PanelResult(pid, injected, "clean", detected != "healthy", detected, "")
+
+    res = MissionResult(
+        results=[
+            pr("A", "healthy", "healthy"),   # healthy, correct
+            pr("B", "healthy", "soiled"),    # healthy -> FALSE fault
+            pr("C", "healthy", "hotspot"),   # healthy -> FALSE fault
+            pr("D", "soiled", "healthy"),    # a real fault MISSED — not a false fault
+        ]
+    )
+    # 2 of 3 healthy panels were misread; the soiled panel is excluded.
+    assert res.false_fault_rate == pytest.approx(2 / 3)
+
+
+def test_false_fault_rate_zero_when_all_healthy_correct():
+    from solar_twin.orchestrator.mission import MissionResult, PanelResult
+
+    res = MissionResult(
+        results=[
+            PanelResult("A", "healthy", "clean", False, "healthy", ""),
+            PanelResult("B", "healthy", "clean", False, "healthy", ""),
+        ]
+    )
+    assert res.false_fault_rate == 0.0
+    # No healthy panels -> defined as 0.0, never a divide-by-zero.
+    assert MissionResult(results=[]).false_fault_rate == 0.0
