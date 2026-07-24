@@ -21,14 +21,49 @@
 - **Isaac Sim build commit:** `045ca8b` ("Isaac Sim Update 6.0.1", 2026-06-22).
 - **ROS 2 bridge extension:** `isaacsim.ros2.bridge-5.1.2` (loads system rclpy).
 - **Perception backend = Cosmos Reason (NOT Qwen).** `perception/cosmos_reason.py`
-  targets **NVIDIA Cosmos Reason** (physical-AI VLM, served via NIM / an
-  OpenAI-compatible endpoint) — that is the intended brain behind the
-  `Perception` interface. A `Qwen2.5-VL-72B` vLLM that was running on
-  `localhost:8000` is unrelated to this project and has been **stopped/disabled**
-  (see the vLLM note in SESSIONS.md) to free the GB10 for Isaac Sim; do not wire
-  it into perception. Cosmos was never a system-wide service here yet — standing
-  up the Cosmos Reason NIM is a prerequisite before flipping
-  `mission.yaml: perception: cosmos_reason`.
+  targets **NVIDIA Cosmos Reason** (physical-AI VLM, `cosmos-reason1-7b`, a
+  Qwen2.5-VL-7B arch) behind an OpenAI-compatible endpoint — the brain behind the
+  `Perception` interface. The unrelated `Qwen2.5-VL-72B` vLLM that used to run on
+  `localhost:8000` is stopped/disabled; do not wire it into perception. The
+  **code side is fully wired and verified live** on this box: `cosmos_reason.py`
+  encodes a camera frame (the `H x W x {3,4}` uint8 array from
+  `Transport.capture`) into an OpenAI-style `image_url` PNG data-URL part; a live
+  `assess`/`diagnose` round-trip through the real HTTP client + a served model
+  succeeds. Flip `mission.yaml: perception: cosmos_reason` (opts already point at
+  the local server) once the server below is up.
+
+## Serving Cosmos Reason on the Spark (GB10 / sm_121)
+**The NVIDIA Cosmos Reason *NIM* does NOT run on this GB10.** Tested
+`nvcr.io/nim/nvidia/cosmos-reason1-7b:1.4.0` (and `:1.4.1`): weights load, then the
+engine dies during vision-encoder profiling with
+`'sm_121' is not a recognized processor ... LLVM ERROR: Cannot select: intrinsic
+llvm.nvvm.shfl.sync.bfly.i32`. Root cause: the NIM's bundled Triton/LLVM/PyTorch is
+compiled only through `sm_120`; the GB10 is `sm_121`. This is a known
+ecosystem-wide gap (NVIDIA dev forum "NIM LLM Containers Fail on DGX Spark (GB10)";
+vLLM issue #36821). `NIM_DISABLE_CUDA_GRAPH=1` (→ `enforce_eager`) does **not** fix
+it — the Triton JIT path still targets `sm_121`.
+
+**What works: mainline vLLM built for `sm_121a`** (`sm_121` is binary-compatible
+with `sm_120`). Serve the model's bf16 HF weights (already cached locally by the
+NIM pull, under `~/.cache/nim/ngc/hub/models--nim--nvidia--cosmos-reason1-7b/`, rev
+`1.1-bf16-hf`) with the cu130-nightly image. Mount the **whole repo dir** (not just
+the snapshot — its files are symlinks into `../../blobs/`):
+```bash
+REPO=~/.cache/nim/ngc/hub/models--nim--nvidia--cosmos-reason1-7b
+docker run -d --name vllm-cosmos --ipc=host --gpus all -p 8000:8000 \
+  -v "$REPO":/models/repo:ro \
+  vllm/vllm-openai:cu130-nightly \
+  /models/repo/snapshots/1.1-bf16-hf \
+  --served-model-name nvidia/cosmos-reason1-7b \
+  --trust-remote-code --max-model-len 32768 \
+  --gpu-memory-utilization 0.85 --max-num-seqs 4
+```
+Ready in ~3–4 min (weights load ~100 s, then warmup); health: `curl localhost:8000/v1/models`.
+⚠ `--gpu-memory-utilization 0.85` grabs ~98 GB of the unified 121 GB — fine for
+perception alone, but **lower it (~0.4) when running Isaac Sim + vLLM together**
+on this one GB10, or the sim will OOM. ⚠ `cu130-nightly` is a moving tag; pin a
+digest for reproducibility. ⚠ eager-ish paths → first-token latency is slow, so
+`perception_opts.timeout` is set to 120 s.
 
 ## Key finding — `usd-core` has no aarch64 wheel
 `pip install usd-core` fails on this box (`No matching distribution found`, py3.12

@@ -18,16 +18,22 @@ applied to the VLM call instead of the sim). `_HttpChatClient` is the real
 implementation; it only touches the network inside `.complete()`, never on
 import, so nothing here requires the Spark's vLLM server to be running.
 
-Frame encoding (turning a real camera frame into a VLM image payload) is left
-as a TODO for whoever wires this into the sim-native/ROS 2 world on the Spark
-(Track S) — Slice 0 exercises this class with `frame=None` and asserts on the
-text prompt + response parsing only.
+Frame encoding (turning a real camera frame into a VLM image payload) is
+handled by `_frame_to_data_url`: a raw camera frame — the ``H x W x {3,4}``
+uint8 ndarray that `SimRuntime.capture` / `Transport.capture` returns — is
+converted to a PNG ``data:`` URL and attached as an OpenAI-style ``image_url``
+content part. It fails soft: any missing codec / bad frame falls back to a
+text-only prompt rather than crashing the mission, and all heavy imports
+(numpy, an image codec) are lazy so importing this module still needs neither
+them nor Isaac. Slice 0 tests exercise both paths (`frame=None` → text-only;
+a small ndarray → image part).
 
 Pure-python: no Isaac import.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -87,6 +93,46 @@ class _HttpChatClient:
         return body["choices"][0]["message"]["content"]
 
 
+def _frame_to_data_url(frame: Frame) -> str | None:
+    """Encode a raw camera frame as a PNG ``data:`` URL for an OpenAI-style
+    ``image_url`` content part, or return None (caller sends text-only).
+
+    Accepts the ``H x W x {3,4}`` uint8 ndarray that `Transport.capture`
+    returns (RGB or RGBA — the alpha channel is dropped). Fails soft on a
+    missing frame, an unexpected shape, or a missing image codec: it returns
+    None so a flaky sensor / thin runtime degrades to a text prompt instead of
+    crashing the mission. numpy and the codec are imported lazily, so importing
+    this module never requires them (Slice 0 runs text-only)."""
+    if frame is None:
+        return None
+    try:
+        import io
+
+        import numpy as np
+
+        arr = np.asarray(frame)
+        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+            return None
+        rgb = arr[..., :3]
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+        buf = io.BytesIO()
+        try:
+            from PIL import Image  # noqa: PLC0415 — lazy: no codec needed on import
+
+            Image.fromarray(rgb, mode="RGB").save(buf, format="PNG")
+        except ImportError:
+            import imageio.v2 as imageio  # noqa: PLC0415 — Isaac-runtime fallback
+
+            imageio.imwrite(buf, rgb, format="png")
+
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception:  # noqa: BLE001 — vision is best-effort; degrade to text
+        return None
+
+
 def _parse_json_response(raw: str) -> dict[str, Any]:
     """VLMs often wrap JSON in prose or a code fence; extract the first
     ``{...}`` block. Falls back to ``{}`` (callers apply fail-safe defaults)
@@ -143,9 +189,19 @@ class CosmosReasonPerception(Perception):
             self.client = _HttpChatClient(self.base_url)
 
     def _messages(self, prompt: str, frame: Frame) -> list[dict]:
-        # TODO (Track S, on the Spark): encode `frame` as an image_url content
-        # part once a real camera frame exists; Slice 0 runs text-only.
-        return [{"role": "user", "content": prompt}]
+        data_url = _frame_to_data_url(frame)
+        if data_url is None:
+            # No frame (or no codec) — text-only, as in Slice 0.
+            return [{"role": "user", "content": prompt}]
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
 
     def _complete(self, prompt: str, frame: Frame) -> str:
         try:

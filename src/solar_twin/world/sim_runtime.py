@@ -38,7 +38,9 @@ class SimRuntime:
 
         import isaacsim.core.experimental.utils.app as app_utils
         import omni.usd
-        from pxr import Gf, UsdGeom
+        from pxr import Gf, Usd, UsdGeom
+
+        self._Usd = Usd
 
         app_utils.enable_extension("omni.replicator.core")
         self._app.update()
@@ -74,6 +76,12 @@ class SimRuntime:
             # Camera looks down its local -Z (drone hovers above the panel). Mount
             # it 0.3 m below the drone origin so the marker cube doesn't occlude it.
             UsdGeom.XformCommonAPI(cam).SetTranslate(Gf.Vec3d(0.0, 0.0, -0.3))
+            # Wide FOV (~73° horiz) so a panel plus surrounding context is in frame
+            # rather than one flat colour filling the image (the "featureless frame"
+            # bug). Detail comes from the low-standoff confirm pass, not a tele lens.
+            cam.CreateFocalLengthAttr(14.0)
+            cam.CreateHorizontalApertureAttr(20.955)
+            cam.CreateVerticalApertureAttr(15.29)
             cam.CreateClippingRangeAttr(Gf.Vec2f(0.01, 1000.0))
             rp = rep.create.render_product(cam_path, resolution)
             annot = rep.AnnotatorRegistry.get_annotator("rgb")
@@ -87,6 +95,20 @@ class SimRuntime:
             UsdGeom.Xform.Define(self._stage, path)
             self._add_marker(path, size=0.4)
             self._robot_paths[rid] = path
+
+        # Discover turbine hubs authored by farm_builder so we can spin the
+        # blades each update (moving shadows sweep the panels — the false-fault
+        # test). Each hub carries an `st:rpm` attr; convert to deg/update
+        # (assume ~30 updates/s — this is a visual proxy, not a physics rotor).
+        self._turbines: list[tuple[object, float, list[float]]] = []
+        turbines_root = self._stage.GetPrimAtPath("/World/Turbines")
+        if turbines_root and turbines_root.IsValid():
+            for prim in Usd.PrimRange(turbines_root):
+                if prim.GetName() != "Hub":
+                    continue
+                rpm_attr = prim.GetAttribute("st:rpm")
+                rpm = float(rpm_attr.Get()) if rpm_attr and rpm_attr.IsValid() else 10.0
+                self._turbines.append([prim, rpm * 0.2, [0.0]])
 
         # Optional fixed bird's-eye camera for a run video.
         self._overview_annot = None
@@ -113,7 +135,18 @@ class SimRuntime:
 
     def step(self, n: int = 1) -> None:
         for _ in range(n):
+            self._spin_turbines()
             self._app.update()
+
+    def _spin_turbines(self) -> None:
+        """Advance each turbine hub's rotation (about local +Y) one update-tick,
+        so blades turn and their shadows sweep across the panels."""
+        for prim, dps, angle in self._turbines:
+            angle[0] = (angle[0] + dps) % 360.0
+            self._UsdGeom.XformCommonAPI(prim).SetRotate(
+                (0.0, angle[0], 0.0),
+                self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+            )
 
     def is_running(self) -> bool:
         return self._app.is_running()

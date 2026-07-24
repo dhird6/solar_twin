@@ -17,6 +17,39 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-21 — Session 6: Cosmos Reason live on the GB10 ✅ (real VLM perception)
+**Done — the "cheat" detector is now the real thing.**
+- **Code wiring:** `cosmos_reason.py` frame-encoding TODO resolved. New
+  `_frame_to_data_url()` turns the `H×W×{3,4}` uint8 frame from
+  `Transport.capture` into a PNG `data:` URL; `_messages()` attaches it as an
+  OpenAI `image_url` part. Fails soft (no frame/codec → text-only). numpy/PIL/
+  imageio all lazy — module still imports Isaac-free. +4 tests (RGBA/RGB/
+  malformed/none). Full suite **56 passed, 1 skipped**.
+- **Served the model on the Spark.** ⚠ **The Cosmos Reason NIM does NOT run on
+  GB10.** `nvcr.io/nim/nvidia/cosmos-reason1-7b:1.4.0`/`:1.4.1` load weights then
+  crash in vision-encoder profiling: `sm_121 ... LLVM ERROR: Cannot select
+  llvm.nvvm.shfl.sync.bfly.i32` (bundled Triton/LLVM compiled only ≤ sm_120;
+  known ecosystem issue — vLLM #36821, NVIDIA DGX Spark forum).
+  `NIM_DISABLE_CUDA_GRAPH=1` didn't help. **Fix: mainline vLLM
+  `vllm/vllm-openai:cu130-nightly` (sm_121a)** serving the bf16 HF weights the NIM
+  had already cached (`~/.cache/nim/ngc/hub/models--nim--nvidia--cosmos-reason1-7b`,
+  rev `1.1-bf16-hf`; mount the whole repo dir — files are symlinks into blobs).
+  Full recipe in `docs/ENVIRONMENT.md` → "Serving Cosmos Reason on the Spark".
+- **Verified live:** container `vllm-cosmos` on `:8000`, served id
+  `nvidia/cosmos-reason1-7b`. Ran `CosmosReasonPerception` (real HTTP + image
+  payload) against a synthetic panel frame → model described the image and
+  returned parseable `Verdict`/`Diagnosis`. Pipeline confirmed (detection
+  accuracy on real frames is future work).
+- **Config:** `mission.yaml` `perception_opts` now points at the local server
+  (timeout 120s); default kept `perception: ground_truth` (works w/o GPU) — flip
+  to `cosmos_reason` when the server's up.
+
+**State:** vLLM container `vllm-cosmos` running (holds ~98 GB unified @ util 0.85).
+NGC key staged at `~/.ngc_api_key` (0600). Changes NOT yet committed.
+**Next:** (1) commit this work on a branch; (2) drive `sim_native` + `cosmos_reason`
+together — **lower vLLM `--gpu-memory-utilization` to ~0.4 first** or Isaac Sim OOMs
+on the shared GB10; (3) detection tuning on real sim frames; (4) pin a vLLM digest.
+
 ## 2026-07-21 — Session 5: Integrate Track N (teammate) into main
 Merged `ID_1--Project-Setup` (Track N, normal-machine work) into the DGX branch
 on an integration branch. Kept both halves: my Isaac world (farm_builder,

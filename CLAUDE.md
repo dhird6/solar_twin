@@ -5,11 +5,11 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 <!-- Maintainer note: keep this file under ~200 lines and command-first. Move procedures to docs/ or .claude/rules/. -->
 
 ## Golden rules (read every time)
-- **Platform is a DGX Spark: aarch64, CUDA ≥ 13, cu13 PyTorch.** Isaac Sim 5.1 is built from source; Isaac Lab is symlinked to it (`_isaac_sim`). Exact build/versions are in `docs/ENVIRONMENT.md`.
+- **Platform is a DGX Spark: aarch64, CUDA ≥ 13, cu13 PyTorch.** Isaac Sim **6.0.1** is built from source (per `docs/ENVIRONMENT.md`, verified from `IsaacSim/VERSION`); Isaac Lab is symlinked to it (`_isaac_sim`, version ⚠ verify). Exact build/versions are in `docs/ENVIRONMENT.md`.
 - **Isaac-bound code runs only under Isaac Sim's Python** (`./python.sh`). Pure-python code (orchestrator, perception interfaces, transport/base, tests) must import WITHOUT Isaac — keep every `import omni`/`isaacsim`/`pxr` inside `world/`, `transport/sim_native.py`, `transport/ros2_bridge.py`.
 - **No GUI-only steps in the pipeline.** Everything reproducible is a Python entry point + a config in `configs/`. The Isaac Sim UI is for inspection, never construction.
 - **The USD stage is the source of truth for panel state.** Read/write panel fields via `src/solar_twin/schema/pv_module.py` — never a side store during sim.
-- **Version-specific Isaac APIs and asset paths drift between releases. Verify against the installed 5.1 build; do not trust remembered snippets** (including ones in the bible). If unsure, say so and check the docs.
+- **Version-specific Isaac APIs and asset paths drift between releases. Verify against the installed 6.0.1 build; do not trust remembered snippets** (including ones in the bible). If unsure, say so and check the docs.
 - **Default Transport is sim-native**, not ROS 2 — the Spark has reported ROS 2 sensor-rendering quirks. ROS 2 is behind an interface and optional until proven (see `docs/ENVIRONMENT.md`).
 
 ## Environment / how to run
@@ -54,7 +54,7 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 A change is done when: the closest `pytest` tests pass, new logic has a test that runs without Isaac, and any behavior change is reflected in `docs/` if it touches a contract (schema, coordinates, ROS 2 topics, or an interface).
 
 ## Stack & tooling (know these; full catalog in `docs/STACK.md`)
-- **Sim/world:** Isaac Sim 5.1, Isaac Lab 3.0, OpenUSD, Omniverse Libraries (headless), Sensor RTX, NuRec, Warp.
+- **Sim/world:** Isaac Sim 6.0.1 (installed build — see `docs/ENVIRONMENT.md`), Isaac Lab (version ⚠ verify), OpenUSD, Omniverse Libraries (headless), Sensor RTX, NuRec, Warp.
 - **Data factory (P2, burst-out):** Replicator + **Cosmos 3** (reason/predict/transfer/action) + OSMO (Data Factory Blueprint). Cosmos Transfer is NOT supported on the Spark — it's off-box.
 - **Reasoning brain:** **Cosmos Reason** behind the `Perception` interface (swaps in for the stub, no orchestration change); served via NIM.
 - **Real-robot perception/nav (P3/deploy):** Isaac ROS — cuVSLAM, nvblox, Isaac Perceptor, NITROS + Nav2.

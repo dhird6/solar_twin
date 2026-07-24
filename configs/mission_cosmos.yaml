@@ -1,0 +1,28 @@
+# Demo mission — identical to mission.yaml but perception = cosmos_reason (live VLM).
+# Run:  ./python.sh -m solar_twin.run configs/farm.yaml configs/mission_cosmos.yaml \
+#           --backend sim_native --record --save-usd
+# Needs the vLLM Cosmos Reason server up (docs/ENVIRONMENT.md).
+
+seed: 20260721
+
+transport: sim_native   # sim_native | ros2
+
+perception: cosmos_reason  # <-- the real VLM brain (vs ground_truth stub)
+perception_opts:
+  base_url: http://localhost:8000
+  model: nvidia/cosmos-reason1-7b
+  timeout: 120.0
+
+fleet:
+  ground_bot: ground_bot
+  screen_drone: drone1
+  confirm_drone: drone2
+
+kinematics:
+  bot_speed: 1.0        # m/s
+  drone_speed: 2.0      # m/s
+  screen_standoff: 2.5  # meters above the panel TOP (wide context pass)
+  confirm_standoff: 0.8 # meters above the panel TOP (close detail pass)
+
+escalation:
+  screen_suspect_confidence: 0.5

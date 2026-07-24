@@ -9,6 +9,7 @@ is farm-shaped; importing it never drags in pxr.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 
@@ -22,6 +23,45 @@ from solar_twin.schema.pv_module import (
     local_to_geo,
     panel_id,
 )
+
+
+def terrain_height(x: float, y: float, cfg: dict) -> float:
+    """Ground elevation (meters) at stage-local (x, y). Pure + deterministic so
+    the farm builder (mesh), the panel mounts, and the drone waypoints all agree
+    on where the ground is — the whole point of a shared terrain function. `flat`
+    (or a missing block) returns 0.0, preserving the old flat-ground behaviour.
+
+    A sum of two orthogonal sines gives smooth, seed-free, gentle undulation
+    (no numpy — stays importable in the Isaac-free tests)."""
+    spec = cfg.get("terrain", {}) or {}
+    if spec.get("kind", "flat") != "heightfield":
+        return 0.0
+    amp = float(spec.get("amplitude", 0.0))
+    wl = float(spec.get("wavelength", 12.0)) or 12.0
+    k = 2.0 * math.pi / wl
+    return amp * 0.5 * (math.sin(k * x) + math.cos(k * y * 0.75))
+
+
+def fault_cells(
+    state: PanelState, cell_rows: int, cell_cols: int, rng: random.Random
+) -> set[tuple[int, int]]:
+    """Which (row, col) cells carry the fault look — *localized*, not the whole
+    panel. Soiling = a contiguous corner patch (dust drift); hotspot = one or two
+    hot cells. Pure + deterministic in `rng` so sim and any future re-derivation
+    (Replicator labels) agree on the mask. Isaac-free — tested without pxr."""
+    if cell_rows <= 0 or cell_cols <= 0:
+        return set()
+    if state is PanelState.SOILED:
+        rh = max(1, round(cell_rows * rng.uniform(0.4, 0.7)))
+        cw = max(1, round(cell_cols * rng.uniform(0.4, 0.7)))
+        r0 = rng.choice([0, cell_rows - rh])
+        c0 = rng.choice([0, cell_cols - cw])
+        return {(r, c) for r in range(r0, r0 + rh) for c in range(c0, c0 + cw)}
+    if state is PanelState.HOTSPOT:
+        cells = [(r, c) for r in range(cell_rows) for c in range(cell_cols)]
+        n = min(rng.randint(1, 2), len(cells))
+        return set(rng.sample(cells, k=n))
+    return set()
 
 
 @dataclass(frozen=True)
@@ -60,7 +100,8 @@ class FarmLayout:
             for col in range(self.cols):
                 x = ox + col * self.col_pitch
                 y = oy + row * self.row_pitch
-                z = oz
+                # Panels stand ON the ground: base z follows the terrain.
+                z = oz + terrain_height(x, y, self.cfg)
                 sites.append(
                     PanelSite(
                         panel_id=panel_id(row, col),
@@ -105,21 +146,39 @@ class FarmLayout:
             for s in self.sites
         ]
 
+    def panel_top_z(self, base_z: float | None = None) -> float:
+        """Z of a panel's top face = ground/base z + mount height + half thickness.
+
+        Drone standoffs are measured from *here*, not absolute zero — otherwise the
+        close-confirm camera ends up below the panel (it did: confirm=1.0 abs put
+        the camera at 0.7 m under a 0.75 m panel). Passing the panel's own base_z
+        (which follows the terrain) keeps framing correct over undulating ground.
+        `base_z=None` uses the origin (flat-ground convenience for tests)."""
+        panel = self.cfg.get("panel", {})
+        mount_h = float(panel.get("mount_height", 0.75))
+        ph = float(panel.get("height", 0.05))
+        base = self.origin[2] if base_z is None else base_z
+        return base + mount_h + ph / 2.0
+
     def inspection_targets(self, mission_cfg: dict) -> list[InspectionTarget]:
-        """Waypoints per panel derived from layout + mission kinematics."""
+        """Waypoints per panel derived from layout + mission kinematics.
+
+        Screen/confirm standoffs are meters *above that panel's top* (terrain-
+        relative); the ground bot stays at ground level in front of the panel."""
         kin = mission_cfg.get("kinematics", {})
-        screen_z = float(kin.get("screen_standoff", 3.0))
-        confirm_z = float(kin.get("confirm_standoff", 1.0))
+        screen_z = float(kin.get("screen_standoff", 2.5))
+        confirm_z = float(kin.get("confirm_standoff", 0.8))
         approach_offset = self.row_pitch / 2.0
         targets: list[InspectionTarget] = []
         for s in self.sites:
-            x, y, z = s.position
+            x, y, z = s.position  # z already follows the terrain
+            top = self.panel_top_z(z)
             targets.append(
                 InspectionTarget(
                     panel_id=s.panel_id,
                     approach=Waypoint(x, y - approach_offset, z),
-                    screen=Waypoint(x, y, z + screen_z),
-                    confirm=Waypoint(x, y, z + confirm_z),
+                    screen=Waypoint(x, y, top + screen_z),
+                    confirm=Waypoint(x, y, top + confirm_z),
                 )
             )
         return targets

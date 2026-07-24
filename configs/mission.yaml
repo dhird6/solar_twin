@@ -9,14 +9,18 @@ seed: 20260721
 transport: sim_native   # sim_native | ros2
 
 # Perception behind the interface: ground-truth stub for Slice 0.
+# Flip to `cosmos_reason` to use the live VLM (needs the server below running —
+# see docs/ENVIRONMENT.md "Serving Cosmos Reason on the Spark").
 perception: ground_truth  # ground_truth | cosmos_reason
 
-# For perception: cosmos_reason — points at a Cosmos Reason NIM (OpenAI-compatible).
-# ⚠ placeholder values; set the real NIM endpoint + served-model-name here.
-# perception_opts:
-#   base_url: http://localhost:8000
-#   model: nvidia/cosmos-reason1-7b
-#   timeout: 30.0
+# For perception: cosmos_reason — OpenAI-compatible endpoint serving
+# nvidia/cosmos-reason1-7b. On the GB10 Spark this is vLLM (cu130-nightly, sm_121),
+# NOT the NIM (the 1.4.x NIM crashes on sm_121 — see docs/ENVIRONMENT.md).
+# Verified live on this box. Ignored when perception=ground_truth.
+perception_opts:
+  base_url: http://localhost:8000
+  model: nvidia/cosmos-reason1-7b
+  timeout: 120.0   # first-token latency in eager mode can be slow
 
 fleet:
   ground_bot: ground_bot
@@ -27,8 +31,8 @@ fleet:
 kinematics:
   bot_speed: 1.0        # m/s
   drone_speed: 2.0      # m/s
-  screen_standoff: 3.0  # meters above panel for the screening pass
-  confirm_standoff: 1.0 # meters above panel for the close confirm pass
+  screen_standoff: 2.5  # meters above the panel TOP (wide context pass)
+  confirm_standoff: 0.8 # meters above the panel TOP (close detail pass)
 
 # Escalation: with the ground-truth stub every non-healthy panel is suspect.
 # Kept explicit so a real detector can gate on confidence later.
