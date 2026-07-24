@@ -12,12 +12,16 @@ grid:
   col_pitch: 2.2      # meters between panels along a row
   origin: [0.0, 0.0, 0.0]
 
-# Panel geometry (a textured box is fine for Slice 0).
+# Panel geometry. Built as a real solar-cell grid (not a flat swatch) so the
+# camera frame reads as a PV module — cells + frame + localized fault patches.
 panel:
   width: 1.0          # x, meters
   length: 2.0         # y, meters
   height: 0.05        # z, meters
   tilt_deg: 20.0      # south-facing tilt about the row axis
+  mount_height: 0.75  # panel centre height above ground (shared: builder + waypoints)
+  cell_cols: 6        # PV cells across the width (x)
+  cell_rows: 10       # PV cells along the length (y)
 
 # Georef anchor (§6.2): farm origin (0,0,0) -> this lat/lon/elev, with +Y
 # pointing at heading_deg (compass bearing, 0 = north, clockwise).
@@ -32,3 +36,18 @@ georef:
 faults:
   rate: 0.2           # fraction of panels to fault (seeded pick)
   states: [hotspot, soiled]
+
+# Terrain: the land is not flat. A deterministic low-frequency height field —
+# panels mount ON the grade, and drone standoffs are measured from the panel top
+# (terrain-relative), so framing stays correct over undulating ground.
+terrain:
+  kind: heightfield   # flat | heightfield
+  amplitude: 0.6      # meters of vertical undulation (peak)
+  wavelength: 14.0    # meters per hump (larger = gentler grade)
+
+# Wind turbines co-located with the farm. Tall, with turning blades → moving
+# shadows sweep the panels (the key false-fault test) + (later) collision/wake.
+# Positions are stage-local meters (x along the row, y front-to-back).
+turbines:
+  - { pos: [9.5, -14.0], hub_height: 18.0, blade_len: 8.0, rpm: 12.0 }
+  - { pos: [2.0, 16.0],  hub_height: 16.0, blade_len: 7.0, rpm: 10.0 }

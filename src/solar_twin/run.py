@@ -24,7 +24,9 @@ from pathlib import Path
 
 import yaml
 
+from solar_twin.control.safe import SafeControl
 from solar_twin.orchestrator.mission import Fleet, Mission
+from solar_twin.world.keepout import build_keepouts
 from solar_twin.world.layout import FarmLayout
 
 
@@ -118,6 +120,11 @@ def run(
     transport, control = _build_backend(
         backend_name, layout, mission_cfg, sim_opts or {}
     )
+    # Planning-layer no-fly: vet every commanded waypoint against turbine keep-out
+    # volumes (control-agnostic, so it protects kinematic and future PX4 alike).
+    keepouts = build_keepouts(farm_cfg)
+    if keepouts:
+        control = SafeControl(control, keepouts)
     perception = _perception(
         mission_cfg.get("perception", "ground_truth"),
         mission_cfg.get("perception_opts", {}),
@@ -175,6 +182,16 @@ def run(
         "panels": [asdict(r) for r in result.results],
         "fault_events": [e.to_dict() for e in result.fault_events],
     }
+    if isinstance(control, SafeControl):
+        record["keepout"] = {
+            "turbines": len(keepouts),
+            "waypoints_clamped": len(control.events),
+            "min_clearance_m": (
+                None if control.min_clearance_m == float("inf")
+                else round(control.min_clearance_m, 3)
+            ),
+            "events": [e.to_dict() for e in control.events],
+        }
     (out / "results.json").write_text(json.dumps(record, indent=2))
     m = record["metrics"]
     print(

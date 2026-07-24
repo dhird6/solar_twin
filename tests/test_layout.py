@@ -1,7 +1,9 @@
 """FarmLayout geometry + seeded fault determinism (no Isaac)."""
 
+import random
+
 from solar_twin.schema.pv_module import PanelState
-from solar_twin.world.layout import FarmLayout
+from solar_twin.world.layout import FarmLayout, fault_cells, terrain_height
 
 
 FARM = {
@@ -55,3 +57,59 @@ def test_inspection_targets_cover_all_panels():
     assert len(targets) == 10
     # screen standoff above the panel; confirm closer.
     assert targets[0].screen.z > targets[0].confirm.z
+
+
+def test_standoffs_are_above_the_panel_top():
+    # Regression: confirm camera used to land *below* the panel (abs-Z bug).
+    farm = {**FARM, "panel": {"mount_height": 0.75, "height": 0.05}}
+    layout = FarmLayout(farm)
+    top = layout.panel_top_z()
+    assert top == 0.775
+    t = layout.inspection_targets(
+        {"kinematics": {"screen_standoff": 2.5, "confirm_standoff": 0.8}}
+    )[0]
+    assert t.confirm.z == 0.775 + 0.8  # strictly above the panel top
+    assert t.screen.z == 0.775 + 2.5
+    assert t.confirm.z > top
+
+
+def test_terrain_flat_by_default_and_deterministic():
+    assert terrain_height(3.0, 4.0, {}) == 0.0
+    assert terrain_height(3.0, 4.0, {"terrain": {"kind": "flat"}}) == 0.0
+    hf = {"terrain": {"kind": "heightfield", "amplitude": 0.6, "wavelength": 14.0}}
+    a = terrain_height(3.0, 4.0, hf)
+    assert terrain_height(3.0, 4.0, hf) == a  # pure/deterministic
+    assert abs(a) <= 0.6  # bounded by amplitude
+
+
+def test_panels_sit_on_grade_and_standoffs_stay_above_top():
+    farm = {
+        **FARM,
+        "panel": {"mount_height": 0.75, "height": 0.05},
+        "terrain": {"kind": "heightfield", "amplitude": 0.6, "wavelength": 14.0},
+    }
+    layout = FarmLayout(farm)
+    # At least one panel is off the z=0 plane (sitting on the grade).
+    zs = [s.position[2] for s in layout.sites]
+    assert any(abs(z) > 1e-6 for z in zs)
+    # Each panel's confirm waypoint is strictly above THAT panel's top.
+    targets = {t.panel_id: t for t in layout.inspection_targets(
+        {"kinematics": {"screen_standoff": 2.5, "confirm_standoff": 0.8}}
+    )}
+    for s in layout.sites:
+        top = layout.panel_top_z(s.position[2])
+        assert targets[s.panel_id].confirm.z > top
+        assert targets[s.panel_id].screen.z > targets[s.panel_id].confirm.z
+
+
+def test_fault_cells_are_localized_and_deterministic():
+    # Soiling = a contiguous patch that is a strict subset (not the whole panel).
+    soil_a = fault_cells(PanelState.SOILED, 10, 6, random.Random("x"))
+    soil_b = fault_cells(PanelState.SOILED, 10, 6, random.Random("x"))
+    assert soil_a == soil_b  # deterministic in the rng
+    assert 0 < len(soil_a) < 60  # localized, not the whole 10x6 grid
+    # Hotspot = one or two hot cells.
+    hot = fault_cells(PanelState.HOTSPOT, 10, 6, random.Random("y"))
+    assert 1 <= len(hot) <= 2
+    # Healthy panels get no faulted cells.
+    assert fault_cells(PanelState.HEALTHY, 10, 6, random.Random("z")) == set()

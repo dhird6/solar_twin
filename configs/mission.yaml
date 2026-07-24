@@ -31,8 +31,8 @@ fleet:
 kinematics:
   bot_speed: 1.0        # m/s
   drone_speed: 2.0      # m/s
-  screen_standoff: 3.0  # meters above panel for the screening pass
-  confirm_standoff: 1.0 # meters above panel for the close confirm pass
+  screen_standoff: 2.5  # meters above the panel TOP (wide context pass)
+  confirm_standoff: 0.8 # meters above the panel TOP (close detail pass)
 
 # Escalation: with the ground-truth stub every non-healthy panel is suspect.
 # Kept explicit so a real detector can gate on confidence later.
