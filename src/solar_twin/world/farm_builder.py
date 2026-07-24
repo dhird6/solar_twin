@@ -240,17 +240,25 @@ def _build_shading_occluder(stage, farm_cfg, layout, material) -> bool:
     z_bar = float(spec.get("height", h_p + 1.6))
     dy = (z_bar - h_p) / max(0.2, math.tan(elev))
     thick = float(spec.get("thickness", 0.18))
+    yaw = float(spec.get("yaw_deg", 0.0))  # rotate the bar in-plane -> diagonal shadow
     # Span the whole row in X (plus overhang) so every panel gets the shadow line.
+    # A yawed bar's ends swing in Y; shorten the span as yaw grows so the ends stay
+    # over the row rather than casting their shadow off into the dirt.
     ox = layout.origin[0]
-    span_x = layout.cols * layout.col_pitch + 2.0
+    span_x = (layout.cols * layout.col_pitch + 2.0) * max(0.4, math.cos(math.radians(yaw)))
     cx = ox + (layout.cols - 1) * layout.col_pitch / 2.0
     bar = UsdGeom.Cube.Define(stage, "/World/ShadingBar")
     bar.CreateSizeAttr(1.0)
     api = UsdGeom.XformCommonAPI(bar)
     api.SetTranslate(Gf.Vec3d(cx, layout.origin[1] + dy, z_bar))
+    if yaw:
+        api.SetRotate((0.0, 0.0, yaw), UsdGeom.XformCommonAPI.RotationOrderXYZ)
     api.SetScale(Gf.Vec3f(span_x, thick, thick))
     _bind(bar.GetPrim(), material)
-    print(f"  shading occluder: bar at y={dy:.2f} z={z_bar:.2f} (sun elev {math.degrees(elev):.0f})")
+    print(
+        f"  shading occluder: bar at y={dy:.2f} z={z_bar:.2f} yaw={yaw:.0f} "
+        f"(sun elev {math.degrees(elev):.0f})"
+    )
     return True
 
 
@@ -382,7 +390,9 @@ def build(farm_cfg: dict, out_path: str) -> str:
         (-elev, 0.0, azim), UsdGeom.XformCommonAPI.RotationOrderXYZ
     )
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(300.0)  # ambient fill only; sun does the modelling
+    # Ambient fill (config knob): lowering it deepens shadows toward near-black — a
+    # harder KPI-03 stressor where a shadow reads more like a dark defect.
+    dome.CreateIntensityAttr(float(sun_cfg.get("ambient", 300.0)))
 
     # --- shared material set (5 looks, reused across all prims) --------------
     looks = {

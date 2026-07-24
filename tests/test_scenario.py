@@ -77,8 +77,9 @@ def test_load_scenario_requires_extends(tmp_path):
 def test_repo_false_fault_scenarios_are_valid():
     """Both shipped false-fault scenarios load as all-healthy setups with a gate."""
     for path in (
-        "configs/scenarios/sweeping_shadow.yaml",   # SC-05: turbine (faithful, WIP)
-        "configs/scenarios/hard_shadow.yaml",       # reliable occluder stressor
+        "configs/scenarios/sweeping_shadow.yaml",     # SC-05: turbine (faithful, WIP)
+        "configs/scenarios/hard_shadow.yaml",         # reliable soft occluder stressor
+        "configs/scenarios/hard_shadow_angled.yaml",  # harder: near-black + yawed
     ):
         scn = load_scenario(path)
         assert scn.farm_cfg["faults"]["rate"] == 0.0, path
@@ -88,3 +89,7 @@ def test_repo_false_fault_scenarios_are_valid():
     hard = load_scenario("configs/scenarios/hard_shadow.yaml")
     assert len(sc05.farm_cfg["turbines"]) >= 1
     assert hard.farm_cfg["turbines"] == [] and hard.farm_cfg["shading"]["enabled"]
+    # The harder variant deepens the shadow via low ambient + a yawed thin bar.
+    angled = load_scenario("configs/scenarios/hard_shadow_angled.yaml")
+    assert angled.farm_cfg["sun"]["ambient"] < 300.0
+    assert angled.farm_cfg["shading"]["yaw_deg"] != 0.0
