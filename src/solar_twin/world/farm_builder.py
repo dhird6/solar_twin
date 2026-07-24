@@ -323,6 +323,11 @@ def build(farm_cfg: dict, out_path: str) -> str:
         UsdGeom.XformCommonAPI(viz).SetTranslate(Gf.Vec3d(0.0, 0.0, hub_h))
         viz.CreateDisplayOpacityAttr([0.12])
         _bind(viz.GetPrim(), viz_mat)
+        # purpose=guide keeps this DEBUG-ONLY: guides are excluded from the
+        # default render, so the sphere can never darken/occlude a sensor frame.
+        # (It did: as a default-purpose prim these 9-10 m spheres cast shadows
+        # over the whole farm and halved frame brightness, masking fault cells.)
+        viz.CreatePurposeAttr(UsdGeom.Tokens.guide)
 
     stage.GetRootLayer().Save()
     print(
