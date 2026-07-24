@@ -17,6 +17,24 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
+**SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**
+(detection), KPI-03 = **0.00** on BOTH a soft and a near-black hard shadow — the
+model reasons about shading and correctly does not fault a shadowed healthy panel.
+Two verified false-fault data points on stimuli confirmed on-surface (not the
+earlier hollow ground-shadow null). Scope stays honest: 10 panels, one seed.
+
+**Cosmos 3 Edge A/B — attempted, PARKED (option C).** Edge won't serve on the
+available `vllm/vllm-omni:cosmos3` image: model type `cosmos3_edge` (shipped
+2026-07-20) is unrecognized by that image's Transformers 5.13.0, which only knows
+`cosmos3_omni` (Nano/Super). **NOT an sm_121 issue** — Edge is just days newer than
+the serving stack. Box left clean: failed container removed, **Reason-1 restarted
+and serving on :8000**, rollback image preserved (`:cu130-nightly-WORKING-sm121`),
+Edge weights (8.6 GB) cached for resume. Full detail + resume path in memory
+`cosmos3-edge-serving-blocker.md`. Reason-1 baseline is already recorded, so the
+A/B is cheap to finish once a newer Edge-capable image exists. `configs/mission_edge.yaml`
+is staged for that.
+
 ## 2026-07-24 — Session 8: SLICE-3 false-fault harness (KPI-03) — built, first measurement is a honest null
 **Built + tested (74 Isaac-free tests pass), on branch `feat/slice3-false-fault-kpi03` (stacked on #4):**
 - **Scenario layer** `src/solar_twin/scenario.py` (IF-03): composes `farm.yaml` +
