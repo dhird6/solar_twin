@@ -1,0 +1,28 @@
+# Mission — identical to mission_cosmos.yaml but perception points at Cosmos 3 Edge
+# (4B) served by vLLM, for the Reason-1 vs Edge A/B. Served on :8000 after the
+# container swap (see docs/ENVIRONMENT.md / SESSIONS.md). Same interface, so the
+# scenarios and orchestration are unchanged — this is a model-string flip.
+
+seed: 20260721
+
+transport: sim_native
+
+perception: cosmos_reason
+perception_opts:
+  base_url: http://localhost:8000
+  model: nvidia/Cosmos3-Edge
+  timeout: 120.0
+
+fleet:
+  ground_bot: ground_bot
+  screen_drone: drone1
+  confirm_drone: drone2
+
+kinematics:
+  bot_speed: 1.0
+  drone_speed: 2.0
+  screen_standoff: 2.5
+  confirm_standoff: 0.8
+
+escalation:
+  screen_suspect_confidence: 0.5

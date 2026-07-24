@@ -1,0 +1,34 @@
+# hard_shadow_angled — the HARDER KPI-03 variant.
+#
+# Reuses the PROVEN straight-shadow placement (elev 45, height 2.4 — verified to
+# land a band across the elevated panel surface), then raises difficulty the
+# reliable way rather than via fiddly diagonal-on-tilted-panel geometry:
+#   - low ambient fill -> the shadow is near-black, reading more like a dark defect
+#   - a thin band + mild yaw -> a crisp, slightly diagonal line across the cells
+# All panels healthy; any fault verdict is a false fault. Tests the shading-vs-
+# defect distinction under a much higher-contrast stimulus than hard_shadow.
+
+name: hard_shadow_angled
+seed: 20260724
+
+extends:
+  farm: configs/farm.yaml
+  mission: configs/mission_cosmos.yaml
+
+farm_overrides:
+  faults:
+    rate: 0.0
+    states: []
+  sun:
+    elevation_deg: 45.0   # proven placement geometry (lands on the panel surface)
+    azimuth_deg: 0.0
+    ambient: 60.0         # was 300 -> deep, near-black shadow (the hard part)
+  turbines: []
+  shading:
+    enabled: true
+    height: 2.4
+    thickness: 0.14       # crisp, defect-like line
+    yaw_deg: 12.0         # mild diagonal across the cell grid (small yaw stays on-panel)
+
+kpi_gates:
+  false_fault_rate_max: 0.05

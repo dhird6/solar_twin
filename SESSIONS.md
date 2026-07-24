@@ -17,6 +17,61 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
+**SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**
+(detection), KPI-03 = **0.00** on BOTH a soft and a near-black hard shadow — the
+model reasons about shading and correctly does not fault a shadowed healthy panel.
+Two verified false-fault data points on stimuli confirmed on-surface (not the
+earlier hollow ground-shadow null). Scope stays honest: 10 panels, one seed.
+
+**Cosmos 3 Edge A/B — attempted, PARKED (option C).** Edge won't serve on the
+available `vllm/vllm-omni:cosmos3` image: model type `cosmos3_edge` (shipped
+2026-07-20) is unrecognized by that image's Transformers 5.13.0, which only knows
+`cosmos3_omni` (Nano/Super). **NOT an sm_121 issue** — Edge is just days newer than
+the serving stack. Box left clean: failed container removed, **Reason-1 restarted
+and serving on :8000**, rollback image preserved (`:cu130-nightly-WORKING-sm121`),
+Edge weights (8.6 GB) cached for resume. Full detail + resume path in memory
+`cosmos3-edge-serving-blocker.md`. Reason-1 baseline is already recorded, so the
+A/B is cheap to finish once a newer Edge-capable image exists. `configs/mission_edge.yaml`
+is staged for that.
+
+## 2026-07-24 — Session 8: SLICE-3 false-fault harness (KPI-03) — built, first measurement is a honest null
+**Built + tested (74 Isaac-free tests pass), on branch `feat/slice3-false-fault-kpi03` (stacked on #4):**
+- **Scenario layer** `src/solar_twin/scenario.py` (IF-03): composes `farm.yaml` +
+  `mission.yaml` and deep-merges a dynamic-hazard override layer (`farm_overrides`
+  / `mission_overrides`) + `kpi_gates`. Pure, Isaac-free. `--scenario` flag added to
+  both `farm_builder` and `run`.
+- **KPI-03** `MissionResult.false_fault_rate` = fraction of HEALTHY panels misread
+  as faulted; in the run record. Sun elevation now a config knob in `farm_builder`.
+- **SC-05** `configs/scenarios/sweeping_shadow.yaml`: all-healthy panels + low-ish
+  sun + one turbine, blades spinning → a blade shadow meant to sweep the row.
+
+**⚠ FIRST MEASUREMENT = KPI-03 0.00, but it's a HOLLOW null — do not trust it as
+"VLM is shadow-robust".** Root cause found by looking at the actual frame: **the
+turbine shadow lands on the GROUND, not on the panels.** Panels are mounted ~0.8 m
+up and tilted toward the sun, so a distant occluder's shadow sails *over* them onto
+the ground beyond. The drone (straight down over a panel) sees a fully-lit panel
+with shadow on the surrounding ground; the VLM correctly reported *"no signs of
+shadows"*. My brightness-dip check (C004/C005 ~85 vs ~120) was measuring the dark
+GROUND in-frame, not a shadowed panel — a near-miss that would have shipped a
+confidently-wrong "0% false faults, shadow-robust" claim. (This is the exact
+`NFR-07`/"no silent caps" failure the harness exists to prevent — the metric was
+right, the STIMULUS was absent.)
+
+**Geometry lessons banked:** shadow LENGTH must match turbine→row distance (elev 16°
+overshot a 12 m-away row by ~40 m); shadow DIRECTION = -Y for a +X sun tilt, so the
+turbine must sit on the +Y side to cast back across the row; and landing a shadow on
+the ELEVATED tilted panel surface (not the ground) is precise, intermittent geometry
+for a thin spinning blade.
+
+**Open decision (asked user):** how to make the KPI-03 stimulus real —
+(A) precise blade-on-panel turbine geometry [faithful, fiddly, intermittent];
+(B) a dedicated close occluder casting a hard shadow across each panel surface
+[reliable worst-case, = the "shading" hazard, one-shot]; or (C) ship SC-05 honestly
+as a weak stimulus and track "shadow-on-panel" as a refinement. Recommended **B first**
+(real number, tests the shading-vs-soiling distinction) then **A** as the turbine version.
+Nothing committed yet on this branch.
+
 ## 2026-07-24 — Session 7: Environment realism + turbine keep-out + vision/specs ✅ (PR #2 merged to main)
 **Done — all merged to `main` via PR #2. Made the sim world recognizable + safe, and wrote down where it's going.**
 - **Render fix — the "featureless frame" bug.** The pre-fix Cosmos run saw flat
@@ -114,7 +169,44 @@ exactly why the control ran before any model swap:**
    `_RENDER_SETTLE_UPDATES` but `capture()` never calls it; settled vs unsettled
    frames are byte-identical, so that is NOT the bug.)*
 
-**→ Revised next step (do BEFORE any model A/B):** make the soiling physically
+### ✅ RESOLVED — **KPI-01 = 1.00** (run `20260724T172011`), SLICE-1 closed
+`faults_detected 2/2 · detection_rate 1.00 · false positives 0/8`. Both soiled
+panels: screen=suspect → escalated → diagnosed **`soiled`**, with correct reasoning
+(*"a tan-coloured deposit along the lower edge … opaque, uneven layer"* — it names
+the lower-edge accumulation we modelled). **Four distinct root causes**, in order
+found:
+1. **Flat colour swatches** → PV cell grid + sun/shadows + panel-relative standoffs.
+2. **Keep-out viz spheres shadowing the farm** (brightness 126→46) → `purpose="guide"`.
+3. **Unphysical fault signature** (opaque, cell-aligned) → translucent dust *film*
+   crossing cell borders, ragged outline, lower-edge accumulation. Two stack findings
+   learned the hard way: **RTX renders `UsdPreviewSurface` opacity as a hard CUTOUT**
+   (bake the blend into per-face `displayColor` instead), and the baked sub-grid must
+   be **~8× the cell grid** or it quantises into slabs. Also: alpha must stay HIGH
+   (0.72–0.94) — at low alpha the bright aluminium frame survived *through* the dust
+   as a grid of bright lines, which the VLM read as *"a cluster of bright pixels…
+   characteristic of a hotspot"*.
+4. **⭐ THE ACTUAL CLASSIFICATION BUG — the PROMPT, not the world.** `_diagnose_prompt`
+   passed **bare enum names** (`soiled, hotspot, crack, …`) with no definitions, so the
+   model guessed and mapped any localized anomaly to its *hotspot* prior. A 60-second
+   HTTP probe of the SAME frame settled it: bare taxonomy → `hotspot`; free description
+   → *"a shadow or different material"*; asked directly *"is there dust?"* → *"No, the
+   panel appears clean"*; **taxonomy + per-class definitions → `soiled`** ✅. Fix:
+   `_STATE_DEFINITIONS` in `cosmos_reason.py` defines **all 8** states (defining only
+   `soiled` would bias the classifier) in visible-light terms — soiling = deposit ON
+   the glass; hotspot = one glowing CELL; shading = shadow CAST BY an object, no deposit.
+
+**METHOD LESSON (worth keeping):** ~3 world-rebuild cycles were spent tuning materials
+when the failure was in the prompt. **When the MODEL's output is what's failing,
+interrogate the model directly (cheap HTTP probe on a saved frame) BEFORE rebuilding
+the world.** The material work wasn't wasted — the bright-frame-line artifact was real
+— but it was not this bug.
+
+**⚠ Scope caveat:** 10 panels, one seed, one fault type. KPI-01=1.00 is a green light,
+NOT a robustness claim. The real test is `KPI-03` (false-fault under sweeping blade
+shadows) — where the *shading vs soiling* distinction we just defined is exactly what
+gets stressed.
+
+**→ Superseded next step** (kept for the record): make the soiling physically
 faithful — (a) **blend, don't replace** (semi-transparent dust film, blue cell
 still reads underneath); (b) **ignore cell boundaries** (overlay on the module
 surface, ragged edges, per-cell density falloff); (c) **physically-motivated

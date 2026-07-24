@@ -3,7 +3,12 @@
 import random
 
 from solar_twin.schema.pv_module import PanelState
-from solar_twin.world.layout import FarmLayout, fault_cells, terrain_height
+from solar_twin.world.layout import (
+    FarmLayout,
+    fault_cells,
+    soiling_tiles,
+    terrain_height,
+)
 
 
 FARM = {
@@ -102,14 +107,35 @@ def test_panels_sit_on_grade_and_standoffs_stay_above_top():
         assert targets[s.panel_id].screen.z > targets[s.panel_id].confirm.z
 
 
-def test_fault_cells_are_localized_and_deterministic():
-    # Soiling = a contiguous patch that is a strict subset (not the whole panel).
-    soil_a = fault_cells(PanelState.SOILED, 10, 6, random.Random("x"))
-    soil_b = fault_cells(PanelState.SOILED, 10, 6, random.Random("x"))
-    assert soil_a == soil_b  # deterministic in the rng
-    assert 0 < len(soil_a) < 60  # localized, not the whole 10x6 grid
-    # Hotspot = one or two hot cells.
+def test_fault_cells_covers_hotspot_only():
+    # Hotspot is genuinely cell-localized (one cell overheats) -> cell-aligned.
     hot = fault_cells(PanelState.HOTSPOT, 10, 6, random.Random("y"))
     assert 1 <= len(hot) <= 2
-    # Healthy panels get no faulted cells.
+    assert fault_cells(PanelState.HOTSPOT, 10, 6, random.Random("y")) == hot
+    # Soiling is NOT a cell-level fault — it is a film (see soiling_tiles), so
+    # rendering it cell-aligned made the VLM read it as a design pattern.
+    assert fault_cells(PanelState.SOILED, 10, 6, random.Random("x")) == set()
     assert fault_cells(PanelState.HEALTHY, 10, 6, random.Random("z")) == set()
+
+
+def test_soiling_tiles_are_ragged_localized_and_lower_biased():
+    rows, cols = 28, 16
+    a = soiling_tiles(rows, cols, random.Random("s"))
+    b = soiling_tiles(rows, cols, random.Random("s"))
+    assert a == b  # deterministic in the rng
+    assert 0 < len(a) < rows * cols  # partial coverage, not the whole panel
+
+    # Dust pools at the LOWER edge (row 0), so the bottom half carries more.
+    lower = sum(1 for r, _ in a if r < rows // 2)
+    assert lower > len(a) / 2
+
+    # Ragged, not a clean rectangle: at least one row is partially covered.
+    from collections import Counter
+
+    per_row = Counter(r for r, _ in a)
+    assert any(0 < n < cols for n in per_row.values())
+
+    # Degenerate grids are safe.
+    assert soiling_tiles(0, 5, random.Random("s")) == set()
+
+

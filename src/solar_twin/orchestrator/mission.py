@@ -85,6 +85,17 @@ class MissionResult:
             return 0.0
         return sum(1 for r in self.results if r.correct) / len(self.results)
 
+    @property
+    def false_fault_rate(self) -> float:
+        """KPI-03: fraction of *healthy* panels misread as faulted (detected
+        state != healthy). This is the central thesis metric — a swept blade
+        shadow or dust film on a good panel must not be logged as a fault. Only
+        healthy panels count; returns 0.0 when there are none to judge."""
+        healthy = [r for r in self.results if r.injected_state == "healthy"]
+        if not healthy:
+            return 0.0
+        return sum(1 for r in healthy if r.detected_state != "healthy") / len(healthy)
+
 
 # --------------------------------------------------------------------------- #
 # The FSM
