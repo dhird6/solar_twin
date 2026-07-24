@@ -45,23 +45,75 @@ def terrain_height(x: float, y: float, cfg: dict) -> float:
 def fault_cells(
     state: PanelState, cell_rows: int, cell_cols: int, rng: random.Random
 ) -> set[tuple[int, int]]:
-    """Which (row, col) cells carry the fault look — *localized*, not the whole
-    panel. Soiling = a contiguous corner patch (dust drift); hotspot = one or two
-    hot cells. Pure + deterministic in `rng` so sim and any future re-derivation
+    """Which (row, col) PV cells carry a *cell-level* fault look.
+
+    Only faults that are genuinely cell-localized in reality belong here: a
+    **hotspot** is one overheating cell, so snapping it to the cell grid is
+    physically correct. **Soiling is deliberately NOT handled here** — dust is a
+    film lying on the glass, so it crosses cell boundaries; see `soiling_tiles`.
+    (Rendering soiling as opaque, perfectly cell-aligned rectangles made the VLM
+    read it as a two-tone design pattern rather than contamination.)
+
+    Pure + deterministic in `rng` so the sim and any future re-derivation
     (Replicator labels) agree on the mask. Isaac-free — tested without pxr."""
     if cell_rows <= 0 or cell_cols <= 0:
         return set()
-    if state is PanelState.SOILED:
-        rh = max(1, round(cell_rows * rng.uniform(0.4, 0.7)))
-        cw = max(1, round(cell_cols * rng.uniform(0.4, 0.7)))
-        r0 = rng.choice([0, cell_rows - rh])
-        c0 = rng.choice([0, cell_cols - cw])
-        return {(r, c) for r in range(r0, r0 + rh) for c in range(c0, c0 + cw)}
     if state is PanelState.HOTSPOT:
         cells = [(r, c) for r in range(cell_rows) for c in range(cell_cols)]
         n = min(rng.randint(1, 2), len(cells))
         return set(rng.sample(cells, k=n))
     return set()
+
+
+def soiling_field(
+    n_rows: int, n_cols: int, rng: random.Random
+) -> dict[tuple[int, int], float]:
+    """Dust *density* per sub-tile, on a grid **independent of the PV cells** so the
+    patch crosses cell boundaries the way real dust does.
+
+    Density = a lower-edge gradient (row 0 is the panel's downhill edge, where dust
+    accumulates on a tilted module) + a few soft blobs. **Deliberately smooth — no
+    per-tile noise** so callers can shade with it directly; white noise here makes
+    the film look dithered/speckled rather than like a continuous layer of dust.
+    Edge raggedness comes from jittering the *threshold* instead (`soiling_tiles`).
+    Pure and deterministic in `rng`; Isaac-free."""
+    field: dict[tuple[int, int], float] = {}
+    if n_rows <= 0 or n_cols <= 0:
+        return field
+    span = max(n_rows, n_cols)
+    blobs = [
+        (
+            rng.uniform(0.0, n_rows * 0.6),  # biased toward the lower edge
+            rng.uniform(0.0, n_cols),
+            rng.uniform(0.18, 0.38) * span,
+        )
+        for _ in range(3)
+    ]
+    for r in range(n_rows):
+        grad = 1.0 - (r / max(1, n_rows - 1))  # 1.0 at the lower edge -> 0.0 at top
+        for c in range(n_cols):
+            density = 0.28 * grad
+            for br, bc, radius in blobs:
+                d = math.hypot(r - br, c - bc)
+                if d < radius:
+                    density += 1.0 - d / radius
+            field[(r, c)] = density
+    return field
+
+
+def soiling_mask(
+    field: dict[tuple[int, int], float], rng: random.Random, threshold: float = 0.5
+) -> set[tuple[int, int]]:
+    """Which sub-tiles carry dust: threshold the (smooth) field with a jittered
+    cut so the drift's OUTLINE is ragged while its interior stays smooth."""
+    return {k for k, v in field.items() if v + rng.uniform(-0.15, 0.15) > threshold}
+
+
+def soiling_tiles(
+    n_rows: int, n_cols: int, rng: random.Random, threshold: float = 0.5
+) -> set[tuple[int, int]]:
+    """Convenience: build the field and mask it in one call (see both above)."""
+    return soiling_mask(soiling_field(n_rows, n_cols, rng), rng, threshold)
 
 
 @dataclass(frozen=True)

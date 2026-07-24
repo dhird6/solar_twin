@@ -24,7 +24,13 @@ from pathlib import Path
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
 from solar_twin.schema import pv_module as pv
-from solar_twin.world.layout import FarmLayout, fault_cells, terrain_height
+from solar_twin.world.layout import (
+    FarmLayout,
+    fault_cells,
+    soiling_field,
+    soiling_mask,
+    terrain_height,
+)
 
 # Fallback panel-centre height if farm.yaml omits panel.mount_height.
 PANEL_MOUNT_HEIGHT = 0.75
@@ -35,7 +41,6 @@ PANEL_MOUNT_HEIGHT = 0.75
 # (name -> diffuse, emissive, roughness, metallic)
 _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
     "cell_healthy": ((0.02, 0.04, 0.13), (0.0, 0.0, 0.0), 0.22, 0.35),  # dark-blue glassy PV
-    "cell_soiled": ((0.46, 0.39, 0.28), (0.0, 0.0, 0.0), 0.9, 0.0),     # dust film
     "cell_hotspot": ((0.14, 0.05, 0.03), (2.2, 0.35, 0.0), 0.5, 0.0),   # hot cell glow
     "frame": ((0.62, 0.63, 0.66), (0.0, 0.0, 0.0), 0.3, 0.9),           # aluminium rail
     "ground": ((0.17, 0.14, 0.10), (0.0, 0.0, 0.0), 1.0, 0.0),          # dry earth (kept dark so the sun doesn't blow it out)
@@ -44,6 +49,21 @@ _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
 
 # How finely to tessellate the heightfield ground mesh (verts per axis).
 _TERRAIN_RES = 48
+
+# Dust-film sub-grid (tiles across width x along length). Deliberately NOT a
+# multiple of the PV cell counts (6 x 10) so the film can never align to the cell
+# grid — real dust ignores cell boundaries. Resolution must be well ABOVE the cell
+# grid (~8 tiles per cell) or the baked substrate quantises into coarse slabs
+# instead of resolving the thin frame lines between cells.
+_DUST_SUBGRID = (50, 86)
+#: Dust colour, blended per-face over whatever lies beneath (cell or frame gap).
+#: Must stay DARK and earth-toned. A pale/bright deposit on a dark panel is the
+#: textbook *hotspot* signature, and Cosmos Reason duly misread a lighter dust as
+#: "a cluster of bright pixels... indicative of a hotspot" (run 20260724T170822).
+#: Real soiling is dirt: it DARKENS and mutes the module, it does not brighten it.
+_DUST_RGB = (0.26, 0.21, 0.14)
+#: Density above which a sub-tile carries dust at all.
+_DUST_THRESHOLD = 0.5
 
 # Rotor keep-out margin (m) — MUST match keepout.build_keepouts' rotor_margin so
 # the translucent no-fly sphere we author here shows the SAME volume the planner
@@ -85,6 +105,102 @@ def _add_collision(prim) -> None:
         UsdPhysics.CollisionAPI.Apply(prim)
     except Exception as exc:  # noqa: BLE001 — colliders are additive, not critical
         print(f"  [warn] collider skipped for {prim.GetPath()}: {exc}")
+
+
+def _dust_material(stage) -> UsdShade.Material:
+    """Dust shader that takes its colour per-face from the mesh's `displayColor`
+    primvar.
+
+    We do NOT use UsdPreviewSurface `opacity`: RTX on this build renders it as a
+    hard cutout (verified — a 0.55-opacity film still came out fully opaque, with
+    or without `opacityThreshold=0`). Instead the translucency is **baked**: each
+    face is pre-blended against whatever lies beneath it (blue cell or light
+    frame gap), so the cell grid still reads *through* the dust while every
+    material stays opaque and renderer-independent."""
+    path = "/World/Looks/dust_film"
+    mat = UsdShade.Material.Define(stage, path)
+    reader = UsdShade.Shader.Define(stage, path + "/ColorReader")
+    reader.CreateIdAttr("UsdPrimvarReader_float3")
+    reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+    reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+
+    shader = UsdShade.Shader.Define(stage, path + "/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        reader.ConnectableAPI(), "result"
+    )
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.97)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    return mat
+
+
+def _build_dust_film(stage, panel_path, pw, pl, ph, n_ccol, n_crow, rng, material) -> int:
+    """Author the soiling as ONE mesh lying on the panel glass, with the dust
+    colour **baked per face** against what sits beneath it.
+
+    Built on a sub-grid independent of the PV cells, so the patch crosses cell
+    boundaries with ragged edges and pools toward the panel's lower (-Y) edge —
+    how dust settles on a tilted module. Density varies across the drift (heavy in
+    the middle, thin at the edges), so the film looks like grime rather than
+    paint. Returns the face count."""
+    n_cols, n_rows = _DUST_SUBGRID
+    field = soiling_field(n_rows, n_cols, rng)
+    # Ragged OUTLINE from a jittered threshold; smooth INTERIOR from the raw
+    # field — jittering the shading instead makes the film look dithered.
+    tiles = sorted(soiling_mask(field, rng, _DUST_THRESHOLD))
+    if not tiles:
+        return 0
+    tw, tl = pw / n_cols, pl / n_rows
+    cw, cl = pw / n_ccol, pl / n_crow
+    z = ph * 1.02  # just above the cell tops (cells top out at ~ph)
+    cell_rgb = _LOOKS["cell_healthy"][0]
+    gap_rgb = _LOOKS["frame"][0]
+    half_gap = 0.86 / 2  # cells are inset by this fraction; outside it is frame
+
+    pts, counts, idx, colors = [], [], [], []
+    for r, c in tiles:
+        x0 = -pw / 2 + c * tw
+        y0 = -pl / 2 + r * tl  # r=0 is the -Y (lower) edge
+        # What is underneath this tile's centre — a cell face, or the frame gap?
+        cx, cy = x0 + tw / 2 + pw / 2, y0 + tl / 2 + pl / 2
+        fx = (cx % cw) / cw - 0.5
+        fy = (cy % cl) / cl - 0.5
+        base_rgb = cell_rgb if (abs(fx) < half_gap and abs(fy) < half_gap) else gap_rgb
+        # Blend dust over it; heavier drifts are more opaque, thin edges less so.
+        # Alpha must stay HIGH. Dust settles on the aluminium frame too, so the
+        # bright frame lines must be muted along with the cells. At low alpha the
+        # 0.62-albedo frame survives at ~0.54 while the 0.02 cells go dark — that
+        # manufactured a grid of BRIGHT LINES inside the patch, which Cosmos Reason
+        # read as "a cluster of bright pixels ... characteristic of a hotspot"
+        # (runs 20260724T170822 / T171133). The grid should remain faintly visible
+        # as low contrast, never as bright highlights.
+        a = max(0.72, min(0.94, 0.72 + 0.40 * (field[(r, c)] - _DUST_THRESHOLD)))
+        rgb = tuple(base_rgb[i] * (1.0 - a) + _DUST_RGB[i] * a for i in range(3))
+
+        b = len(pts)
+        pts.extend(
+            [
+                Gf.Vec3f(x0, y0, z),
+                Gf.Vec3f(x0 + tw, y0, z),
+                Gf.Vec3f(x0 + tw, y0 + tl, z),
+                Gf.Vec3f(x0, y0 + tl, z),
+            ]
+        )
+        counts.append(4)
+        idx.extend([b, b + 1, b + 2, b + 3])
+        colors.append(Gf.Vec3f(*rgb))
+
+    mesh = UsdGeom.Mesh.Define(stage, f"{panel_path}/DustFilm")
+    mesh.CreatePointsAttr(pts)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(idx)
+    mesh.CreateSubdivisionSchemeAttr("none")
+    # One colour per face ("uniform" interpolation) — the baked dust-over-substrate.
+    cp = mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.uniform)
+    cp.Set(colors)
+    _bind(mesh.GetPrim(), material)
+    return len(counts)
 
 
 def _keepout_viz_material(stage) -> UsdShade.Material:
@@ -228,6 +344,7 @@ def build(farm_cfg: dict, out_path: str) -> str:
         name: _make_material(stage, f"/World/Looks/{name}", diff, emis, rough, metal)
         for name, (diff, emis, rough, metal) in _LOOKS.items()
     }
+    dust_mat = _dust_material(stage)
 
     # --- ground: heightfield mesh sampling the shared terrain function --------
     _build_ground_heightfield(stage, farm_cfg, layout, looks["ground"])
@@ -268,11 +385,10 @@ def build(farm_cfg: dict, out_path: str) -> str:
             prim.GetAttribute(pv.ATTR_STATE).Set(state.value)
             n_fault += 1
         rng = random.Random(f"{seed}:{site.panel_id}")
+        # Cell-level faults (hotspot) recolor cells; soiling is a film authored
+        # after the cells as a translucent overlay that ignores the cell grid.
         bad = fault_cells(state, n_crow, n_ccol, rng)
-        fault_look = {
-            pv.PanelState.SOILED: looks["cell_soiled"],
-            pv.PanelState.HOTSPOT: looks["cell_hotspot"],
-        }.get(state)
+        fault_look = {pv.PanelState.HOTSPOT: looks["cell_hotspot"]}.get(state)
 
         # --- cell grid on the top face: each cell a thin inset tile ----------
         cells = UsdGeom.Xform.Define(stage, path + "/Cells")
@@ -289,6 +405,10 @@ def build(farm_cfg: dict, out_path: str) -> str:
                 capi.SetScale(Gf.Vec3f(cw * gap, cl * gap, ph * 0.5))
                 look = fault_look if (fault_look and (r, c) in bad) else looks["cell_healthy"]
                 _bind(cell.GetPrim(), look)
+
+        # Soiling: a translucent dust film over the glass, crossing cell borders.
+        if state is pv.PanelState.SOILED:
+            _build_dust_film(stage, path, pw, pl, ph, n_ccol, n_crow, rng, dust_mat)
 
         _label(prim, "panel", state.value)
 

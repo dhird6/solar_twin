@@ -152,8 +152,8 @@ def _parse_json_response(raw: str) -> dict[str, Any]:
 
 def _assess_prompt(context: PanelContext) -> str:
     return (
-        "You are inspecting a solar panel image for visible faults "
-        "(soiling, hotspots, cracks, string dropout, diode faults, shading).\n"
+        "You are inspecting a solar panel image for visible faults.\n"
+        f"Faults to look for:\n{_taxonomy_block()}\n"
         f"Panel: {context.get('panel_id')}\n"
         f"Prior inspection history: {context.get('history') or 'none'}\n"
         "Is this panel clean or does it look suspect? Respond with ONLY this "
@@ -161,10 +161,47 @@ def _assess_prompt(context: PanelContext) -> str:
     )
 
 
+#: What each taxonomy term MEANS, in visible-light terms. Passing bare enum names
+#: ("soiled, hotspot, crack, ...") makes the model guess: it reliably mapped a dusty
+#: patch to "hotspot" because any localized anomaly matches its hotspot prior. Given
+#: these definitions and the identical frame, it answered "soiled" correctly.
+#: Every class is defined — defining only the one we want would bias the classifier.
+_STATE_DEFINITIONS: dict[PanelState, str] = {
+    PanelState.HEALTHY: "no visible defect; uniform cells, clean glass",
+    PanelState.SOILED: (
+        "dust/dirt/sand deposited ON the glass surface — an opaque tan or brown "
+        "patch lying over the cells, often heaviest at the panel's lower edge"
+    ),
+    PanelState.HOTSPOT: (
+        "a single overheating CELL — a small bright or glowing red/orange spot "
+        "confined to one cell, not a deposit on the surface"
+    ),
+    PanelState.CRACK: "a fracture line running across the glass or cells",
+    PanelState.STRING_DROPOUT: (
+        "a whole row/string of cells uniformly darker or inactive"
+    ),
+    PanelState.DIODE_FAULT: (
+        "a bypass-diode failure — one contiguous SECTION of the module inactive"
+    ),
+    PanelState.SHADING: (
+        "a shadow CAST BY an external object (pole, turbine blade, cloud) — grey "
+        "and darker than the cells, following the object's shape, with no deposit"
+    ),
+    PanelState.UNKNOWN: "the image is unclear or the fault does not match the above",
+}
+
+
+def _taxonomy_block() -> str:
+    return "\n".join(
+        f"- {state.value}: {desc}" for state, desc in _STATE_DEFINITIONS.items()
+    )
+
+
 def _diagnose_prompt(context: PanelContext) -> str:
     taxonomy = ", ".join(s.value for s in PanelState)
     return (
-        "Diagnose the exact fault on this solar panel image. "
+        "Diagnose the exact fault on this solar panel image.\n"
+        f"Fault definitions:\n{_taxonomy_block()}\n"
         f"Choose exactly one of: {taxonomy}.\n"
         f"Panel: {context.get('panel_id')}\n"
         f"Prior inspection history: {context.get('history') or 'none'}\n"

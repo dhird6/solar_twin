@@ -114,7 +114,44 @@ exactly why the control ran before any model swap:**
    `_RENDER_SETTLE_UPDATES` but `capture()` never calls it; settled vs unsettled
    frames are byte-identical, so that is NOT the bug.)*
 
-**→ Revised next step (do BEFORE any model A/B):** make the soiling physically
+### ✅ RESOLVED — **KPI-01 = 1.00** (run `20260724T172011`), SLICE-1 closed
+`faults_detected 2/2 · detection_rate 1.00 · false positives 0/8`. Both soiled
+panels: screen=suspect → escalated → diagnosed **`soiled`**, with correct reasoning
+(*"a tan-coloured deposit along the lower edge … opaque, uneven layer"* — it names
+the lower-edge accumulation we modelled). **Four distinct root causes**, in order
+found:
+1. **Flat colour swatches** → PV cell grid + sun/shadows + panel-relative standoffs.
+2. **Keep-out viz spheres shadowing the farm** (brightness 126→46) → `purpose="guide"`.
+3. **Unphysical fault signature** (opaque, cell-aligned) → translucent dust *film*
+   crossing cell borders, ragged outline, lower-edge accumulation. Two stack findings
+   learned the hard way: **RTX renders `UsdPreviewSurface` opacity as a hard CUTOUT**
+   (bake the blend into per-face `displayColor` instead), and the baked sub-grid must
+   be **~8× the cell grid** or it quantises into slabs. Also: alpha must stay HIGH
+   (0.72–0.94) — at low alpha the bright aluminium frame survived *through* the dust
+   as a grid of bright lines, which the VLM read as *"a cluster of bright pixels…
+   characteristic of a hotspot"*.
+4. **⭐ THE ACTUAL CLASSIFICATION BUG — the PROMPT, not the world.** `_diagnose_prompt`
+   passed **bare enum names** (`soiled, hotspot, crack, …`) with no definitions, so the
+   model guessed and mapped any localized anomaly to its *hotspot* prior. A 60-second
+   HTTP probe of the SAME frame settled it: bare taxonomy → `hotspot`; free description
+   → *"a shadow or different material"*; asked directly *"is there dust?"* → *"No, the
+   panel appears clean"*; **taxonomy + per-class definitions → `soiled`** ✅. Fix:
+   `_STATE_DEFINITIONS` in `cosmos_reason.py` defines **all 8** states (defining only
+   `soiled` would bias the classifier) in visible-light terms — soiling = deposit ON
+   the glass; hotspot = one glowing CELL; shading = shadow CAST BY an object, no deposit.
+
+**METHOD LESSON (worth keeping):** ~3 world-rebuild cycles were spent tuning materials
+when the failure was in the prompt. **When the MODEL's output is what's failing,
+interrogate the model directly (cheap HTTP probe on a saved frame) BEFORE rebuilding
+the world.** The material work wasn't wasted — the bright-frame-line artifact was real
+— but it was not this bug.
+
+**⚠ Scope caveat:** 10 panels, one seed, one fault type. KPI-01=1.00 is a green light,
+NOT a robustness claim. The real test is `KPI-03` (false-fault under sweeping blade
+shadows) — where the *shading vs soiling* distinction we just defined is exactly what
+gets stressed.
+
+**→ Superseded next step** (kept for the record): make the soiling physically
 faithful — (a) **blend, don't replace** (semi-transparent dust film, blue cell
 still reads underneath); (b) **ignore cell boundaries** (overlay on the module
 surface, ragged edges, per-cell density falloff); (c) **physically-motivated
