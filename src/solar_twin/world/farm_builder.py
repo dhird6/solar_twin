@@ -440,21 +440,12 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # together, as a real site's do. Backtracking (rows limiting rotation at low
     # sun to avoid shading each other) is NOT modelled -- so self-shading here is
     # the worst case, which is the useful case for KPI-03 (`NFR-07`).
-    tracker_rot = None
-    if real_sun is not None and layout.site is not None:
-        from solar_twin.world.solar import (
-            DEFAULT_MAX_ROTATION_DEG,
-            tracker_rotation_deg,
-        )
-
-        tracker_rot = tracker_rotation_deg(
-            elev,
-            azim,
-            axis_azimuth_deg=0.0,  # Khavda torque tubes run north-south
-            max_rotation_deg=float(
-                sun_cfg.get("tracker_max_rotation_deg", DEFAULT_MAX_ROTATION_DEG)
-            ),
-        )
+    # Computed by `layout`, not here: the drone waypoints are placed above the
+    # panel's tilted upper edge, so the builder and `panel_top_z` must use the
+    # SAME angle. Two copies of this formula is how the sun and the trackers came
+    # to disagree once already.
+    tracker_rot = layout.tracker_rotation_deg()
+    if tracker_rot is not None:
         print(f"  tracker: {tracker_rot:+.1f}deg about the N-S axis", flush=True)
 
     pdim = farm_cfg.get("panel", {})
@@ -507,9 +498,14 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
         # Substrate / backsheet + aluminium frame look (the dark grid lines
         # between cells show through as the module frame).
+        # Module extent comes from the SITE when it knows (a CAD import carries
+        # real hardware dimensions); `panel.width/length` is the procedural
+        # fallback. See PanelSite.size_x_m for why this is not one global pair.
+        sx = site.size_x_m or pw
+        sy = site.size_y_m or pl
         geom = UsdGeom.Cube.Define(stage, path + "/Geom")
         geom.CreateSizeAttr(1.0)
-        UsdGeom.XformCommonAPI(geom).SetScale(Gf.Vec3f(pw, pl, ph))
+        UsdGeom.XformCommonAPI(geom).SetScale(Gf.Vec3f(sx, sy, ph))
         _bind(geom.GetPrim(), looks["frame"])
 
         # Seeded fault on the source of truth; localized to a set of cells.
@@ -525,12 +521,12 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
         # --- cell grid on the top face: each cell a thin inset tile ----------
         cells = UsdGeom.Xform.Define(stage, path + "/Cells")
-        cw, cl = pw / n_ccol, pl / n_crow
+        cw, cl = sx / n_ccol, sy / n_crow
         gap = 0.86  # tile shrink -> dark grid lines between cells
         for r in range(n_crow):
             for c in range(n_ccol):
-                cx = -pw / 2 + (c + 0.5) * cw
-                cy = -pl / 2 + (r + 0.5) * cl
+                cx = -sx / 2 + (c + 0.5) * cw
+                cy = -sy / 2 + (r + 0.5) * cl
                 cell = UsdGeom.Cube.Define(stage, f"{path}/Cells/c_{r}_{c}")
                 cell.CreateSizeAttr(1.0)
                 capi = UsdGeom.XformCommonAPI(cell)
@@ -541,7 +537,7 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
         # Soiling: a translucent dust film over the glass, crossing cell borders.
         if state is pv.PanelState.SOILED:
-            _build_dust_film(stage, path, pw, pl, ph, n_ccol, n_crow, rng, dust_mat)
+            _build_dust_film(stage, path, sx, sy, ph, n_ccol, n_crow, rng, dust_mat)
 
         _label(prim, "panel", state.value)
 

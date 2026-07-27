@@ -241,6 +241,15 @@ def expand_sites(site: SiteSpec, terrain_z, panel_site_cls, panel_id_fn):
                     geo_position=geo_position,
                     azimuth_deg=table.rot_deg,
                     tilt_deg=site.nominal_tilt_deg,
+                    # ⚠ The cross-over is deliberate, not a typo. The site file
+                    # names module dimensions relative to the TABLE (`length_m`
+                    # = the table's width, i.e. the chord across the aisle;
+                    # `width_m` = the step along the torque tube). An unrotated
+                    # table's tube runs along stage +Y, so the chord is +X. Feed
+                    # them the other way round and every module is authored a
+                    # half-chord wide and overlapping its neighbour 2:1.
+                    size_x_m=site.module_length_m,
+                    size_y_m=site.module_width_m,
                 )
             )
         if not latlon_ok and table is site.tables[0]:

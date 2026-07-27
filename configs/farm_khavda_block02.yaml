@@ -16,16 +16,23 @@ layout:
   kind: file
   path: configs/layouts/khavda_a10b_block02.yaml
 
-# Module geometry mirrors the CAD (2278 x 1134 mm, portrait on the torque tube).
-# `tilt_deg` is NOT used for a tracker site: per-panel tilt/azimuth come from the
-# site file. Cell counts drive the rendered PV cell grid only.
+# ⚠ Module WIDTH/LENGTH are deliberately absent: the site file already carries
+# the real CAD dimensions (2278 mm chord across the aisle x 1134 mm along the
+# torque tube) and `layout_import` feeds them straight to the builder. Naming
+# them a second time here is what transposed them — the block was authored with
+# a 1.134 m chord and 112 modules overlapping 2:1 along their own tube, which
+# silently removed the inter-row self-shading KPI-03 depends on.
+#
+# `tilt_deg` is NOT used for a tracker site either: the live angle comes from
+# `sun.timestamp` below. Cell counts drive the rendered PV cell grid only, and
+# they ARE axis-named — cols run across stage +X (the 2.278 m chord), rows along
+# +Y (the 1.134 m step), which is why they look flipped versus the module's
+# portrait mounting.
 panel:
-  width: 1.134
-  length: 2.278
   height: 0.035
   mount_height: 1.5    # HSAT torque-tube height ⚠ verify against the MMS datasheet
-  cell_cols: 6
-  cell_rows: 12
+  cell_cols: 12
+  cell_rows: 6
 
 # ⚠ Placeholder terrain. Khavda is a real, graded site — this synthetic height
 # field is NOT its topography. Keep `flat` until a real DEM is referenced
