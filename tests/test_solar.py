@@ -7,7 +7,10 @@ import datetime as dt
 import math
 
 from solar_twin.world.solar import (
+    cross_axis_angle_deg,
     parse_timestamp,
+    self_shaded_fraction,
+    shadow_chord_m,
     solar_position,
     tracker_rotation_deg,
 )
@@ -77,3 +80,66 @@ def test_naive_timestamp_is_treated_as_utc_not_local():
     b = parse_timestamp("2026-06-21T06:22:00+00:00")
     assert a == b
     assert a.tzinfo is not None
+
+
+# --- Inter-row self-shading: the KPI-03 stimulus, quantified ----------------
+# Khavda BLOCK-02 module chord and the two row pitches present in the CAD.
+MODULE_W = 2.278
+PITCH_5, PITCH_6 = 5.0, 6.0
+
+
+def test_shadow_chord_equals_module_width_with_the_sun_overhead():
+    """Flat panel, sun straight up -> the shadow is the panel's own footprint."""
+    assert math.isclose(shadow_chord_m(MODULE_W, 90.0, 180.0), MODULE_W, rel_tol=1e-6)
+
+
+def test_shadow_chord_matches_w_over_cos_while_the_tracker_still_tracks():
+    """Below the mechanical stop the panel normal is ON the sun, so the closed
+    form collapses to w / cos(theta) — an independent check of the projection."""
+    elev, az = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 4, 0))
+    theta = cross_axis_angle_deg(elev, az)
+    assert abs(theta) < 60.0, theta  # still tracking truly, not clamped
+    expect = MODULE_W / math.cos(math.radians(abs(theta)))
+    assert math.isclose(shadow_chord_m(MODULE_W, elev, az), expect, rel_tol=1e-9)
+
+
+def test_no_self_shading_once_the_tracker_tracks_truly():
+    """Mid-morning the trackers are off their stops and the aisle is clear: a
+    true-tracking row's shadow is w/cos(theta) = 3.27 m, under both pitches."""
+    elev, az = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 4, 0))
+    assert self_shaded_fraction(PITCH_5, MODULE_W, elev, az) == 0.0
+    assert self_shaded_fraction(PITCH_6, MODULE_W, elev, az) == 0.0
+
+
+def test_the_scenario_timestamp_actually_produces_on_panel_shading():
+    """⚠ THE ANTI-HOLLOW-NULL GUARD. SLICE-3's KPI-03 read 0.00 because the
+    turbine shadow missed the panels entirely — the metric was right and the
+    STIMULUS was absent. configs/scenarios/khavda_selfshade.yaml claims 02:00Z
+    pins the trackers at their 60 deg stop and shades a real fraction of every
+    row. Assert that here, so editing the timestamp cannot silently gut the test.
+    """
+    elev, az = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 2, 0))
+    assert 15.0 < elev < 20.0, elev                      # low, but well up
+    assert math.isclose(tracker_rotation_deg(elev, az), 60.0)   # pinned at the stop
+    assert cross_axis_angle_deg(elev, az) > 70.0                # sun is past it
+    # ~30% shaded at the 5 m pitch, ~17% at the 6 m pitch. Both unmistakable.
+    assert 0.25 < self_shaded_fraction(PITCH_5, MODULE_W, elev, az) < 0.35
+    assert 0.12 < self_shaded_fraction(PITCH_6, MODULE_W, elev, az) < 0.22
+
+
+def test_self_shading_deepens_as_the_sun_drops():
+    """Monotone in the right direction: earlier morning -> longer shadow."""
+    fracs = []
+    for hour_utc in (2.5, 2.0, 1.5, 1.0):
+        elev, az = solar_position(
+            LAT, LON, dt.datetime(2026, 6, 21) + dt.timedelta(hours=hour_utc)
+        )
+        fracs.append(self_shaded_fraction(PITCH_5, MODULE_W, elev, az))
+    assert fracs == sorted(fracs), fracs
+    assert fracs[0] < 0.15 and fracs[-1] > 0.6
+
+
+def test_night_and_degenerate_inputs_shade_nothing():
+    assert shadow_chord_m(MODULE_W, -3.0, 90.0) == 0.0
+    assert self_shaded_fraction(PITCH_5, MODULE_W, -3.0, 90.0) == 0.0
+    assert self_shaded_fraction(0.0, MODULE_W, 20.0, 90.0) == 0.0

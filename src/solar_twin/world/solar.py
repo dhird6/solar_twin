@@ -133,6 +133,94 @@ def tracker_rotation_deg(
     return max(-max_rotation_deg, min(max_rotation_deg, rot))
 
 
+def cross_axis_angle_deg(
+    elevation_deg: float, azimuth_deg: float, axis_azimuth_deg: float = 0.0
+) -> float:
+    """The sun's projection angle onto the tracker's cross-axis plane, degrees
+    from vertical — i.e. the rotation a tracker with *no* mechanical limit would
+    take. Equals `tracker_rotation_deg` until the real tracker hits its stop.
+
+    Kept separate because the gap between this and the clamped rotation is
+    exactly what causes inter-row self-shading: while the tracker still tracks
+    truly, its shadow is the row's own footprint and lands in the aisle; once it
+    is pinned at the stop, the shadow lengthens without limit.
+    """
+    return tracker_rotation_deg(
+        elevation_deg, azimuth_deg, axis_azimuth_deg, max_rotation_deg=90.0
+    )
+
+
+def shadow_chord_m(
+    module_width_m: float,
+    elevation_deg: float,
+    azimuth_deg: float,
+    axis_azimuth_deg: float = 0.0,
+    max_rotation_deg: float = DEFAULT_MAX_ROTATION_DEG,
+) -> float:
+    """Width of one row's shadow measured ACROSS the aisle (cross-axis), metres.
+
+    Cross-section geometry in the plane perpendicular to the torque tube. The
+    module chord `w` is tilted `beta` from horizontal; the sun's projected ray
+    arrives `theta` from vertical. Projecting both chord endpoints down the ray
+    onto a horizontal plane gives
+
+        chord = w * cos(theta - beta) / cos(theta)
+
+    Two sanity anchors: at `theta == beta` (true tracking, panel normal on the
+    sun) this is `w / cos(theta)`, and at `theta == beta == 0` (flat panel, sun
+    overhead) it is `w`. Height cancels — for equal-height rows on level ground
+    the shadow's *width* does not depend on how high the torque tube sits, only
+    its position does.
+
+    Returns 0.0 at or below the horizon (a stowed tracker at night). Near the
+    horizon `cos(theta)` collapses and the chord runs away, so the result is
+    capped at 1000x the module width rather than returning `inf`.
+    """
+    if elevation_deg <= 0.0:
+        return 0.0
+    theta = abs(cross_axis_angle_deg(elevation_deg, azimuth_deg, axis_azimuth_deg))
+    beta = abs(
+        tracker_rotation_deg(
+            elevation_deg, azimuth_deg, axis_azimuth_deg, max_rotation_deg
+        )
+    )
+    cos_theta = math.cos(math.radians(theta))
+    if cos_theta <= 1e-3:
+        return module_width_m * 1000.0
+    chord = module_width_m * math.cos(math.radians(theta - beta)) / cos_theta
+    return min(chord, module_width_m * 1000.0)
+
+
+def self_shaded_fraction(
+    row_pitch_m: float,
+    module_width_m: float,
+    elevation_deg: float,
+    azimuth_deg: float,
+    axis_azimuth_deg: float = 0.0,
+    max_rotation_deg: float = DEFAULT_MAX_ROTATION_DEG,
+) -> float:
+    """Fraction (0..1) of a row's surface shaded by the row up-sun of it.
+
+    This is the `KPI-03` stimulus, quantified before it is rendered — SLICE-3's
+    turbine shadow was measured only after the fact and turned out to miss the
+    panels entirely, producing a hollow "0% false faults". Computing the expected
+    shading first means a scenario can be *asserted* to have a stimulus.
+
+    Assumptions, all of which flatter the shadow (`NFR-07`): identical adjacent
+    rows, equal height, level ground, and **no backtracking** — a real tracker
+    controller would rotate back toward flat to avoid exactly this. So treat the
+    number as the worst case, not as what the plant does.
+    """
+    if row_pitch_m <= 0.0:
+        return 0.0
+    chord = shadow_chord_m(
+        module_width_m, elevation_deg, azimuth_deg, axis_azimuth_deg, max_rotation_deg
+    )
+    if chord <= row_pitch_m:
+        return 0.0
+    return min(1.0, (chord - row_pitch_m) / chord)
+
+
 def parse_timestamp(value: str | _dt.datetime) -> _dt.datetime:
     """Accept an ISO-8601 string (or a datetime) as a UTC instant.
 
