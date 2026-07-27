@@ -162,7 +162,10 @@ class FarmLayout:
         self.site = None
 
         if self.kind == "file":
-            self._init_from_file(str(layout_cfg["path"]))
+            self._init_from_file(
+                str(layout_cfg["path"]),
+                max_tables=int(layout_cfg.get("max_tables", 0) or 0),
+            )
             return
 
         grid = farm_cfg["grid"]
@@ -173,11 +176,19 @@ class FarmLayout:
         self.origin = tuple(float(v) for v in grid.get("origin", [0.0, 0.0, 0.0]))
         self.sites = self._build_sites()
 
-    def _init_from_file(self, path: str) -> None:
-        """Expand a CAD-derived site file into per-module panel sites."""
-        from solar_twin.world.layout_import import expand_sites, load_site
+    def _init_from_file(self, path: str, max_tables: int = 0) -> None:
+        """Expand a CAD-derived site file into per-module panel sites.
+
+        `max_tables > 0` renders only a contiguous southern band of the site —
+        essential while the full 273-table block is ~2.2M USD prims (`IF-09`).
+        Panel coordinates are unchanged by subsetting, so a subset is a genuine
+        crop of the real site rather than a different one.
+        """
+        from solar_twin.world.layout_import import expand_sites, load_site, subset_site
 
         site = load_site(path)
+        if max_tables:
+            site = subset_site(site, max_tables)
         self.site = site
         self.origin = (0.0, 0.0, 0.0)  # stage origin == site file's `origin` anchor
         # Grid-shaped attributes still have consumers (`inspection_targets`'s

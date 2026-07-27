@@ -145,3 +145,51 @@ def test_to_wgs84_lands_on_the_real_site_or_is_absent():
     lat, lon = got
     assert 23.5 < lat < 24.5, lat
     assert 68.5 < lon < 70.0, lon
+
+
+def test_subset_is_a_crop_not_a_different_site():
+    """A `--subset` build must be a genuine crop of the full site.
+
+    Two properties, both load-bearing:
+      * panel coordinates are identical to the full build, and
+      * panel IDs are NOT renumbered.
+    If IDs shifted, `R00-C000` would mean different hardware in a subset run and
+    verdicts would be written onto the wrong panels.
+    """
+    site_path = Path(__file__).resolve().parents[1] / "configs/layouts/khavda_a10b_block02.yaml"
+    if not site_path.exists():  # pragma: no cover
+        return
+    base = {"seed": 1, "terrain": {"kind": "flat"}}
+    full = FarmLayout({**base, "layout": {"kind": "file", "path": str(site_path)}})
+    sub = FarmLayout(
+        {**base, "layout": {"kind": "file", "path": str(site_path), "max_tables": 5}}
+    )
+    assert len(sub.site.tables) == 5
+    assert sub.n_panels < full.n_panels
+
+    full_pos = {s.panel_id: s.position for s in full.sites}
+    for s in sub.sites:
+        assert s.panel_id in full_pos, s.panel_id
+        assert s.position == full_pos[s.panel_id]
+
+    # The band is the SOUTHERNMOST tables, so the subset is contiguous farm a drone
+    # can fly down — not a scatter of tables with impossible gaps between them.
+    sub_ns = {t.northing for t in sub.site.tables}
+    full_ns = sorted({t.northing for t in full.site.tables})
+    assert max(sub_ns) <= full_ns[len(sub_ns) - 1], "subset is not the southern band"
+
+
+def test_subset_bounds_are_smaller_and_origin_anchored():
+    site_path = Path(__file__).resolve().parents[1] / "configs/layouts/khavda_a10b_block02.yaml"
+    if not site_path.exists():  # pragma: no cover
+        return
+    sub = FarmLayout(
+        {
+            "seed": 1,
+            "terrain": {"kind": "flat"},
+            "layout": {"kind": "file", "path": str(site_path), "max_tables": 5},
+        }
+    )
+    min_x, min_y, max_x, max_y = sub.bounds()
+    assert min_x >= 0.0 and min_y >= 0.0
+    assert max_x < 40.0 and max_y < 140.0  # 5 tables ~ one short band

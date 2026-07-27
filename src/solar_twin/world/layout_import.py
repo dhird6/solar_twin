@@ -42,13 +42,19 @@ the plan rotation of the table, which for this site is 0 for every table.
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
 class TableSpec:
     """One tracker table, exactly as the CAD placed it."""
 
+    #: Position in the CANONICAL site-file order. Assigned once at parse time and
+    #: never renumbered, because it becomes the panel's `row` — and therefore its
+    #: `panel_id` and USD prim path. Deriving it from a list position instead would
+    #: make `R00-C000` mean a different physical panel in a subset than in the full
+    #: build, so a subset mission would write verdicts onto the wrong hardware.
+    index: int
     table_id: str
     easting: float
     northing: float
@@ -104,6 +110,7 @@ def parse_site(cfg: dict) -> SiteSpec:
 
     tables = [
         TableSpec(
+            index=i,
             table_id=str(t.get("id", f"T{i:04d}")),
             easting=float(t["e"]),
             northing=float(t["n"]),
@@ -127,6 +134,29 @@ def parse_site(cfg: dict) -> SiteSpec:
         nominal_tilt_deg=float(tracker.get("nominal_tilt_deg", 0.0)),
         tables=tables,
     )
+
+
+def subset_site(site: SiteSpec, max_tables: int) -> SiteSpec:
+    """Keep only the first `max_tables` tables, as a CONTIGUOUS southern band.
+
+    Rendering all 273 Khavda tables means ~2.2M USD prims, which is impractical
+    until the instancing/LOD path exists (`IF-09`). A subset makes the pipeline
+    provable in minutes instead.
+
+    Two properties matter and neither is incidental:
+
+    * **Contiguity.** Tables are ordered south-to-north, then west-to-east, so a
+      subset is a real patch of farm a drone can fly down — not a scatter of
+      unrelated tables with impossible gaps.
+    * **Coordinate stability.** The `origin` anchor is NOT recomputed, so a panel
+      keeps the exact stage coordinates it has in the full build. A subset render
+      is therefore a crop of the real site, not a different site — and a mission
+      flown against it matches the full-site geometry.
+    """
+    if max_tables <= 0 or max_tables >= len(site.tables):
+        return site
+    ordered = sorted(site.tables, key=lambda t: (t.northing, t.easting))
+    return replace(site, tables=ordered[:max_tables])
 
 
 def load_site(path: str) -> SiteSpec:
@@ -189,7 +219,8 @@ def expand_sites(site: SiteSpec, terrain_z, panel_site_cls, panel_id_fn):
     human-facing identity is really `<table_id>` + module number.
     """
     sites = []
-    for ti, table in enumerate(site.tables):
+    for table in site.tables:
+        ti = table.index  # canonical, subset-stable — see TableSpec.index
         latlon_ok = True
         for mi, (e, n) in enumerate(module_positions(table)):
             x = e - site.origin_easting
@@ -212,7 +243,7 @@ def expand_sites(site: SiteSpec, terrain_z, panel_site_cls, panel_id_fn):
                     tilt_deg=site.nominal_tilt_deg,
                 )
             )
-        if not latlon_ok and ti == 0:
+        if not latlon_ok and table is site.tables[0]:
             print(
                 "  [warn] pyproj unavailable — pv:geo_position left at (0,0); "
                 "install pyproj for true lat/lon (FR-20)"

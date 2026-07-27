@@ -546,6 +546,15 @@ def main(argv: list[str] | None = None) -> int:
         "overrides applied) instead of a bare farm.yaml",
     )
     ap.add_argument("--out", default="assets/farm.usd", help="output USD path")
+    ap.add_argument(
+        "--subset",
+        type=int,
+        default=0,
+        help="layout.kind=file only: author just the first N tracker tables as a "
+        "contiguous southern band (0 = all). Use this to prove the pipeline "
+        "before the full block, which is ~2.2M prims. ⚠ pass the SAME --subset "
+        "to solar_twin.run, or the mission will target panels the stage lacks.",
+    )
     args = ap.parse_args(argv)
     if args.scenario:
         from solar_twin.scenario import load_scenario
@@ -555,6 +564,12 @@ def main(argv: list[str] | None = None) -> int:
         farm_cfg = _load_farm_cfg(args.farm)
     else:
         ap.error("provide a farm.yaml path, or --scenario")
+    if args.subset:
+        layout_cfg = dict(farm_cfg.get("layout") or {})
+        if layout_cfg.get("kind") != "file":
+            ap.error("--subset only applies to layout.kind: file")
+        layout_cfg["max_tables"] = args.subset
+        farm_cfg = {**farm_cfg, "layout": layout_cfg}
     build(farm_cfg, args.out)
     return 0
 

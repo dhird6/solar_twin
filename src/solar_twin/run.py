@@ -251,6 +251,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--runs-dir", default="runs", help="where to write run records")
     ap.add_argument(
+        "--subset",
+        type=int,
+        default=0,
+        help="layout.kind=file only: inspect just the first N tracker tables "
+        "(contiguous southern band; 0 = all). ⚠ MUST match the --subset used to "
+        "build the USD, or the mission targets panels the stage does not contain.",
+    )
+    ap.add_argument(
         "--farm-usd",
         default="assets/farm.usd",
         help="built USD farm (sim_native); build via world.farm_builder",
@@ -287,6 +295,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"scenario: {scn.name}  kpi_gates={scn.kpi_gates or '{}'}", flush=True)
     elif not (args.farm and args.mission):
         ap.error("provide farm and mission paths, or --scenario")
+
+    if args.subset:
+        # Must mirror farm_builder's --subset: the mission may only target panels
+        # the authored stage actually contains, or SimNativeTransport looks up prim
+        # paths that were never created.
+        if farm_cfg is None:
+            farm_cfg = _load_yaml(args.farm)
+        layout_cfg = dict(farm_cfg.get("layout") or {})
+        if layout_cfg.get("kind") != "file":
+            ap.error("--subset only applies to layout.kind: file")
+        layout_cfg["max_tables"] = args.subset
+        farm_cfg = {**farm_cfg, "layout": layout_cfg}
+        print(f"subset: first {args.subset} tracker tables only", flush=True)
 
     # run() writes + prints the record before closing the sim (which may
     # terminate the process), so no extra printing is needed here.
