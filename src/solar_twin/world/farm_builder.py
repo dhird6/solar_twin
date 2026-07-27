@@ -389,10 +389,33 @@ def build(farm_cfg: dict, out_path: str) -> str:
     sun_cfg = farm_cfg.get("sun", {}) or {}
     elev = float(sun_cfg.get("elevation_deg", 50.0))
     azim = float(sun_cfg.get("azimuth_deg", 25.0))
+    # `sun.timestamp` (ISO-8601, UTC) overrides the hand-set angles with the REAL
+    # solar position for this site and instant, and also drives the tracker angle
+    # below — one source, so the light and the panels cannot disagree.
+    real_sun = None
+    if sun_cfg.get("timestamp"):
+        from solar_twin.world.solar import parse_timestamp, solar_position
+
+        when = parse_timestamp(sun_cfg["timestamp"])
+        elev, azim = solar_position(layout.anchor.lat0, layout.anchor.lon0, when)
+        real_sun = (elev, azim)
+        print(
+            f"  sun {when.isoformat()}: elevation {elev:.1f}deg azimuth {azim:.1f}deg",
+            flush=True,
+        )
+        if elev <= 0.0:
+            print("  [warn] sun BELOW horizon — render will be dark", flush=True)
     # Dim a low sun a little (grazing light is less intense) so frames don't blow out.
     sun.CreateIntensityAttr(2400.0 if elev >= 30.0 else 1700.0)
+    # A DistantLight emits along local -Z. With rotation order XYZ,
+    #   L = Rz(rz)*Rx(rx)*(0,0,-1) = (-sin rx sin rz, sin rx cos rz, -cos rx)
+    # and we need L = -sun = (-cos E sin A, -cos E cos A, -sin E), giving
+    #   rx = 90 - elevation, rz = 180 - azimuth (azimuth measured from north).
+    # The legacy (-elev, 0, azim) form is kept for configs that set the angles by
+    # hand, so SC-05 and friends are unaffected.
+    _rot = (90.0 - elev, 0.0, 180.0 - azim) if real_sun else (-elev, 0.0, azim)
     UsdGeom.XformCommonAPI(sun).SetRotate(
-        (-elev, 0.0, azim), UsdGeom.XformCommonAPI.RotationOrderXYZ
+        _rot, UsdGeom.XformCommonAPI.RotationOrderXYZ
     )
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
     # Ambient fill (config knob): lowering it deepens shadows toward near-black — a
@@ -411,6 +434,28 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
     # --- optional shading occluder (KPI-03 hard-shadow stressor) --------------
     _build_shading_occluder(stage, farm_cfg, layout, looks["structure"])
+
+    # HSAT tracker angle. One angle for the whole block: every table shares the
+    # same N-S axis and sees the same sun at this instant, so the rows rotate
+    # together, as a real site's do. Backtracking (rows limiting rotation at low
+    # sun to avoid shading each other) is NOT modelled -- so self-shading here is
+    # the worst case, which is the useful case for KPI-03 (`NFR-07`).
+    tracker_rot = None
+    if real_sun is not None and layout.site is not None:
+        from solar_twin.world.solar import (
+            DEFAULT_MAX_ROTATION_DEG,
+            tracker_rotation_deg,
+        )
+
+        tracker_rot = tracker_rotation_deg(
+            elev,
+            azim,
+            axis_azimuth_deg=0.0,  # Khavda torque tubes run north-south
+            max_rotation_deg=float(
+                sun_cfg.get("tracker_max_rotation_deg", DEFAULT_MAX_ROTATION_DEG)
+            ),
+        )
+        print(f"  tracker: {tracker_rot:+.1f}deg about the N-S axis", flush=True)
 
     pdim = farm_cfg.get("panel", {})
     # NOTE: no global `tilt_deg` here any more — tilt/azimuth are per-site
@@ -445,10 +490,20 @@ def build(farm_cfg: dict, out_path: str) -> str:
         x, y, gz = site.position
         api = UsdGeom.XformCommonAPI(prim)
         api.SetTranslate(Gf.Vec3d(x, y, gz + mount_h))
-        api.SetRotate(
-            (site.tilt_deg, 0.0, site.azimuth_deg),
-            UsdGeom.XformCommonAPI.RotationOrderXYZ,
-        )
+        if tracker_rot is None:
+            # Fixed-tilt site: tilt is about the row axis (X).
+            api.SetRotate(
+                (site.tilt_deg, 0.0, site.azimuth_deg),
+                UsdGeom.XformCommonAPI.RotationOrderXYZ,
+            )
+        else:
+            # HSAT: the torque tube runs NORTH-SOUTH (+Y), so tracking rotation is
+            # about Y. Rotating about X would tilt panels along the tube, which this
+            # hardware physically cannot do.
+            api.SetRotate(
+                (0.0, tracker_rot, site.azimuth_deg),
+                UsdGeom.XformCommonAPI.RotationOrderXYZ,
+            )
 
         # Substrate / backsheet + aluminium frame look (the dark grid lines
         # between cells show through as the module frame).

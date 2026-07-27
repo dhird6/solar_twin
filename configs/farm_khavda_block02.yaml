@@ -49,3 +49,13 @@ faults:
 
 # No turbines in this block; the keep-out audit simply finds nothing to clamp.
 turbines: []
+
+# Real solar time. Drives BOTH the sun light and the HSAT tracker angle from one
+# instant, so they cannot disagree. Solar noon at 69.42 E is 07:22 UTC, so this is
+# mid-morning local: the sun is in the east and the rows rotate east to face it,
+# which also puts each row's shadow into the aisle west of it (the KPI-03
+# self-shading stimulus). Remove this block to fall back to hand-set
+# sun.elevation_deg / azimuth_deg.
+sun:
+  timestamp: "2026-06-21T04:00:00Z"
+  tracker_max_rotation_deg: 60.0
