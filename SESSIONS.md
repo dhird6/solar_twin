@@ -17,6 +17,78 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-27 — Session 10: KPI-03 measured for real ✅ (0.00 on 560 panels) + two geometry bugs the check exposed
+**The false-fault number is finally trustworthy.** SLICE-3's 0.00 was hollow — the
+turbine shadow missed the panels. This one has a **verified on-panel stimulus and its
+own unshaded control inside the same run**, so it means what it says.
+
+**The result.** Run `runs/20260727T183423`, scenario `khavda_selfshade`, live Cosmos
+Reason-1, 560 healthy panels of the real Khavda BLOCK-02 (`--subset 5`), 6773 s
+(~12.1 s/panel):
+
+| group | n | escalated | **false faults** |
+|---|---|---|---|
+| shaded (4 tables, self-shaded by their eastern neighbour) | 448 | 8 (1.8%) | **0** |
+| control (R243, eastmost — nothing up-sun of it) | 112 | 2 (1.8%) | **0** |
+
+**KPI-03 = 0.00**, gate was 0.05. The finding is not only the zero: the escalation
+rate is **1.8% in both groups**, so the tracker shadow does not measurably shift the
+screening decision either. Escalations do not track shading depth (R244 at ~30%
+shaded escalated 0; R253 at ~17% escalated 4), which is what you would expect if
+they are model noise rather than a shadow response. The confirm pass cleared all 10.
+
+**The stimulus, quantified BEFORE rendering** (`world/solar.py`: new
+`cross_axis_angle_deg` / `shadow_chord_m` / `self_shaded_fraction`, pure, tested).
+At `2026-06-21T02:00Z` the sun is 17.2 deg up, the cross-axis angle is 72 deg against
+a **60 deg mechanical stop**, so every tracker is pinned and throws a 7.20 m shadow
+into 5/6 m aisles → predicted ~30%/~17% of each row shaded. Measured on the frames the
+VLM actually received, counting **PV-glass pixels only**: 34.1% / 34.0% dark on the two
+5 m-pitch tables, 29.8% / 26.6% on the 6 m ones, **19.9% on the control**. The two
+identical-pitch tables agree to 0.1%. Evidence + captures archived in the run dir
+(`STIMULUS.md`). `tests/test_solar.py` asserts the timestamp still produces shading, so
+editing it cannot silently gut the test.
+
+**⚠⚠ TWO GEOMETRY BUGS, found only because the stimulus was checked first.** Both were
+live in the Session-9 "verified on the Spark" build.
+1. **The module was authored TRANSPOSED.** `panel.width/length` mapped straight to
+   stage X/Y, but the procedural farm's rows run along **+X** while a CAD table's
+   torque tube runs along **+Y** — the two sources need opposite mappings. The real
+   block was built with a **1.134 m chord instead of 2.278 m**, and 112 modules at a
+   1.148 m pitch each 2.278 m long **overlapped their neighbours 2:1 along their own
+   tube**. It also erased the hazard: a 1.134 m chord throws a 3.6 m shadow into a
+   5-6 m aisle, so nothing lands on the next row — **KPI-03 would have read a hollow
+   0.00 for the second time, on a farm with no shadow on any panel.** Fix: module
+   extent is now **per-site** (`PanelSite.size_x_m/size_y_m`), fed from the CAD site
+   file for an import. The site file already carried the real dimensions; naming them
+   a second time in the config is what transposed them.
+2. **`panel_top_z` ignored TILT** — it returned mount height + half thickness. A
+   2.278 m module at the 60 deg stop raises its upper edge **0.99 m** above the torque
+   tube, so the 0.8 m confirm standoff put the camera **below that edge, inside the
+   row**. Same shape as the old abs-Z bug, one layer up. Top is now the panel's highest
+   point, and the tracker angle behind it comes from `FarmLayout.tracker_rotation_deg()`
+   — the builder authors panels from that same call, so geometry and waypoints cannot
+   drift apart (they already did once for the sun light vs the trackers).
+
+**Method note, worth keeping.** The aggregate frame brightness *did* separate shaded
+from control (52.9 vs 81.8 mean) **while the panels were identically lit** — the
+difference was entirely dark GROUND in frame. That is the precise Session-8 near-miss
+repeating itself. Only masking to PV-glass pixels showed the truth. **Never score a
+shading stimulus on whole-frame statistics.**
+
+**Honest scope.** One instant, one seed, one site, no backtracking (worst case), and
+Reason-1's confirm-pass notes are noticeably boilerplate across panels — a 0.00 here is
+a green light for the shading-vs-defect distinction, not a robustness claim. The panel
+is also viewed obliquely: at a 60 deg tracker angle a nadir camera sees a foreshortened
+module, which is realistic for this hazard but not an inspection-optimal viewpoint.
+
+**Also:** `TASKS.md` item 2 (merge `docs/cosmos3-edge-serving`) was **already done** at
+`16e9a35` — the list was stale. 108 Isaac-free tests (was 100). vLLM `vllm-cosmos` is
+left **running** on :8000 at util 0.4 (Isaac-coexistence setting).
+
+**⇢ NEXT:** (1) a second KPI-03 point at `01:30Z` (~50% shaded, dimmer) to see where the
+distinction breaks; (2) PBR materials + HDRI sky; (3) instancing/LOD (`IF-09`) before
+all 273 tables; (4) Pegasus/PX4 (`FR-06`); (5) real DEM.
+
 ## 2026-07-27 — Session 9: REAL Khavda layout in the twin ✅ + world-model reality check
 **The twin now runs on real hardware geometry.** BLOCK-02 of Khavda PLOT A10b,
 extracted from the vendor DWG, built in Isaac, inspected end-to-end.

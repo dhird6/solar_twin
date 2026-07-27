@@ -7,35 +7,36 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (added 2026-07-27, Session 9)
+## ⇢ NEXT SESSION — start here (updated 2026-07-27, Session 10)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Session 9.
+is just the current front of work. Full detail in `SESSIONS.md` Session 10.
 
-**State:** branch `ID-2-Layout-Integration`, 16 commits ahead of `origin`, nothing
-pushed, working tree clean, 100 tests passing. The twin runs on the real Khavda
-BLOCK-02 layout.
+**State:** branch `ID-2-Layout-Integration`, nothing pushed, working tree clean,
+108 Isaac-free tests. The twin runs on the real Khavda BLOCK-02 layout and now
+has a **real KPI-03 number: 0.00 false faults on 560 healthy panels** under a
+verified on-panel tracker-self-shading stimulus (`runs/20260727T183423`).
+
+**Done since the last list:** KPI-03 re-run ✅ (item 1) — and it exposed two
+geometry bugs that were live in the Session-9 build (transposed module chord,
+tilt-blind `panel_top_z`), both fixed. Item 2 (merge `docs/cosmos3-edge-serving`)
+was **already merged** at `16e9a35`; the entry was stale.
 
 **Do these first, in this order:**
 
-1. **Re-run KPI-03 on the real block.** This is the highest-value item and it is
-   now unblocked: HSAT tracker self-shading lands ON the panel surface,
-   predictably, across many panels — exactly what the turbine-blade stimulus
-   failed to deliver in SLICE-3. Build with a low-sun `sun.timestamp`
-   (e.g. `...T01:30:00Z`) and run with `perception: cosmos_reason`. Needs Reason-1
-   restarted (`docs/ENVIRONMENT.md`); port 8000 is free. This gives the first
-   trustworthy false-fault number on real hardware geometry, and retires the
-   `kpi03-denominator-caveat`.
-2. **Merge the `docs/cosmos3-edge-serving` branch** (commit `7319924`). It holds
-   the verified Cosmos 3 Edge serving recipe in `docs/ENVIRONMENT.md` and is NOT
-   on `ID-2-Layout-Integration`. Do not lose it.
-3. **PBR materials + HDRI sky.** Everything is flat `displayColor` /
+1. **A second KPI-03 point at a lower sun** (`2026-06-21T01:30:00Z`: elevation
+   10.7 deg, ~50% of each row shaded, whole scene dimmer). 02:00Z is the readable
+   hard-shadow case and the model was untroubled by it — 01:30Z is where the
+   shading-vs-defect distinction should start to break, and where "shadow"
+   becomes confounded with "underexposed". Same scenario file, one timestamp
+   change (and update the `test_solar.py` guard's expected band).
+2. **PBR materials + HDRI sky.** Everything is flat `displayColor` /
    `UsdPreviewSurface` and the ground is a uniform tan sheet. Biggest remaining
    visual step.
-4. **Instancing / LOD (`IF-09`)** before authoring all 273 tables (~2.2M prims).
-5. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
+3. **Instancing / LOD (`IF-09`)** before authoring all 273 tables (~2.2M prims).
+4. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
    installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
-6. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
+5. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
    the synthetic sine field on a real site.
 
 **Known ⚠ to resolve, not to forget:**
@@ -44,8 +45,19 @@ BLOCK-02 layout.
 - Module width `1.134 m` is inferred from pitch minus a standard ~14 mm gap.
   Self-consistent, but confirm against the module datasheet.
 - Tracker **backtracking** is not modelled, so self-shading is worst-case.
+- **Nadir viewpoint on a 60 deg tracker** sees the module heavily foreshortened.
+  Realistic for the hazard, but not an inspection-optimal camera pose — a real
+  survey would fly the panel normal. Worth a `mission.yaml` knob before drawing
+  conclusions about detection at low sun.
+- Reason-1's confirm-pass notes are **near-boilerplate** across panels. Fine for
+  a 0/560 false-fault result, but do not read them as per-panel analysis.
 - `tools/layout_from_pdf.py` deliberately **fails closed** — the PDF's two
   calibration sources disagree by 9.2%. Use the DXF path.
+
+**Never score a shading stimulus on whole-frame brightness.** Twice now the frame
+mean separated shaded from unshaded while the PANELS were identically lit — the
+difference was dark ground in frame. Mask to PV-glass pixels
+(`runs/20260727T183423/verify_shade.py`).
 
 ## Why two tracks, not one
 
