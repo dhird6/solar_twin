@@ -40,3 +40,10 @@ htmlcov/
 # Local env / secrets (keep NVIDIA_API_KEY etc. out of the repo)
 .env
 *.local
+
+# Vendor CAD drawings (proprietary client data, and binary). The layout is
+# ingested into configs/layouts/*.yaml by tools/layout_from_dxf.py — commit the
+# derived site file, never the drawings.
+solar_plant_layout/
+*.dwg
+*.dxf
