@@ -6,26 +6,49 @@ maintenance loop is the goal. See `CLAUDE.md` (operating brief) and
 `docs/PROJECT_BIBLE.md` (full plan).
 
 ## Status
-**Slice 0, Brain half complete** — the Isaac-free spine (schema, interfaces,
-escalation FSM, run record) runs and is tested end-to-end. The Isaac world half
-(`world/`, sim-native transport) is next, on the Spark. Rolling status in
-[`SESSIONS.md`](SESSIONS.md).
+**Slice 0-3 shipped; the twin now runs on a REAL plant.** Khavda PLOT A10b
+BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules at
+exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
+(560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
+sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
+rotor spin and rolling wheels. 100 Isaac-free tests.
+
+Rolling status and the next steps are in [`SESSIONS.md`](SESSIONS.md) — **read it
+first**.
 
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-pytest                                                # 31 tests
+PYTHONPATH=src python3 -m pytest -q                   # 100 tests, ~4 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
 ```
 
 ## Full mission (Isaac world, on the Spark)
+`python.sh` is **Isaac Sim's** launcher, not a file in this repo. Run from the
+project root with an absolute path, and set `PYTHONPATH` (the package is not
+installed into Isaac's bundled Python):
+
 ```bash
-./python.sh -m solar_twin.run configs/farm.yaml configs/mission.yaml
+ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+
+# The REAL plant (Khavda BLOCK-02). --subset keeps it to 5 tracker tables /
+# 560 panels / ~42k prims; the full 273 tables is ~2.2M prims and needs the
+# instancing work (IF-09) first. Pass the SAME --subset to both commands.
+PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+    configs/farm_khavda_block02.yaml --subset 5 --out assets/khavda.usd
+PYTHONPATH=src $ISAAC -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --subset 5 --farm-usd assets/khavda.usd
+
+# The original procedural 10-panel row still works unchanged:
+PYTHONPATH=src $ISAAC -m solar_twin.run configs/farm.yaml configs/mission.yaml
 ```
-Requires the World half (`world/farm_builder.py`, `world/sim_runtime.py`,
-`transport/sim_native.py`) — not built yet. See `docs/ENVIRONMENT.md`.
+
+Re-generate the site file from the vendor CAD with
+`tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see
+`docs/ENVIRONMENT.md`).
 
 ## Layout
 Pure-python (imports without Isaac): `schema/`, `perception/`, `transport/base`,

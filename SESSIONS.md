@@ -57,8 +57,50 @@ work**: the non-PV frame scored the HIGHEST grid-periodicity, and good frames ca
 MORE high-frequency energy than noise. So the gate is **reference-based** (edge
 retention vs the seed) and **rejects any frame with no seed as unverifiable**.
 
-**Next:** Transfer off-box seeded from this render; instancing/LOD (`IF-09`) before the
-full 273-table block (~2.2M prims); real DEM instead of flat terrain.
+**Realism pass — robots and sun (same session, later commits).**
+- **`world/robot_builder.py`** — the fleet was three marker CUBES (0.25 m drones with
+  a camera slung 0.3 m below, 0.4 m ground bot) that also slid sideways down the row.
+  Now a real quadcopter (fuselage, canopy, hazard tail, 4 booms + motors, spinning
+  rotor discs, skids, gimbal, ~0.9 m span) and a real rover (1.0 x 0.7 m chassis,
+  four 0.34 m wheels, bonnet, beacon, sensor mast). Procedural — this box has **no
+  Isaac asset pack and no configured asset root**, and procedural keeps it
+  reproducible from script + config.
+- **Motion**: rotors spin every update (alternating direction, as torque balance
+  requires), wheels roll by GROUND distance travelled, and `set_pose` derives heading
+  from the motion delta so vehicles face where they are going. ⚠ **Appearance and
+  articulation, NOT dynamics** — no lift, no traction, no collision (`NFR-07`).
+- **`world/solar.py`** — NOAA solar position + HSAT tracker angle, pure/Isaac-free.
+  `farm.yaml: sun.timestamp` (ISO-8601 UTC) now drives **both** the sun light and the
+  tracker rotation from one vector, so they cannot silently disagree (they were set
+  independently before). Verified at `2026-06-21T04:00Z` (09:30 local): sun 43.7 deg
+  elev / 79.9 deg azim → tracker **+45.9 deg east**; render shows rows foreshortened
+  from nadir, shadows thrown into the aisle west of each row, specular glint off the
+  sun-facing glass, drone frame mean 79.7 → 116.1.
+- Two sign conventions written out in-code because both are easy to get silently
+  wrong: light `rx = 90 - elev, rz = 180 - azim` (DistantLight emits along -Z); and
+  tracker rotation is **about Y, not X** — the torque tube runs N-S, so rotating
+  about X would tilt panels *along* the tube, which the hardware cannot do.
+- **Mistakes I made and fixed** (all caught by tests): subset builds renumbered panel
+  IDs, so `R00-C000` meant different hardware in a subset than in the full build and
+  verdicts would have landed on the wrong panels — `TableSpec.index` is now canonical.
+  Solar noon at 69.418 E is **07:22 UTC**, not 06:22. Asserting a "due south" azimuth
+  at the June solstice is meaningless at 24 N (sun passes 0.65 deg from zenith, azimuth
+  ill-conditioned) — moved to December. Float `rel_tol=1e-12` on differenced ~2.66e6 m
+  northings is unachievable — `abs_tol=1e-6`. And the block's hardware extent is
+  320 x **647** m, not 518 m: modules run a table-length north of each insert point.
+
+**⇢ NEXT SESSION: see `docs/TASKS.md` "NEXT SESSION — start here".** Short version:
+(1) **re-run KPI-03 on the real block** with a low-sun timestamp + `cosmos_reason` —
+tracker self-shading is finally a real on-panel stimulus, which retires the
+`kpi03-denominator-caveat`; (2) **merge branch `docs/cosmos3-edge-serving`** (`7319924`),
+it holds the Edge serving recipe and is NOT on this branch; (3) PBR materials + HDRI
+sky; (4) instancing/LOD (`IF-09`) before all 273 tables; (5) Pegasus/PX4 (`FR-06`) as
+its own investigation; (6) real DEM. Off-box Cosmos **Transfer** (not Edge, not
+text-to-image) remains the right data-factory tool.
+
+**Branch state:** `ID-2-Layout-Integration`, **16 commits ahead of origin, nothing
+pushed**, tree clean, **100 tests + 2 skipped**. Vendor CAD is gitignored (proprietary);
+only the derived `configs/layouts/*.yaml` is tracked.
 
 ## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
 **SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**

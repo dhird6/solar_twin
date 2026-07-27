@@ -7,6 +7,46 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
+## ⇢ NEXT SESSION — start here (added 2026-07-27, Session 9)
+
+Everything below this block is the older two-track plan and is still valid; this
+is just the current front of work. Full detail in `SESSIONS.md` Session 9.
+
+**State:** branch `ID-2-Layout-Integration`, 16 commits ahead of `origin`, nothing
+pushed, working tree clean, 100 tests passing. The twin runs on the real Khavda
+BLOCK-02 layout.
+
+**Do these first, in this order:**
+
+1. **Re-run KPI-03 on the real block.** This is the highest-value item and it is
+   now unblocked: HSAT tracker self-shading lands ON the panel surface,
+   predictably, across many panels — exactly what the turbine-blade stimulus
+   failed to deliver in SLICE-3. Build with a low-sun `sun.timestamp`
+   (e.g. `...T01:30:00Z`) and run with `perception: cosmos_reason`. Needs Reason-1
+   restarted (`docs/ENVIRONMENT.md`); port 8000 is free. This gives the first
+   trustworthy false-fault number on real hardware geometry, and retires the
+   `kpi03-denominator-caveat`.
+2. **Merge the `docs/cosmos3-edge-serving` branch** (commit `7319924`). It holds
+   the verified Cosmos 3 Edge serving recipe in `docs/ENVIRONMENT.md` and is NOT
+   on `ID-2-Layout-Integration`. Do not lose it.
+3. **PBR materials + HDRI sky.** Everything is flat `displayColor` /
+   `UsdPreviewSurface` and the ground is a uniform tan sheet. Biggest remaining
+   visual step.
+4. **Instancing / LOD (`IF-09`)** before authoring all 273 tables (~2.2M prims).
+5. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
+   installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
+6. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
+   the synthetic sine field on a real site.
+
+**Known ⚠ to resolve, not to forget:**
+- `panel.mount_height: 1.5` in `configs/farm_khavda_block02.yaml` is a guess —
+  needs the MMS/tracker datasheet.
+- Module width `1.134 m` is inferred from pitch minus a standard ~14 mm gap.
+  Self-consistent, but confirm against the module datasheet.
+- Tracker **backtracking** is not modelled, so self-shading is worst-case.
+- `tools/layout_from_pdf.py` deliberately **fails closed** — the PDF's two
+  calibration sources disagree by 9.2%. Use the DXF path.
+
 ## Why two tracks, not one
 
 Only one box in this project can import `pxr`/`omni` (Isaac Sim's bundled
