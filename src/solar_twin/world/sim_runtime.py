@@ -65,12 +65,21 @@ class SimRuntime:
 
         self._robot_paths: dict[str, str] = {}
         self._annots: dict[str, object] = {}
+        # Articulated parts + last pose, for visual-only motion (rotor spin, wheel
+        # roll, heading). Not dynamics — see robot_builder's NFR-07 note.
+        self._parts: dict[str, object] = {}
+        self._last_pos: dict[str, tuple[float, float, float]] = {}
+        self._rotor_phase = 0.0
+        self._wheel_phase: dict[str, float] = {}
+        self._last_yaw: dict[str, float] = {}
 
         # Robots that carry a camera (drones): Xform + downward Camera + annotator.
         for rid in camera_robots:
             path = f"/World/Robots/{rid}"
             UsdGeom.Xform.Define(self._stage, path)
-            self._add_marker(path, size=0.25)
+            from solar_twin.world.robot_builder import build_quadcopter
+
+            self._parts[rid] = build_quadcopter(self._stage, path)
             cam_path = f"{path}/Camera"
             cam = UsdGeom.Camera.Define(self._stage, cam_path)
             # Camera looks down its local -Z (drone hovers above the panel). Mount
@@ -93,7 +102,9 @@ class SimRuntime:
         for rid in marker_robots:
             path = f"/World/Robots/{rid}"
             UsdGeom.Xform.Define(self._stage, path)
-            self._add_marker(path, size=0.4)
+            from solar_twin.world.robot_builder import build_ugv
+
+            self._parts[rid] = build_ugv(self._stage, path)
             self._robot_paths[rid] = path
 
         # Discover turbine hubs authored by farm_builder so we can spin the
@@ -136,7 +147,26 @@ class SimRuntime:
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             self._spin_turbines()
+            self._spin_rotors()
             self._app.update()
+
+    def _spin_rotors(self) -> None:
+        """Advance every drone rotor. Deliberately fast and NOT synced to thrust —
+        a real prop is a blur, and a visibly slow disc reads as broken hardware.
+        Purely cosmetic (`NFR-07`): nothing here produces lift."""
+        self._rotor_phase = (self._rotor_phase + 47.0) % 360.0
+        for rid, parts in self._parts.items():
+            rotors = getattr(parts, "rotors", None) or []
+            for i, rp in enumerate(rotors):
+                prim = self._stage.GetPrimAtPath(rp)
+                if not prim or not prim.IsValid():
+                    continue
+                # Alternate direction per rotor, as on a real quad (torque balance).
+                sign = 1.0 if i % 2 == 0 else -1.0
+                self._UsdGeom.XformCommonAPI(prim).SetRotate(
+                    (0.0, 0.0, sign * self._rotor_phase),
+                    self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+                )
 
     def _spin_turbines(self) -> None:
         """Advance each turbine hub's rotation (about local +Y) one update-tick,
@@ -152,15 +182,59 @@ class SimRuntime:
         return self._app.is_running()
 
     def set_pose(self, robot_id: str, x: float, y: float, z: float, yaw: float = 0.0) -> None:
+        import math
+
         prim = self._stage.GetPrimAtPath(self._robot_paths[robot_id])
         api = self._UsdGeom.XformCommonAPI(prim)
+        prev = self._last_pos.get(robot_id)
         api.SetTranslate(self._Gf.Vec3d(float(x), float(y), float(z)))
-        import math
+
+        # Face the direction of travel. The controller does not supply a heading
+        # (waypoints are positions only), so derive it from the motion delta —
+        # otherwise the vehicle crabs sideways down the row, which is the single
+        # most obvious tell that it is a sliding marker rather than a robot.
+        # An explicit non-zero yaw from the caller always wins.
+        if yaw == 0.0 and prev is not None:
+            dx, dy = float(x) - prev[0], float(y) - prev[1]
+            if (dx * dx + dy * dy) > 1e-6:
+                # +Y is the nose, so heading is measured from +Y toward +X.
+                yaw = math.atan2(dx, dy)
+                self._last_yaw[robot_id] = yaw
+            else:
+                yaw = self._last_yaw.get(robot_id, 0.0)
 
         api.SetRotate(
             (0.0, 0.0, math.degrees(yaw)),
             self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
         )
+        self._roll_wheels(robot_id, prev, (float(x), float(y), float(z)))
+        self._last_pos[robot_id] = (float(x), float(y), float(z))
+
+    def _roll_wheels(self, robot_id: str, prev, now) -> None:
+        """Rotate wheels by the GROUND distance travelled, so roll matches motion
+        instead of free-spinning. Visual only — no traction model."""
+        parts = self._parts.get(robot_id)
+        wheels = getattr(parts, "wheels", None) or []
+        if not wheels or prev is None:
+            return
+        import math
+
+        dist = math.hypot(now[0] - prev[0], now[1] - prev[1])
+        if dist <= 0.0:
+            return
+        radius = 0.17  # must match robot_builder.build_ugv's wheel_r
+        phase = self._wheel_phase.get(robot_id, 0.0)
+        phase = (phase + math.degrees(dist / radius)) % 360.0
+        self._wheel_phase[robot_id] = phase
+        for wp in wheels:
+            prim = self._stage.GetPrimAtPath(wp)
+            if not prim or not prim.IsValid():
+                continue
+            # Wheels are cylinders about local X, so roll is rotation about X.
+            self._UsdGeom.XformCommonAPI(prim).SetRotate(
+                (phase, 0.0, 0.0),
+                self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+            )
 
     def get_pose(self, robot_id: str) -> tuple[float, float, float, float]:
         import math
