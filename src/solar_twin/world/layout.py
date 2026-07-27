@@ -123,30 +123,97 @@ class PanelSite:
     col: int
     position: tuple[float, float, float]  # stage-local meters (Z-up)
     geo_position: tuple[float, float, float]  # (lat, lon, elev)
+    #: Plan rotation of the panel's mounting structure, degrees about +Z. Zero for
+    #: the procedural grid; per-table for a CAD-imported site, where different
+    #: blocks can face different ways.
+    azimuth_deg: float = 0.0
+    #: Panel tilt, degrees. For a FIXED-tilt site this is the real tilt. For a
+    #: TRACKER site it is only the nominal/stowed angle — the true angle is
+    #: dynamic (sun-following), so a consumer that treats this as ground truth on
+    #: a tracker site is wrong (`NFR-07`).
+    tilt_deg: float = 0.0
 
 
 class FarmLayout:
-    """Panel grid + georef derived from a parsed ``farm.yaml`` dict."""
+    """Panel sites + georef derived from a parsed ``farm.yaml`` dict.
+
+    Two sources, one output. ``layout.kind`` selects between them and defaults to
+    ``grid`` so every existing config keeps working untouched:
+
+    - ``grid`` — the procedural seeded farm (`grid:` block).
+    - ``file`` — a real, CAD-derived site expanded from ``layout.path``
+      (`IF-08`); see `world/layout_import.py`.
+
+    Downstream code only ever reads ``self.sites``, so nothing below this class
+    needs to know which source was used.
+    """
 
     def __init__(self, farm_cfg: dict):
         self.cfg = farm_cfg
+        layout_cfg = farm_cfg.get("layout", {}) or {}
+        self.kind = str(layout_cfg.get("kind", "grid"))
+        geo = farm_cfg.get("georef", {}) or {}
+        self.anchor = GeoAnchor(
+            lat0=float(geo.get("lat0", 0.0)),
+            lon0=float(geo.get("lon0", 0.0)),
+            elev0=float(geo.get("elev0", 0.0)),
+            heading_deg=float(geo.get("heading_deg", 0.0)),
+        )
+        self.site = None
+
+        if self.kind == "file":
+            self._init_from_file(str(layout_cfg["path"]))
+            return
+
         grid = farm_cfg["grid"]
         self.rows = int(grid["rows"])
         self.cols = int(grid["cols"])
         self.row_pitch = float(grid["row_pitch"])
         self.col_pitch = float(grid["col_pitch"])
         self.origin = tuple(float(v) for v in grid.get("origin", [0.0, 0.0, 0.0]))
-        geo = farm_cfg["georef"]
-        self.anchor = GeoAnchor(
-            lat0=float(geo["lat0"]),
-            lon0=float(geo["lon0"]),
-            elev0=float(geo.get("elev0", 0.0)),
-            heading_deg=float(geo.get("heading_deg", 0.0)),
-        )
         self.sites = self._build_sites()
+
+    def _init_from_file(self, path: str) -> None:
+        """Expand a CAD-derived site file into per-module panel sites."""
+        from solar_twin.world.layout_import import expand_sites, load_site
+
+        site = load_site(path)
+        self.site = site
+        self.origin = (0.0, 0.0, 0.0)  # stage origin == site file's `origin` anchor
+        # Grid-shaped attributes still have consumers (`inspection_targets`'s
+        # approach offset, the builder's ground extent). Derive honest analogues:
+        # a "row" is a table, a "col" is a module along its torque tube, and the
+        # across-row pitch is the aisle a drone actually flies down.
+        self.rows = len(site.tables)
+        self.cols = max((t.modules_per_row for t in site.tables), default=0)
+        self.row_pitch = site.column_pitch_m() or 6.0
+        self.col_pitch = site.module_pitch_m or 1.0
+        self.sites = expand_sites(
+            site,
+            terrain_z=lambda x, y: terrain_height(x, y, self.cfg),
+            panel_site_cls=PanelSite,
+            panel_id_fn=panel_id,
+        )
+
+    def bounds(self) -> tuple[float, float, float, float]:
+        """(min_x, min_y, max_x, max_y) over all panel sites, stage-local metres.
+
+        The builder must size the ground from this, not from ``rows × pitch`` — an
+        imported site is irregular and has no meaningful row/col rectangle.
+        """
+        xs = [s.position[0] for s in self.sites]
+        ys = [s.position[1] for s in self.sites]
+        if not xs:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (min(xs), min(ys), max(xs), max(ys))
 
     def _build_sites(self) -> list[PanelSite]:
         ox, oy, oz = self.origin
+        # The procedural farm is fixed-tilt and uniformly oriented, so the single
+        # `panel.tilt_deg` is correct here — but it belongs ON the site, not read
+        # separately by the builder, so imported per-table tilt/azimuth flows
+        # through the same field instead of a second code path.
+        tilt = float((self.cfg.get("panel", {}) or {}).get("tilt_deg", 20.0))
         sites: list[PanelSite] = []
         for row in range(self.rows):
             for col in range(self.cols):
@@ -161,6 +228,8 @@ class FarmLayout:
                         col=col,
                         position=(x, y, z),
                         geo_position=local_to_geo(x, y, z, self.anchor),
+                        azimuth_deg=0.0,
+                        tilt_deg=tilt,
                     )
                 )
         return sites

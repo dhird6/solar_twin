@@ -266,11 +266,16 @@ def _build_ground_heightfield(stage, farm_cfg, layout, material) -> None:
     """A tessellated ground mesh sampling the SAME terrain_height() the panels and
     waypoints use, so the visible ground matches where things are mounted. Flat
     terrain degenerates to a flat mesh (still fine)."""
-    ox, oy, _ = layout.origin
-    span_x = max(6.0, layout.cols * layout.col_pitch + 30.0)
-    span_y = max(6.0, layout.rows * layout.row_pitch + 40.0)
-    x0 = ox + layout.cols * layout.col_pitch / 2 - span_x / 2
-    y0 = oy + layout.rows * layout.row_pitch / 2 - span_y / 2
+    # Size the ground from the ACTUAL panel bounding box, not rows x pitch. An
+    # imported CAD site is irregular (varying table lengths, aisles, gaps) and has
+    # no meaningful row/col rectangle — deriving the span from the grid left the
+    # terrain far too small to cover the farm.
+    min_x, min_y, max_x, max_y = layout.bounds()
+    margin = 30.0
+    span_x = max(6.0, (max_x - min_x) + 2 * margin)
+    span_y = max(6.0, (max_y - min_y) + 2 * margin)
+    x0 = min_x - margin
+    y0 = min_y - margin
     n = _TERRAIN_RES
     pts, uvs = [], []
     for j in range(n):
@@ -408,7 +413,9 @@ def build(farm_cfg: dict, out_path: str) -> str:
     _build_shading_occluder(stage, farm_cfg, layout, looks["structure"])
 
     pdim = farm_cfg.get("panel", {})
-    tilt_deg = float(pdim.get("tilt_deg", 20.0))
+    # NOTE: no global `tilt_deg` here any more — tilt/azimuth are per-site
+    # (`PanelSite.tilt_deg` / `.azimuth_deg`), fed by `layout.py` from
+    # `panel.tilt_deg` for the procedural grid or per-table for a CAD import.
     mount_h = float(pdim.get("mount_height", PANEL_MOUNT_HEIGHT))
     pw = float(pdim.get("width", 1.0))
     pl = float(pdim.get("length", 2.0))
@@ -423,12 +430,25 @@ def build(farm_cfg: dict, out_path: str) -> str:
         prim = pv.create_panel(
             stage, path, site.panel_id, site.row, site.col, site.geo_position
         )
-        # Place + tilt the panel Xform (Z-up: tilt about the row axis = X).
+        # Place + orient the panel Xform (Z-up). Tilt is about the row axis (X);
+        # azimuth is the mounting structure's plan rotation about Z.
         # site.position.z already follows the terrain, so panels sit on the grade.
+        #
+        # Both come from the SITE, not from a single global config value: a real
+        # multi-block plant has different orientations per block, and a tracker
+        # site has no fixed tilt at all. `layout.py` fills these from `panel.tilt_deg`
+        # for the procedural farm, so the grid path is unchanged.
+        # ⚠ For an HSAT (tracker) site `site.tilt_deg` is only the nominal/stowed
+        # angle — the real angle sweeps with the sun. Authoring it as a static tilt
+        # is an approximation and must be declared as one (`NFR-07`), not mistaken
+        # for validated geometry.
         x, y, gz = site.position
         api = UsdGeom.XformCommonAPI(prim)
         api.SetTranslate(Gf.Vec3d(x, y, gz + mount_h))
-        api.SetRotate((tilt_deg, 0.0, 0.0), UsdGeom.XformCommonAPI.RotationOrderXYZ)
+        api.SetRotate(
+            (site.tilt_deg, 0.0, site.azimuth_deg),
+            UsdGeom.XformCommonAPI.RotationOrderXYZ,
+        )
 
         # Substrate / backsheet + aluminium frame look (the dark grid lines
         # between cells show through as the module frame).

@@ -1,0 +1,51 @@
+# Khavda PLOT A10b, BLOCK-02 — the REAL site, from the vendor CAD.
+#
+#   ./python.sh -m solar_twin.world.farm_builder configs/farm_khavda_block02.yaml
+#   ./python.sh -m solar_twin.run configs/farm_khavda_block02.yaml configs/mission.yaml
+#
+# Panel placement comes from configs/layouts/khavda_a10b_block02.yaml, which is
+# GENERATED from the drawing by tools/layout_from_dxf.py — exact survey metres,
+# 273 tracker tables, 30,016 modules, ~320 x 646 m. Regenerate it rather than
+# editing it. This file owns only what the CAD does not: faults, terrain, sun.
+
+seed: 20260727
+
+# Real layout instead of the procedural grid. `grid:` is deliberately absent —
+# `layout.kind: file` replaces it (IF-08).
+layout:
+  kind: file
+  path: configs/layouts/khavda_a10b_block02.yaml
+
+# Module geometry mirrors the CAD (2278 x 1134 mm, portrait on the torque tube).
+# `tilt_deg` is NOT used for a tracker site: per-panel tilt/azimuth come from the
+# site file. Cell counts drive the rendered PV cell grid only.
+panel:
+  width: 1.134
+  length: 2.278
+  height: 0.035
+  mount_height: 1.5    # HSAT torque-tube height ⚠ verify against the MMS datasheet
+  cell_cols: 6
+  cell_rows: 12
+
+# ⚠ Placeholder terrain. Khavda is a real, graded site — this synthetic height
+# field is NOT its topography. Keep `flat` until a real DEM is referenced
+# (FR-10/FR-20), rather than mounting a real plant on invented hills (NFR-07).
+terrain:
+  kind: flat
+
+# Georef is carried by the site file's `crs` (EPSG:32642) and converted with
+# pyproj, so these are a fallback only, used if pyproj is unavailable.
+georef:
+  lat0: 24.0915
+  lon0: 69.4205
+  elev0: 0.0
+  heading_deg: 0.0
+
+# Fault injection stays synthetic — the CAD describes hardware, not condition.
+# 2% of 30,016 modules = 600 seeded faults.
+faults:
+  rate: 0.02
+  states: [hotspot, soiled]
+
+# No turbines in this block; the keep-out audit simply finds nothing to clamp.
+turbines: []
