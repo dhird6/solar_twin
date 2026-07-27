@@ -17,6 +17,49 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-27 — Session 9: REAL Khavda layout in the twin ✅ + world-model reality check
+**The twin now runs on real hardware geometry.** BLOCK-02 of Khavda PLOT A10b,
+extracted from the vendor DWG, built in Isaac, inspected end-to-end.
+
+**Verified on the Spark (not just in tests):**
+- `farm_builder --subset 5` → **42,025 prims, 560 panels**, Z-up/metres, `pv:panel_id`
+  `R258-C000`, `pv:geo_position` **(24.0880, 69.4176)** — real Khavda lat/lon via pyproj.
+- Full mission → **560 panels, 11/11 faults detected, detection_rate 1.00, 105 s**
+  (~0.19 s/panel). Run record `runs/20260727T153355`.
+- Both held bugs confirmed fixed on real USD: per-panel tilt/azimuth, and the ground
+  mesh now sized from `bounds()` (x[-28.9,53.1] y[-29.4,158.0] — the old
+  `cols x col_pitch` maths would have undersized it badly).
+
+**Layout ingestion (FR-26/27, IF-08/09).** DWG → DXF via LibreDWG built from source
+(no apt needed). `$INSUNITS=6` (metres) and model space holds real survey coords, so
+**no scale inference**: 273 tables / **30,016 modules** / 320 x 646 m, CRS **EPSG:32642**
+verified by round-trip. CAD is self-describing — block names carry dimensions
+(`MMS Table (128.58 x 2.278)`), layers carry module counts (`Interior HSAT (1x112)`).
+Traps: layer `DETAILS` holds legend copies ~12 km away (would stretch the bbox from
+319 m to 12 km); LibreDWG emits raw newlines in text values, defeating `ezdxf.recover`.
+The PDF path is kept but **fails closed** — its two calibration sources disagreed 9.2%.
+Site is **HSAT**, so tilt is DYNAMIC; any static tilt is an `NFR-07` approximation.
+
+**⚠ Cosmos 3 Edge: serving, but NOT usable for our data factory.** Edge runs on-box
+(vllm-omni from `main`, own venv, ~9.8 GB, ~2 s/image) — sm_121 was never the blocker;
+the image was a dead end because Omni is Qwen3-VL and Edge is Nemotron. **But it is a
+pure-diffusion GENERATOR with no text stage**, so it cannot back `Perception`
+(`mission_edge.yaml` removed). And across **6 generations it never produced a
+physically valid PV module** — one photoreal frame was not a solar panel at all.
+`num_inference_steps` is mandatory or you get valid-looking pure noise, silently.
+→ **Text-to-image is the wrong tool; Cosmos Transfer (conditioned on our render) is
+the right one.** Edge explicitly rejects V2V/transfer, so that stays off-box (`NFR-05`).
+Edge now **stopped**; port 8000 free for Reason-1.
+
+**Evaluator gate built (FR-05/NFR-08)** — `wfm/base.py` + `wfm/evaluator.py`, 91 tests.
+Calibrated on the 6 real Edge frames, which proved **no-reference statistics cannot
+work**: the non-PV frame scored the HIGHEST grid-periodicity, and good frames carry
+MORE high-frequency energy than noise. So the gate is **reference-based** (edge
+retention vs the seed) and **rejects any frame with no seed as unverifiable**.
+
+**Next:** Transfer off-box seeded from this render; instancing/LOD (`IF-09`) before the
+full 273-table block (~2.2M prims); real DEM instead of flat terrain.
+
 ## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
 **SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**
 (detection), KPI-03 = **0.00** on BOTH a soft and a near-black hard shadow — the
