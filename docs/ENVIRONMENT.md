@@ -65,6 +65,75 @@ on this one GB10, or the sim will OOM. ⚠ `cu130-nightly` is a moving tag; pin 
 digest for reproducibility. ⚠ eager-ish paths → first-token latency is slow, so
 `perception_opts.timeout` is set to 120 s.
 
+## Cosmos 3 Edge on the Spark — ✅ SERVES (verified 2026-07-27), but it is a GENERATOR
+**Edge now runs on this GB10.** The earlier blocker was misdiagnosed twice over, so
+record what is actually true.
+
+**Why the Docker image never worked, and why patching it was hopeless.** The
+`vllm/vllm-omni:cosmos3` image (Transformers 5.13.0, vLLM 0.25.0, diffusers 0.38.0)
+knows only `cosmos3_omni`. That is NOT a stale-version problem that a model-type
+alias fixes: Cosmos3 **Omni** (Nano/Super) is a **Qwen3-VL** architecture
+(`Qwen3VLTextConfig` / `Qwen3VLVisionConfig`), while **Edge is Nemotron-based** with
+its own `cosmos3_edge_text` / `cosmos3_edge_vision` / `cosmos3_edge_projector`
+sub-configs and a projector Omni doesn't have. Aliasing `cosmos3_edge →
+Cosmos3OmniConfig` dies on `KeyError: 'cosmos3_edge_vision'`, and forcing it would
+map Edge weights onto Qwen3-VL classes. There is also **no newer image**: the
+`cosmos3` arm64 layer and `cosmos3-arm64` are the same digest (`sha256:c386850…`),
+both 2026-07-20. Do not chase image tags.
+
+**What works — vllm-omni from `main` in its own venv** (`vllm-omni` is a *plugin*: it
+does NOT depend on `vllm`, so install both; it pins `diffusers==0.38.0` on purpose
+and supplies its own `Cosmos3EdgeVFMTransformer` / `Cosmos3OmniDiffusersPipeline`):
+```bash
+uv venv --python 3.13 --seed --managed-python /home/simulationhub/venvs/vllm-omni-edge
+uv pip install --python /home/simulationhub/venvs/vllm-omni-edge/bin/python \
+  --torch-backend=cu130 "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@main"
+uv pip install --python /home/simulationhub/venvs/vllm-omni-edge/bin/python \
+  --torch-backend=cu130 "vllm==0.25.0"        # aarch64 wheel exists on PyPI
+/home/simulationhub/venvs/vllm-omni-edge/bin/vllm serve nvidia/Cosmos3-Edge \
+  --omni --no-guardrails --host 127.0.0.1 --port 8000 --init-timeout 1800
+```
+Installed: vllm-omni `0.25.0rc2.dev131+gd688aa82f`, vLLM 0.25.0, torch 2.11.0+cu130,
+Transformers 5.14.1, diffusers 0.38.0. `torch.cuda.get_device_capability()` →
+**(12, 1) = sm_121**, so sm_121 was never the Edge blocker. Ready in ~65 s;
+`curl localhost:8000/v1/models` → `nvidia/Cosmos3-Edge`, `/health` → 200.
+⚠ Transformers 5.14.1 still lacks `cosmos3_edge` (it is in transformers `main`);
+Edge support here comes from **vllm-omni**, not Transformers.
+
+**⚠⚠ `num_inference_steps` is MANDATORY — the default silently produces garbage.**
+A request with no step count returns a syntactically valid 640×640 PNG that is
+**abstract noise**, with no error and no warning. `num_inference_steps: 35` returns a
+crisp photoreal image; `guidance_scale: 5.0` alone is NOT enough (smeared output).
+This is a silent-cap failure of exactly the class `NFR-07` exists to catch — always
+pass the step count, and always LOOK at a generated frame before trusting a corpus.
+(PNG byte size is useless as a check: the encoder stores uncompressed, so every
+640×640 result is exactly 1,229,899 bytes regardless of content.)
+
+**Footprint: ~9.8 GB GPU, ~2 s/image (640×640).** Far friendlier than Reason-1's
+~98 GB at `--gpu-memory-utilization 0.85`, so **Edge can co-reside with Isaac Sim**
+on this one GB10. Both default to port 8000 — you cannot run Edge and Reason-1
+there simultaneously; Reason-1's rollback image `cu130-nightly-WORKING-sm121` is
+preserved and untouched.
+
+**Edge is NOT a drop-in for `perception: cosmos_reason`.** Served this way the log
+says `Detected pure diffusion mode (single diffusion stage)` — **one** stage, and it
+is diffusion. There is no text/understanding stage, so `/v1/chat/completions` exists
+but is a *diffusion* route: it answers with an `image_url` content part, not a
+string. `perception/cosmos_reason.py` reads
+`body["choices"][0]["message"]["content"]` as text, so it cannot consume this, and
+`"modalities": ["text"]` does not help (it errors in the image-return path). Edge's
+real surface is `/v1/images/generations`, `/v1/videos`, `/v1/videos/sync`, plus the
+action modes (`policy` / `forward_dynamics` / `inverse_dynamics`). Edge also
+**rejects video-to-video and transfer V2V** — Cosmos-Transfer-style sim2real stays
+off-box. **So Edge belongs behind a future `WorldModel` seam (Predict/action-class
+generation), not behind `Perception`; Cosmos Reason-1 remains the perception brain.**
+`configs/mission_edge.yaml` was removed because it encoded the disproven assumption
+that Edge was a model-string flip on the perception endpoint.
+⚠ The cosmos README lists Edge's on-device targets as Jetson AGX Orin / Thor /
+RTX PRO 6000 — **DGX Spark is not named** (Blackwell is listed as a supported
+architecture generally). An earlier session note claiming Spark was a vendor-tested
+Edge platform is unconfirmed; it serves here regardless.
+
 ## Key finding — `usd-core` has no aarch64 wheel
 `pip install usd-core` fails on this box (`No matching distribution found`, py3.12
 aarch64). So **`pxr` is only available under Isaac Sim's bundled Python here**,
