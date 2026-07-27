@@ -102,6 +102,46 @@ text-to-image) remains the right data-factory tool.
 pushed**, tree clean, **100 tests + 2 skipped**. Vendor CAD is gitignored (proprietary);
 only the derived `configs/layouts/*.yaml` is tracked.
 
+### Session 9 detail — Cosmos 3 Edge serving investigation
+**The parked Edge A/B is unparked and simultaneously invalidated.** Edge now runs on
+this GB10; the reason it never worked was misdiagnosed, and the reason we wanted it
+was wrong. Full recipe + caveats in `docs/ENVIRONMENT.md`.
+- **Serving works** via **vllm-omni from `main`** in `/home/simulationhub/venvs/vllm-omni-edge`
+  (a plugin — it does NOT depend on `vllm`, install both; aarch64 vLLM wheels exist).
+  `sm_121` was never the Edge blocker: `get_device_capability()` → `(12, 1)`, fine.
+- **The image was a dead end, not a stale pin.** Cosmos3 Omni (Nano/Super) is
+  **Qwen3-VL**-based; **Edge is Nemotron**-based with its own sub-configs + a projector.
+  A model-type alias `cosmos3_edge → Cosmos3OmniConfig` dies on
+  `KeyError: 'cosmos3_edge_vision'`. And there is **no newer image** — `cosmos3`'s arm64
+  layer and `cosmos3-arm64` are the same digest. Stop chasing tags.
+- **⚠⚠ `num_inference_steps` is mandatory.** Omitting it returns a valid-looking
+  640×640 PNG of **pure noise** — no error, no warning. `num_inference_steps: 35` →
+  crisp photoreal PV imagery; `guidance_scale` alone → smeared. A textbook `NFR-07`
+  silent cap. Byte size can't detect it (uncompressed → always 1,229,899 bytes).
+  **Look at a frame before trusting any generated corpus.**
+- **Edge ≠ perception backend.** Served this way it is `pure diffusion mode (single
+  diffusion stage)` — no text stage. `/v1/chat/completions` exists but answers with an
+  `image_url` part, so `cosmos_reason.py` (which reads `content` as a string) cannot
+  consume it. Its real surface is `/v1/images/generations` + `/v1/videos` + the action
+  modes; it also **rejects V2V/transfer**, so Cosmos-Transfer sim2real stays off-box.
+  → **Edge belongs behind a future `WorldModel` seam, not `Perception`.** Reason-1
+  stays the brain. `configs/mission_edge.yaml` **removed** (it encoded the disproven
+  "model-string flip" assumption).
+- **Good news for the roadmap:** ~**9.8 GB GPU, ~2 s/image** — Edge can co-reside with
+  Isaac Sim (Reason-1 at 0.85 util takes ~98 GB and cannot). On-box world-model
+  generation is viable, which softens `NFR-05` for the predict/action arm. Both
+  default to port 8000, so only one at a time; Reason-1's
+  `cu130-nightly-WORKING-sm121` rollback is untouched.
+
+**Also:** `ID-2-Layout-Integration` fast-forwarded to `main` (`86dc834`) — it had zero
+unique commits, so no rebase/force-push was needed. 74 tests pass, 2 skipped.
+
+**Next:** layout ingestion (`world/layout_import.py`, table-level site file) — NOT yet
+started, awaiting plan confirmation. Two bugs found and deliberately NOT fixed:
+`farm_builder.py:256` applies ONE global `tilt_deg` to every panel, and
+`farm_builder.py:107-110` sizes the ground mesh from `layout.cols * col_pitch` — both
+break for a real multi-block imported layout.
+
 ## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
 **SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**
 (detection), KPI-03 = **0.00** on BOTH a soft and a near-black hard shadow — the
@@ -119,6 +159,9 @@ Edge weights (8.6 GB) cached for resume. Full detail + resume path in memory
 `cosmos3-edge-serving-blocker.md`. Reason-1 baseline is already recorded, so the
 A/B is cheap to finish once a newer Edge-capable image exists. `configs/mission_edge.yaml`
 is staged for that.
+> **SUPERSEDED by Session 9 (2026-07-27):** Edge does serve (vllm-omni from `main`), but
+> it is a pure-diffusion **generator** with no text stage, so the perception A/B this
+> entry planned is not possible and `configs/mission_edge.yaml` was **removed**.
 
 ## 2026-07-24 — Session 8: SLICE-3 false-fault harness (KPI-03) — built, first measurement is a honest null
 **Built + tested (74 Isaac-free tests pass), on branch `feat/slice3-false-fault-kpi03` (stacked on #4):**
