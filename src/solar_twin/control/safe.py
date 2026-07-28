@@ -45,6 +45,13 @@ class SafeControl(RobotControl):
         self.events: list[KeepoutEvent] = []
         self.min_clearance_m: float = math.inf
 
+    @property
+    def inner(self) -> RobotControl:
+        """The wrapped controller. SafeControl is a decorator, so a caller that
+        needs to configure the real controller (not the clamp) can reach it
+        without knowing whether the wrap happened."""
+        return self._inner
+
     def move_to(self, robot_id: str, waypoint: Waypoint) -> None:
         pen = worst_violation(self._keepouts, waypoint.x, waypoint.y, waypoint.z)
         # clearance = -penetration (positive when outside the volume)

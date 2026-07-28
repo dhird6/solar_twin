@@ -155,3 +155,29 @@ def test_false_fault_rate_zero_when_all_healthy_correct():
     assert res.false_fault_rate == 0.0
     # No healthy panels -> defined as 0.0, never a divide-by-zero.
     assert MissionResult(results=[]).false_fault_rate == 0.0
+
+
+def test_on_phase_narrates_every_phase_entry():
+    """The demo video captions frames from this hook, so it must fire on entry
+    (before the robot moves) and name the panel it is about."""
+    panels = _panels([PanelState.SOILED, PanelState.HEALTHY])
+    backend = FakeSimBackend(panels)
+    mission = Mission(backend, backend, GroundTruthPerception(), FLEET)
+    seen: list[tuple[str, str]] = []
+    mission.run(_targets(panels), on_phase=lambda pid, ph: seen.append((pid, ph)))
+
+    suspect, healthy = panels[0].panel_id, panels[1].panel_id
+    # The suspect panel walks the full escalation; the healthy one skips CONFIRM.
+    assert [ph for pid, ph in seen if pid == suspect] == [
+        "ADVANCE", "SCREEN", "CONFIRM", "WRITEBACK",
+    ]
+    assert [ph for pid, ph in seen if pid == healthy] == ["ADVANCE", "SCREEN", "WRITEBACK"]
+    # Panels are narrated in order, not interleaved.
+    assert [pid for pid, _ in seen] == [suspect] * 4 + [healthy] * 3
+
+
+def test_on_phase_is_optional():
+    panels = _panels([PanelState.HEALTHY])
+    backend = FakeSimBackend(panels)
+    mission = Mission(backend, backend, GroundTruthPerception(), FLEET)
+    assert mission.run(_targets(panels)).panels_inspected == 1

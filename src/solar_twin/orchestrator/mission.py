@@ -149,17 +149,29 @@ class Mission:
         self,
         targets: list[InspectionTarget],
         on_result: Optional[Callable[[int, PanelResult], None]] = None,
+        on_phase: Optional[Callable[[str, str], None]] = None,
     ) -> MissionResult:
+        """`on_result(i, panel_result)` fires once per finished panel.
+
+        `on_phase(panel_id, phase_name)` fires as each phase is ENTERED, before
+        the robot moves. It exists so an observer can narrate the run while it
+        happens (the demo video captions frames with it) without the FSM having
+        to know anything about cameras or overlays."""
         result = MissionResult()
         for i, target in enumerate(targets):
-            panel_result = self._inspect(target, result)
+            panel_result = self._inspect(target, result, on_phase)
             result.results.append(panel_result)
             if on_result is not None:
                 on_result(i, panel_result)
         result.steps = getattr(self.transport, "step_count", 0)
         return result
 
-    def _inspect(self, target: InspectionTarget, result: MissionResult) -> PanelResult:
+    def _inspect(
+        self,
+        target: InspectionTarget,
+        result: MissionResult,
+        on_phase: Optional[Callable[[str, str], None]] = None,
+    ) -> PanelResult:
         pid = target.panel_id
         phase = Phase.ADVANCE
         injected = PanelState.UNKNOWN
@@ -168,6 +180,9 @@ class Mission:
         record: Optional[PanelRecord] = None
 
         while phase is not Phase.DONE:
+            if on_phase is not None:
+                on_phase(pid, phase.name)
+
             if phase is Phase.ADVANCE:
                 self.control.move_to(self.fleet.ground_bot, target.approach)
                 self.transport.step()

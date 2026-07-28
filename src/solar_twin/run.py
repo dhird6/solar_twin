@@ -30,6 +30,16 @@ from solar_twin.world.keepout import build_keepouts
 from solar_twin.world.layout import FarmLayout
 
 
+#: Human labels for the FSM phases, for the demo video's caption. The enum names
+#: are fine in a log and terse on screen.
+_PHASE_LABELS = {
+    "ADVANCE": "ground bot advancing",
+    "SCREEN": "screening pass",
+    "CONFIRM": "close confirm pass",
+    "WRITEBACK": "writing verdict to USD",
+}
+
+
 def _load_yaml(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
@@ -59,10 +69,10 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             )
         fleet = mission_cfg["fleet"]
         overview_pose = None
-        if sim_opts.get("record"):
+        if sim_opts.get("record") or sim_opts.get("video"):
             xs = [s.position[0] for s in layout.sites]
             cx = (min(xs) + max(xs)) / 2 if xs else 0.0
-            overview_pose = (cx, 0.0, 30.0)  # bird's-eye over the row
+            overview_pose = (cx, 0.0, 30.0)  # bird's-eye; --video re-aims it as a chase cam
         runtime = SimRuntime(
             farm_usd,
             camera_robots=[fleet["screen_drone"], fleet["confirm_drone"]],
@@ -75,7 +85,18 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
             for s in layout.sites
         }
-        return SimNativeTransport(runtime, panel_paths), KinematicControl(runtime)
+        # Interpolated flight is opt-in: it costs ~10x the sim steps, and only
+        # the demo video needs to watch the robot travel (see kinematic.py).
+        kin = mission_cfg.get("kinematics", {}) or {}
+        speeds = {}
+        if sim_opts.get("video"):
+            speeds = {
+                fleet["ground_bot"]: float(kin.get("bot_speed", 1.0)),
+                fleet["screen_drone"]: float(kin.get("drone_speed", 2.0)),
+                fleet["confirm_drone"]: float(kin.get("drone_speed", 2.0)),
+            }
+        control = KinematicControl(runtime, speeds=speeds, dt=float(kin.get("dt", 0.1)))
+        return SimNativeTransport(runtime, panel_paths), control
     raise ValueError(f"unknown backend: {name!r}")
 
 
@@ -145,12 +166,82 @@ def run(
     faults = layout.seeded_faults()
 
     sim_opts = sim_opts or {}
+    max_panels = int(sim_opts.get("max_panels") or 0)
+    if max_panels and max_panels < len(targets):
+        # Loud, not silent: a shortened sweep changes every denominator in the
+        # run record, so it is stated here and stamped into the record below.
+        print(
+            f"  [note] --max-panels {max_panels}: inspecting the first "
+            f"{max_panels} of {len(targets)} panels",
+            flush=True,
+        )
+        targets = targets[:max_panels]
+
     record = sim_opts.get("record") and hasattr(transport, "capture_overview")
     frames: list = []
+
+    # --- optional demo video (chase view + drone camera, captioned) --------
+    recorder = None
+    runtime = getattr(transport, "runtime", None)
+    if sim_opts.get("video") and runtime is not None and hasattr(runtime, "capture_pair"):
+        from solar_twin.world.recorder import Caption, RunRecorder
+
+        recorder = RunRecorder(fps=int(sim_opts.get("video_fps", 15)))
+        recorder.caption = Caption(
+            subtitle=" · ".join(
+                (
+                    scenario_name or (Path(farm_path).stem if farm_path else "farm"),
+                    str(mission_cfg.get("perception", "ground_truth")),
+                    f"{len(targets)} panels",
+                )
+            )
+        )
+        screen_drone = fleet_cfg["screen_drone"]
+        ground_bot = fleet_cfg["ground_bot"]
+
+        def _on_tick(robot_id: str) -> None:
+            runtime.chase(robot_id)
+            # The ground bot carries no camera, so keep the drone's view in the
+            # inset while the bot advances rather than blanking the picture.
+            main, inset = runtime.capture_pair(
+                screen_drone if robot_id == ground_bot else robot_id
+            )
+            recorder.add(main, inset)
+
+        target_ctl = control.inner if isinstance(control, SafeControl) else control
+        if hasattr(target_ctl, "set_on_tick"):
+            target_ctl.set_on_tick(_on_tick)
+
+        def _on_phase(panel_id: str, phase: str) -> None:
+            if panel_id != recorder.caption.panel_id:
+                # Drop the previous panel's verdict the moment the caption names
+                # a new one — otherwise the overlay reads as a verdict for a
+                # panel the fleet has not looked at yet.
+                recorder.caption.verdict = ""
+            recorder.caption.panel_id = panel_id
+            recorder.caption.phase = _PHASE_LABELS.get(phase, phase.title())
+    else:
+        _on_phase = None
 
     def _progress(i: int, r) -> None:
         tag = f"{r.detected_state} ESCALATED" if r.escalated else r.detected_state
         print(f"  [{i + 1}/{len(targets)}] {r.panel_id}: {tag}", flush=True)
+        if recorder is not None:
+            recorder.caption.verdict = (
+                f"{r.detected_state.upper()}"
+                if r.detected_state != "healthy"
+                else "healthy"
+            )
+            # Hold the finished verdict on screen for a beat, or a 15 fps video
+            # flashes each result for a single frame and is unreadable. Show the
+            # camera the verdict actually came FROM: an escalated panel was
+            # judged on the confirm drone's close pass, and the screening drone
+            # is looking down at the confirm drone by then anyway.
+            judged_by = fleet_cfg["confirm_drone"] if r.escalated else fleet_cfg["screen_drone"]
+            runtime.chase(judged_by)
+            main, inset = runtime.capture_pair(judged_by)
+            for _ in range(int(sim_opts.get("video_fps", 15)) // 2):
+                recorder.add(main, inset)
         if record:
             fr = transport.capture_overview()
             if fr is not None:
@@ -158,7 +249,7 @@ def run(
 
     mission = Mission(transport, control, perception, fleet)
     t0 = time.perf_counter()
-    result = mission.run(targets, on_result=_progress)
+    result = mission.run(targets, on_result=_progress, on_phase=_on_phase)
     wall_s = time.perf_counter() - t0
 
     # ---- run record --------------------------------------------------- #
@@ -177,6 +268,9 @@ def run(
         "scenario": scenario_name,
         "seed": farm_cfg.get("seed"),
         "n_panels": layout.n_panels,
+        # Stated explicitly: with --max-panels the stage holds more panels than
+        # the mission visited, so `n_panels` is NOT the metric denominator.
+        "panels_targeted": len(targets),
         "injected_faults": {pid: s.value for pid, s in faults.items()},
         "metrics": {
             "panels_inspected": result.panels_inspected,
@@ -214,6 +308,18 @@ def run(
         usd_out = out / "farm_post.usda"
         transport.export_usd(str(usd_out))
         print(f"saved post-run USD (verdicts on prims): {usd_out}", flush=True)
+
+    if recorder is not None:
+        try:
+            vid = recorder.write(str(out / "inspection.mp4"))
+            print(
+                f"wrote demo video ({len(recorder.frames)} frames @ {recorder.fps} fps): {vid}"
+                if vid
+                else "[warn] no video frames captured",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — the video must not lose the run record
+            print(f"[warn] demo video write failed: {exc}", flush=True)
 
     if record_frames := (frames if record else []):
         try:
@@ -276,6 +382,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="sim_native: capture a bird's-eye run video (run.mp4) to the run dir",
     )
+    ap.add_argument(
+        "--video",
+        action="store_true",
+        help="sim_native: write inspection.mp4 — a chase view of the robot flying "
+        "the row with the drone camera inset and the verdict captioned. Switches "
+        "the controller from teleport to INTERPOLATED motion (~10x the sim steps), "
+        "so pair it with --max-panels; it is a demo, not a measurement run.",
+    )
+    ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
+    ap.add_argument(
+        "--max-panels",
+        type=int,
+        default=0,
+        help="inspect only the first N panels (0 = all). ⚠ changes every "
+        "denominator in the run record — for demos, not for KPIs.",
+    )
     args = ap.parse_args(argv)
 
     sim_opts = {
@@ -284,6 +406,9 @@ def main(argv: list[str] | None = None) -> int:
         "resolution": (args.width, args.height),
         "save_usd": args.save_usd,
         "record": args.record,
+        "video": args.video,
+        "video_fps": args.video_fps,
+        "max_panels": args.max_panels,
     }
 
     farm_cfg = mission_cfg = scenario_name = None

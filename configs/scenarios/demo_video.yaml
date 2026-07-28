@@ -1,0 +1,53 @@
+# demo_video — the run you can WATCH, on the real Khavda block.
+#
+# Everything else in configs/scenarios/ exists to produce a number. This one
+# exists to show the loop working: the ground bot advances, the screening drone
+# flies the standoff pass, a suspect panel escalates, the confirm drone drops in
+# close, and the verdict is written back onto the USD prim — with the drone's own
+# camera inset so you can see WHAT it saw when it made the call.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/demo_video.yaml --subset 1 \
+#       --out assets/demo.usd
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/demo_video.yaml --subset 1 \
+#       --farm-usd assets/demo.usd --video --max-panels 16
+#
+# -> runs/<ts>/inspection.mp4
+#
+# ⚠ This is a DEMO, not a measurement. `--video` switches the controller from
+# teleport to interpolated motion and `--max-panels` truncates the sweep, so
+# every rate in its run record has a 16-panel denominator. Do not quote it as a
+# KPI — `khavda_selfshade.yaml` is the measurement scenario.
+
+name: demo_video
+seed: 20260728
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # real verdicts, not the ground-truth stub
+
+farm_overrides:
+  # Mid-morning: the trackers are off their stops and tracking truly, so the
+  # rows are lit face-on with no self-shading. That is the right light for a
+  # demo — the shading hazard is khavda_selfshade's job, and a half-shadowed
+  # panel here would just make the faults harder to see.
+  sun:
+    timestamp: "2026-06-21T04:00:00Z"   # 09:30 local, sun 43.7 deg, tracker +45.9 deg
+    tracker_max_rotation_deg: 60.0
+  # Denser than the plant's real 2% so a short sweep actually contains faults:
+  # over 16 panels, 2% would usually show none at all and the video would be
+  # sixteen consecutive "healthy" calls. Stated here rather than quietly tuned.
+  faults:
+    rate: 0.20
+    states: [soiled, hotspot]
+  turbines: []
+
+mission_overrides:
+  kinematics:
+    bot_speed: 1.4        # m/s
+    drone_speed: 2.2      # m/s
+    dt: 0.12              # seconds per interpolation tick == one video frame
+    screen_standoff: 2.5  # metres above the panel top
+    confirm_standoff: 0.8

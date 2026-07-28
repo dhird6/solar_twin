@@ -263,7 +263,7 @@ class SimRuntime:
         return data
 
     def capture_overview(self):
-        """RGB from the fixed bird's-eye camera (H x W x 4 uint8), or None."""
+        """RGB from the bird's-eye / chase camera (H x W x 4 uint8), or None."""
         import numpy as np
 
         if self._overview_annot is None:
@@ -273,6 +273,58 @@ class SimRuntime:
         )
         data = np.asarray(self._overview_annot.get_data())
         return None if data.size == 0 else data
+
+    def capture_pair(self, robot_id: str):
+        """(overview_frame, robot_camera_frame) from ONE render pass.
+
+        Calling `capture_overview()` and `capture()` back to back renders the
+        scene twice per video frame, which doubles the cost of the demo run for
+        no benefit — and worse, the two views would be a render apart, so a
+        moving drone would sit in slightly different places in the same frame.
+        """
+        import numpy as np
+
+        self._rep.orchestrator.step(
+            rt_subframes=self._rt_subframes, pause_timeline=False
+        )
+
+        def _read(annot):
+            if annot is None:
+                return None
+            data = np.asarray(annot.get_data())
+            return None if data.size == 0 else data
+
+        return _read(self._overview_annot), _read(self._annots.get(robot_id))
+
+    def chase(self, robot_id: str, back: float = 9.0, up: float = 5.5) -> None:
+        """Point the overview camera at `robot_id` from `back` metres south and
+        `up` metres above it.
+
+        A fixed bird's-eye works for a 10-panel row and fails completely on the
+        real block: a table is 128 m long, so a camera pinned at the row's south
+        end loses the drone within a few panels. This follows it instead.
+
+        Orientation, spelled out because a camera looking the wrong way renders a
+        plausible-looking picture of nothing: a USD camera looks along its local
+        -Z, and rotateX(90) swings that to +Y (north). Backing off by `d` below
+        the horizontal gives rotateX(90 - d), so the camera looks north and down
+        at whatever `back`/`up` imply.
+        """
+        import math
+
+        if self._overview_annot is None or robot_id not in self._robot_paths:
+            return
+        x, y, z, _ = self.get_pose(robot_id)
+        cam = self._stage.GetPrimAtPath("/World/Overview")
+        if not cam or not cam.IsValid():
+            return
+        api = self._UsdGeom.XformCommonAPI(cam)
+        api.SetTranslate(self._Gf.Vec3d(float(x), float(y) - back, float(z) + up))
+        pitch = math.degrees(math.atan2(up, max(1e-3, back)))
+        api.SetRotate(
+            (90.0 - pitch, 0.0, 0.0),
+            self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+        )
 
     def export(self, path: str) -> None:
         """Save the current (post-run) stage — panels now hold verdicts."""

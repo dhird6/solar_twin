@@ -26,6 +26,14 @@ class SimNativeTransport(Transport):
         self._panel_paths = panel_paths
         self.step_count = 0
 
+    @property
+    def runtime(self):
+        """The underlying `SimRuntime`. Exposed so a caller that needs the sim
+        itself (the demo video's chase camera) does not have to reach into a
+        private attribute; the Transport interface deliberately does not carry
+        camera-rig concerns."""
+        return self._rt
+
     def capture(self, robot_id: str) -> Frame:
         return self._rt.capture(robot_id)
 
