@@ -11,7 +11,7 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 195 Isaac-free tests.
+rotor spin and rolling wheels. 247 Isaac-free tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade
@@ -27,7 +27,7 @@ first**.
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-PYTHONPATH=src python3 -m pytest -q                   # 195 tests, ~5 s, no GPU
+PYTHONPATH=src python3 -m pytest -q                   # 247 tests, ~6 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
@@ -111,6 +111,59 @@ So the three video artifacts answer three different questions:
 | `world/flythrough.py` | what does the site look like? |
 | `run.py --video` | what did the fleet do on this run? |
 | `world/plant_tour.py` | which parts of the twin are real, and what is missing? |
+
+## Site layout, turbine siting and fleet scale
+`world/site.py` derives roads from the drawing (a corridor the CAD leaves empty IS a
+road) and infers the rest, tagging every element `derived` or `inferred`. Roads
+follow the grade: each strip is cut into <=25 m segments and sampled individually,
+because one flat quad per road floated or buried itself by up to 0.87 m on the real
+DEM. Inverter stations get access spurs.
+
+⚠ **BLOCK-02's drawing contains no east-west vehicle corridor** — its five table
+bands are separated by 1.0 m end gaps, not roads. `derived_ew_roads` therefore finds
+none, and there is deliberately no inferred counterpart: an invented arterial would
+have to run through surveyed tracker tables. Cross traffic uses the perimeter.
+
+`world/siting.py` sites wind turbines the way a wind farm is laid out — seeded
+dart-throwing under a **wake** constraint that is an ellipse (7 rotor diameters
+downwind, 4 across), not a circle, plus a setback that keeps blade shadows off the
+panels. `lattice_score` makes "not a grid" measurable: the old hand-written field of
+two evenly-spaced columns scores 1.00, the shipped scatter 0.40. An explicit
+`turbines:` list still wins, so a KPI run pinned to known positions restores with
+`turbine_scatter.enabled: false`. Keep-outs resolve through the same function as the
+geometry, so the enforced no-fly volumes cannot drift from the towers.
+
+`world/fleet_specs.py` gives the fleet named real platforms rather than plausible
+sizes — a **DJI M350-class** drone (0.895 m motor-to-motor, 0.533 m props; the class
+that carries a radiometric thermal payload) and a **Husky A200-class** rover
+(0.990 x 0.670 x 0.390 m body, 0.330 m wheels, 1.050 m with its mast). Body height
+and payload height are reported separately, because a masted rover cannot be 0.4-0.5 m
+tall when its wheels and deck already reach 0.39 m. `tests/test_robot_builder_usd.py`
+measures the authored geometry against those figures.
+
+## Is the layout the whole drawing?
+`tools/audit_layout.py` answers that with evidence rather than the ingest's own
+word — it recounts the hardware independently from the plotted PDF's vector geometry
+and reconciles the two, and lists anything ambiguous (overlapping tables, missing
+dimension data, a length that disagrees with its own module count) instead of
+approximating it. Exits non-zero if a layout cannot be reconciled.
+
+```bash
+python3 tools/audit_layout.py configs/layouts/khavda_a10b_block02.yaml \
+    --pdf solar_plant_layout/6024-E-A10-PLE-DC-L-I-0002_01.pdf
+```
+
+For BLOCK-02 it reconciles exactly: **273 tables / 30,016 modules ingested**, 279
+table-shaped paths in the PDF, residual 6 = the `DETAILS` legend swatches showing one
+of each HSAT type. 0 overlaps, 0 missing dimensions, 0 pitch mismatches.
+
+⚠ **Scope of what we hold.** That drawing is *"BLOCK-02 PILE FOUNDATION LAYOUT (PLOT:
+A10b - 567.5 MW)"*, sheets 1-2 of 2 — **one ~18 MWdc block**, fully ingested. The
+rest of the plot needs the other blocks' DC drawings. The **overall master layout
+cannot supply them**: it carries block locations, substations and 33 kV gear but no
+per-table geometry (measured — 49 elongated paths in 400,878, none table-shaped,
+versus 259 identical table shapes in the one block sheet). Both DWGs are AC1032 and
+there is no DWG converter on this box, so new geometry needs a DXF export.
 
 Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see

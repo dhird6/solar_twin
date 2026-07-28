@@ -103,6 +103,154 @@ def derived_roads(site, min_width_m: float = ROAD_MIN_WIDTH_M) -> list[RoadStrip
     return roads
 
 
+def derived_ew_roads(site, min_width_m: float = ROAD_MIN_WIDTH_M) -> list[RoadStrip]:
+    """East-west corridors the drawing itself contains.
+
+    `derived_roads` reads gaps between *eastings* and so can only ever find
+    north-south corridors. A plant also needs cross traffic, and the honest place
+    to find it is the same place: a tracker table runs `length_m` north from its
+    insert point, so wherever one band of tables ends and the next begins with
+    room to spare, the CAD has left an east-west corridor.
+
+    Deliberately DERIVED-only — there is no `inferred_ew_road` counterpart. An
+    invented arterial would have to run *through* surveyed tracker tables, which
+    does not merely add an assumption but contradicts the drawing. If the CAD
+    leaves no cross corridor, the answer is no cross corridor.
+    """
+    if not site.tables:
+        return []
+    # Collect each table's north-south span, then look for clear bands between
+    # the union of those spans.
+    spans = sorted(
+        (t.northing - site.origin_northing, t.northing - site.origin_northing + t.length_m)
+        for t in site.tables
+    )
+    merged: list[list[float]] = []
+    for lo, hi in spans:
+        if merged and lo <= merged[-1][1] + 1e-9:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+
+    min_x, _, max_x, _ = table_extent(site)
+    roads = []
+    for (_, hi), (lo, _) in zip(merged, merged[1:]):
+        if lo - hi < min_width_m:
+            continue
+        roads.append(
+            RoadStrip(
+                x0=min_x,
+                y0=hi,
+                x1=max_x,
+                y1=lo,
+                provenance=DERIVED,
+                name=f"road_ew_{len(roads)}",
+            )
+        )
+    return roads
+
+
+def access_spurs(
+    pads: list[Pad], roads: list[RoadStrip], width_m: float = 5.0
+) -> list[RoadStrip]:
+    """A short spur joining each equipment pad to the nearest road. **INFERRED.**
+
+    Without these the inverter stations sit in the array with no way in, which is
+    the giveaway that a site model is decoration rather than a plant: a 4 MW
+    central inverter arrives on a low-loader and is craned into place.
+
+    The spur is drawn axis-aligned to the nearest edge of the nearest road, since
+    everything else in this module is axis-aligned and a lone diagonal quad would
+    have to be a mesh rather than a strip for no visual gain.
+    """
+    out: list[RoadStrip] = []
+    if not roads:
+        return out
+    half = width_m / 2.0
+    for pad in pads:
+        best = None
+        for road in roads:
+            # Distance to this road's rectangle, and which way to travel to reach it.
+            dx_w, dx_e = road.x0 - pad.x, pad.x - road.x1
+            dy_s, dy_n = road.y0 - pad.y, pad.y - road.y1
+            for dist, axis, sign in (
+                (dx_w, "x", 1.0),
+                (dx_e, "x", -1.0),
+                (dy_s, "y", 1.0),
+                (dy_n, "y", -1.0),
+            ):
+                if dist <= 0.0:
+                    continue  # the pad already overlaps the road on this axis
+                if best is None or dist < best[0]:
+                    best = (dist, axis, sign, road)
+        if best is None:
+            continue  # already on a road; no spur needed
+        dist, axis, sign, road = best
+        n = len(out)
+        if axis == "x":
+            x_from = pad.x if sign > 0 else road.x1
+            x_to = road.x0 if sign > 0 else pad.x
+            out.append(
+                RoadStrip(x_from, pad.y - half, x_to, pad.y + half, INFERRED, f"road_spur_{n:02d}")
+            )
+        else:
+            y_from = pad.y if sign > 0 else road.y1
+            y_to = road.y0 if sign > 0 else pad.y
+            out.append(
+                RoadStrip(pad.x - half, y_from, pad.x + half, y_to, INFERRED, f"road_spur_{n:02d}")
+            )
+    return out
+
+
+def subdivide_strip(strip: RoadStrip, max_seg_m: float = 25.0) -> list[RoadStrip]:
+    """Split a strip along its long axis into segments at most `max_seg_m` long.
+
+    This is what lets a road follow the ground. A road was one flat quad placed
+    at the terrain height of its own CENTRE, which is fine on the `flat` terrain
+    it was written for and wrong on the real DEM: the block carries 2.2 m of
+    relief, so a 647 m perimeter road hung up to ~1 m clear of the grade at one
+    end and buried itself at the other. Segments are re-sampled individually, so
+    the road tracks the surface instead of cutting through it.
+
+    Segment length is a fidelity/cost knob: GLO-30 is sampled on a 20 m grid, so
+    25 m segments are already finer than the terrain data and going smaller buys
+    nothing but prims.
+    """
+    length_y = strip.y1 - strip.y0
+    length_x = strip.x1 - strip.x0
+    if max(length_x, length_y) <= max_seg_m:
+        return [strip]
+    import math
+
+    if length_y >= length_x:
+        n = max(1, math.ceil(length_y / max_seg_m))
+        step = length_y / n
+        return [
+            RoadStrip(
+                strip.x0,
+                strip.y0 + i * step,
+                strip.x1,
+                strip.y0 + (i + 1) * step,
+                strip.provenance,
+                f"{strip.name}_s{i:03d}",
+            )
+            for i in range(n)
+        ]
+    n = max(1, math.ceil(length_x / max_seg_m))
+    step = length_x / n
+    return [
+        RoadStrip(
+            strip.x0 + i * step,
+            strip.y0,
+            strip.x0 + (i + 1) * step,
+            strip.y1,
+            strip.provenance,
+            f"{strip.name}_s{i:03d}",
+        )
+        for i in range(n)
+    ]
+
+
 def perimeter_road(
     extent: tuple[float, float, float, float], width_m: float = 8.0, offset_m: float = 7.0
 ) -> list[RoadStrip]:

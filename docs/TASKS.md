@@ -7,13 +7,15 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-28, Session 10e)
+## ⇢ NEXT SESSION — start here (updated 2026-07-28, Session 11c)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d/10e.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11b.
 
-**State:** branch `ID-2-Layout-Integration` (pushed, 20 commits ahead of `main`,
-no PR to `main` yet), **195 Isaac-free tests**. The twin runs on the real Khavda
+**State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11 and
+11b are merged in (PRs #7 and #8), so there is ONE trunk again rather than three
+divergent worktrees. **247 Isaac-free tests**, 4 skipped. ⚠ Still **no PR to `main`**,
+now 26 commits ahead of it — that is the largest outstanding structural item. The twin runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, with a **real KPI-03
 number: 0.00 false faults on 560 healthy panels** under a verified on-panel
 tracker-self-shading stimulus (`runs/20260727T183423`).
@@ -24,6 +26,20 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
 - **Status tour video** ✅ — Session 10e. `world/plant_tour.py` renders
   `assets/plant_status_tour.mp4`: the plant with every shot labelled built /
   inferred / not-modelled, closing on the backlog below.
+- **Turbine siting, roads on the grade, fleet scale** ✅ — Session 11 (PR #8).
+  Turbines were a lattice; `world/siting.py` sites them under a wake ellipse
+  (7D x 4D), `lattice_score` 1.00 -> 0.40. Roads were single flat quads floating up
+  to 0.87 m off the real DEM; now segmented and sampled. Fleet derives from named
+  real platforms (`world/fleet_specs.py`) — the rover had measured 26% too wide.
+  ⚠ `build_keepouts` now needs `layout` threaded in, or a scattered field enforces
+  no-fly volumes at the OLD turbine positions.
+- **CAD ingest audited** ✅ — Session 11b (`tools/audit_layout.py`). BLOCK-02 is
+  **100% ingested**: 273 tables / 30,016 modules, reconciled entity-for-entity
+  against the PDF (residual 6 = the DETAILS legend swatches), 0 overlaps, 0 missing
+  dimensions. ⚠ The real scope limit: we hold **one ~18 MWdc block of a 567.5 MW
+  plot**, and the overall master DWG has **no per-table geometry**, so more blocks
+  need their own DC drawings exported to DXF. Neither DWG is parseable on this box
+  (AC1032, no converter, `libredwg-tools` absent from the noble repos).
 - **Session 10d's "video path is too expensive" is resolved and its diagnosis was
   wrong.** The render costs ~0.71 s/frame and that is FLAT with altitude (measured,
   4 poses, 540p and 720p) — the cost is frame COUNT alone. `--budget-minutes`

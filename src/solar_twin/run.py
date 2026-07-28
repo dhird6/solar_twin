@@ -156,7 +156,9 @@ def run(
     )
     # Planning-layer no-fly: vet every commanded waypoint against turbine keep-out
     # volumes (control-agnostic, so it protects kinematic and future PX4 alike).
-    keepouts = build_keepouts(farm_cfg)
+    # `layout` matters when the config scatters turbines: the keep-outs must
+    # resolve from the same field the builder authored, not from a stale list.
+    keepouts = build_keepouts(farm_cfg, layout)
     if keepouts:
         control = SafeControl(control, keepouts)
     perception = _perception(

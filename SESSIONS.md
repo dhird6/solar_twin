@@ -17,6 +17,184 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 11b: audited the CAD ingest — BLOCK-02 is 100% in; the gap is that we only have ONE block's drawing
+
+Asked to parse the DWG, cross-check the PDF, and rebuild `farm_builder`'s layout
+generation because "only some panels/tables from that layout have been added".
+**Audited it instead of rebuilding it, and the premise does not hold.** Findings,
+all reproducible via the new `tools/audit_layout.py`:
+
+**BLOCK-02 is completely ingested and completely built.** Independent count from the
+plotted PDF's own vector geometry (not the ingest's self-report, which cannot
+corroborate itself):
+
+| | tables | 64.4 m | 96.5 m | 128.6 m | modules |
+|---|---|---|---|---|---|
+| ingest (DXF) | 273 | 6 | 8 | 259 | 30,016 |
+| PDF vectors | 279 | 6 | 8 | 259 | — |
+
+The residual of **6 is exactly the `DETAILS` entities the ingest reported skipping**
+— three extra length pairs (66.4, 99.4, 132.5 m, two each) which are the **legend
+swatches** showing one of each HSAT type, drawn a few metres longer than a real
+table. Module arithmetic closes independently: 6x56 + 8x84 + 259x112 = 30,016, and
+the layer names (`Interior HSAT (1x112)` etc.) state those counts. Geometry audit:
+**0 overlaps, 0 missing dimensions, 0 pitch mismatches, 0 duplicate ids or
+positions**, all `rot_deg` = 0. Nothing was approximated or silently skipped, so
+there was nothing to rebuild — `farm_builder` already authors all 273 tables /
+30,016 panels (verified on the stage). `--subset` is opt-in for fast builds; the
+default is the whole block.
+
+**⚠ The real gap is different, and bigger.** The title block reads *"BLOCK-02 PILE
+FOUNDATION LAYOUT (PLOT: A10b - 567.5 MW)"*, sheets 1 and 2 of 2 — both sheets are
+the same block. So the drawing we hold is **one ~18 MWdc DC block of a 567.5 MW
+plot**, i.e. of order 3% of PLOT A10b, which is itself part of a much larger park.
+Scaling the twin needs the *other blocks'* DC drawings, which we do not have.
+
+**⚠ The master drawing cannot supply them.** `6841-Khavda Overall Master plant
+layout` covers E 527k-552k / N 2,656k-2,677k (~25 x 21 km, and BLOCK-02 does fall
+inside it), but it carries **no per-table geometry**. Measured: 400,878 vector paths
+of which 92% are degenerate lines and only 49 are elongated at all, none with a
+table's signature — against 435 elongated paths and 259 identical 631.4 x 11.2 pt
+(56:1) table shapes in the one block sheet. Its own title block agrees: the block
+drawing says *"FOR BLOCK LOCATION REFER OVERALL PLANT LAYOUT"* — the master gives
+block **locations**, substations, 33 kV panels, gantries and ramps, not tables.
+
+**⚠ Could NOT parse the DWG directly.** Both files are AC1032 (AutoCAD 2018).
+`libredwg-tools` is not in the Ubuntu noble repos, no `dwg2dxf`/ODA converter is on
+this box, and the DXF that produced the current layout is gone (gitignored). The
+audit therefore corroborated the ingest from the **PDF**, which is sufficient to
+answer "is it complete?" but is NOT a substitute for a DXF when ingesting new
+geometry. To add blocks: export DXF from AutoCAD, or build LibreDWG.
+(`tools/layout_from_pdf.py` still fails closed — its two calibration sources
+disagree by 9.2%, so the PDF must never become the geometry source.)
+
+**Calibrating the PDF cross-check took three anchors, two of them wrong** — worth
+recording because both failures were silent and plausible:
+- the **longest** elongated shape biased every length ~3% low (it is a legend
+  swatch, longer than any real table);
+- the **mode over all** elongated shapes was off by 30x (most shapes passing an
+  aspect filter are thin hatch and dimension lines);
+- correct: the mode **within 80% of the longest**, which lands on the 259 identical
+  full-length tables — the one anchor a DC sheet is guaranteed to carry many of.
+
+**209 Isaac-free tests** (was 201). New: `tools/audit_layout.py` (exits non-zero if
+a layout cannot be reconciled with its drawing) + `tests/test_audit_layout.py`.
+
+**⚠ Viewing this build: run from the WORKTREE, not the main checkout.** The siting /
+roads / fleet-scale work lives on `feat/siting-roads-scale`. `assets/khavda_infra.usd`
+was built from it and has **scattered** turbines, but the main checkout's
+`configs/farm_khavda_block02.yaml` has no `turbine_scatter` block and its `run.py`
+does not pass `layout` to `build_keepouts`. Mixing them puts the enforced no-fly
+volumes at the OLD explicit turbine positions while the towers stand somewhere else —
+the planner would route a drone through a tower and report a clean run. Code, config
+and USD have to come from the same branch.
+
+```bash
+cd /home/simulationhub/solar-twin/.claude/worktrees/terrain-infra
+DISPLAY=:1 PYTHONPATH=src "$ISAACSIM_PYTHON_EXE" -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --farm-usd assets/khavda_infra.usd --gui --live --max-panels 12
+```
+`--gui` alone teleports; `--live` is what makes the fleet fly. `mission.yaml` is on
+`perception: ground_truth`, which is the watchable setting — `cosmos_reason` blocks
+~12 s per panel inside a urllib call and freezes the window for that whole time.
+⚠ The Cosmos Reason vLLM is currently holding **44 GB** of the unified 121 GB
+(61 GB used overall). Isaac Sim fits alongside that, but it is not a lot of headroom:
+if the sim OOMs, stop the container rather than lowering the render settings.
+
+## 2026-07-28 — Session 11: wake-sited turbines, roads on the grade, fleet at named real scale
+
+Worked a four-part brief (terrain / roads / robot+drone scale / windmill placement).
+**Part 1 was already shipped and two of its instructions would have regressed it**,
+so that is recorded first; parts 2-4 were real and are built.
+
+**⚠ Terrain: the brief's premise was out of date.** It opened "current known gap:
+terrain is flat with no elevation data". Session 10d shipped real Copernicus GLO-30
+DEM terrain (`world/dem.py`, `assets/dem/khavda_block02.*`, `terrain: kind: dem`),
+panel z already spans 1.10 m. Two of its instructions were declined, with reasons:
+- **"Use SRTM 30m"** — 10d chose Copernicus *because* SRTM/NASADEM/AW3D30 all
+  require an Earthdata or JAXA login and a reproducible pipeline must not depend on
+  someone's password. Switching would trade a no-auth source for a gated one.
+- **"Re-run the tilt/height calculation ... at each table's (x, y)"** — this is what
+  the code deliberately does NOT do. A torque tube is a rigid beam up to 128 m long;
+  sampling per module bends it into the shape of the desert. `fit_line` least-squares
+  a straight line through the grade, and its residual is the pile-height variation
+  the row needs (worst 0.461 m). Per-table draping would err in the flattering
+  direction (`NFR-07`).
+- Coordinates in the brief (23.85N, 69.55E) are ~27 km from the ingested block
+  (24.0915N, 69.4205E, EPSG:32642 from the vendor CAD). The CAD survey coordinates
+  are authoritative.
+- **Ground albedo left alone on purpose.** The brief asked for a salt-flat material
+  *and* asked not to break the VLM's shadow contrast. Those conflict: albedo feeds
+  the KPI-03 false-fault measurement, so changing it invalidates the 0.00-on-560
+  result until re-measured. Flagged, not silently changed.
+
+**Roads — and an honest negative result.** `derived_ew_roads` looks for east-west
+corridors the way `derived_roads` looks for north-south ones: gaps between the
+merged northing bands of the tables. Measured on the real block, the bands are
+`(0,128.6) (129.6,258.2) (259.2,387.7) (388.7,517.3) (518.3,646.9)` — **gaps of
+exactly 1.0 m**, which are the physical end gaps between tracker tables, not
+corridors. So **BLOCK-02's drawing contains no cross arterial**, and the brief's
+"main arterial roads between block sections" cannot be honoured from the CAD. There
+is deliberately no `inferred_ew_road`: an invented arterial would have to run
+*through* surveyed tracker tables, which does not add an assumption so much as
+contradict the drawing. Cross traffic uses the perimeter.
+What did land: **access spurs** to all five inverter stations (they previously sat
+in the array with no way in) and **roads that follow the grade**. A road was one
+flat quad at the height of its own centre; `subdivide_strip` cuts it into <=25 m
+segments (finer than GLO-30's 20 m grid) sampled individually. Measured per road on
+the real DEM: z spans **0.20-0.87 m**, i.e. the perimeter-south road had been
+floating/burying by nearly a metre. Roads 5 -> 10 logical (135 prims).
+
+**⭐ Turbines: a lattice became a wake-constrained scatter.** The old field was five
+hand-written positions — two columns at fixed eastings, evenly spaced; `lattice_score`
+1.00. `world/siting.py` sites them by seeded dart-throwing under a spacing rule that
+is an **ellipse, not a circle**: ~7 rotor diameters along the prevailing wind and 4
+across, because a wake is long and narrow. A circular Poisson-disk radius cannot
+express that — set it to the downwind figure and you waste the site, set it to the
+crosswind figure and you allow illegal wake overlap. Shipped field scores **0.40**.
+- **The keep-outs could have silently drifted.** `build_keepouts` read
+  `farm_cfg["turbines"]` directly, so a scattered build would have enforced no-fly
+  volumes at the OLD positions while the towers stood elsewhere — the planner would
+  route a drone through a tower. Both now resolve through the same
+  `siting.resolve_turbines`, with a test asserting they agree.
+- An explicit `turbines:` list still WINS over the scatter, so a KPI run pinned to
+  known positions restores with `turbine_scatter.enabled: false`.
+- ⚠ Measured trade-off in `ring_depth_d`: 6.0D scatters to 1.2 km (lattice 0.00 but
+  the machines read as distant specks), 2.5D keeps them 210-560 m out with presence
+  at true scale but lattice 0.40 — a narrow band constrains one axis. Shipped 2.5D.
+  A constrained band is not the old two-column lattice.
+
+**Fleet scale: two errors that only measurement found.** Geometry now derives from
+named real platforms (`world/fleet_specs.py`) instead of literals:
+- The drone was an `arm=0.34` constant making a 0.96 m motor-to-motor diagonal while
+  its docstring claimed "~0.9 m", and neither figure was tied to a machine. Now
+  **DJI M350-class: 0.895 m diagonal, 0.533 m props**. ⚠ The brief asked for 0.4-0.6 m
+  diagonal, which is Mavic-3-class; utility PV IR inspection flies M300/M350-class
+  because that is what carries a radiometric thermal payload. Both are presets
+  (`m350`, `mavic3t`) — the size question is really a payload question.
+- **The rover measured 0.844 m wide against a published 0.670 m — 26% too wide.**
+  Wheels were offset by a fraction of the body width; a platform's published width is
+  its OVERALL width, wheels included. Also the sensor head was centred ON the stated
+  total height, so the machine measured half a head taller than it claimed. Both
+  fixed; the authored envelope now measures 0.670 x 1.010 x 1.050 m exactly.
+- ⚠ The brief's rover spec ("1.0-1.2 m long x 0.6 m wide x **0.4-0.5 m tall including
+  sensor mast**") is not satisfiable: 0.33 m wheels plus a deck reach 0.39 m before any
+  mast exists. Resolved by making body height and payload height two numbers —
+  Husky A200-class body 0.390 m, total with mast 1.050 m.
+- `fits_between_rows` / `standoff_is_safe` are new checks with teeth: motion is
+  kinematic, so a standoff that intersects a module renders as a clean flight through
+  solid glass rather than a crash. (A 3 m-diagonal machine does still fit a 5.5 m
+  aisle — worth knowing, and not obvious.)
+
+**Instancing budget held: build 82.35 s** (budget ~90 s), 75,637 prims, 29,416 panels
+from one prototype. **201 Isaac-free tests** (was 197) + 8 pxr-guarded geometry tests
+that measure the authored robots and skip off the Spark.
+
+**Next:** unchanged — VLM run-to-run variance, the low-sun KPI-03 point, Pegasus/PX4,
+and the rest of the balance of plant (substation/control room/trenches, plus the
+graded civil surface GLO-30 cannot supply).
+
 ## 2026-07-28 — Session 10e: the status tour video ✅ + the "video path is too expensive" claim was wrong
 
 **Asked for:** a video of the twin as it stands, watchable end to end, that says
