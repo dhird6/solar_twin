@@ -34,11 +34,23 @@ panel:
   cell_cols: 12
   cell_rows: 6
 
-# ⚠ Placeholder terrain. Khavda is a real, graded site — this synthetic height
-# field is NOT its topography. Keep `flat` until a real DEM is referenced
-# (FR-10/FR-20), rather than mounting a real plant on invented hills (NFR-07).
+# REAL terrain (FR-10/FR-20). Copernicus DEM GLO-30, fetched and baked by
+#   /home/simulationhub/venvs/dem-ingest/bin/python tools/dem_fetch.py \
+#       configs/layouts/khavda_a10b_block02.yaml --out assets/dem/khavda_block02
+# The block measures 3.3-5.4 m above sea level: 2.2 m of relief over 1.1 x 1.4 km,
+# which is what the Rann of Kutch actually looks like. `datum: hardware_mean`
+# puts that mean elevation at stage z=0 so waypoint standoffs stay meaningful.
+#
+# ⚠ GLO-30 is a DSM at 30 m native resolution, and it is PRE-grading: the real
+# plant sits on an engineered surface only the civil drawings describe. Torque
+# tubes are therefore fitted as straight lines through this grade (see
+# world/dem.py) rather than following it, and the build prints the worst
+# deviation — that number is the pile-height variation the row would need.
+# Regenerate rather than editing; `kind: flat` remains available for a fast build.
 terrain:
-  kind: flat
+  kind: dem
+  path: assets/dem/khavda_block02.yaml
+  datum: hardware_mean
 
 # Georef is carried by the site file's `crs` (EPSG:32642) and converted with
 # pyproj, so these are a fallback only, used if pyproj is unavailable.

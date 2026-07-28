@@ -41,8 +41,11 @@ the plan rotation of the table, which for this site is 0 for every table.
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, replace
+
+from solar_twin.world.dem import fit_line
 
 
 @dataclass(frozen=True)
@@ -219,13 +222,34 @@ def expand_sites(site: SiteSpec, terrain_z, panel_site_cls, panel_id_fn):
     human-facing identity is really `<table_id>` + module number.
     """
     sites = []
+    worst_resid = 0.0
+    worst_table = ""
     for table in site.tables:
         ti = table.index  # canonical, subset-stable — see TableSpec.index
         latlon_ok = True
-        for mi, (e, n) in enumerate(module_positions(table)):
+        modules = list(module_positions(table))
+
+        # --- fit the torque tube to the ground, the way an installer does -----
+        # A tracker's tube is a rigid beam up to 128 m long. Sampling terrain per
+        # module and mounting each at its own height would BEND that beam into the
+        # shape of the desert — wrong, and wrong in the flattering direction
+        # (`NFR-07`). Fit a straight line through the terrain along the tube; the
+        # residual is the pile-height variation the row actually needs.
+        samples = []
+        for e, n in modules:
             x = e - site.origin_easting
             y = n - site.origin_northing
-            z = terrain_z(x, y)
+            # Distance along the tube from its first module.
+            s_along = math.hypot(e - modules[0][0], n - modules[0][1])
+            samples.append((s_along, terrain_z(x, y)))
+        a, b, resid = fit_line(samples)
+        if resid > worst_resid:
+            worst_resid, worst_table = resid, table.table_id
+
+        for mi, (e, n) in enumerate(modules):
+            x = e - site.origin_easting
+            y = n - site.origin_northing
+            z = a + b * samples[mi][0]
             geo = to_wgs84(e, n, site.crs)
             if geo is None:
                 latlon_ok = False
@@ -257,4 +281,10 @@ def expand_sites(site: SiteSpec, terrain_z, panel_site_cls, panel_id_fn):
                 "  [warn] pyproj unavailable — pv:geo_position left at (0,0); "
                 "install pyproj for true lat/lon (FR-20)"
             )
+    if worst_resid > 0.001:
+        print(
+            f"  terrain fit: torque tubes are STRAIGHT lines through the grade; "
+            f"worst deviation {worst_resid:.3f} m on {worst_table} "
+            f"(= the pile-height variation that row needs)"
+        )
     return sites

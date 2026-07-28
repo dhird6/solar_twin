@@ -35,16 +35,55 @@ DEFAULT_TILT_DEG = 20.0
 _UNSET = object()
 
 
+#: Loaded DEMs, keyed by (sidecar path, site origin). Sampling is called ~30k
+#: times per build (once per module) plus once per ground vertex, so the grid is
+#: read from disk once, not per call.
+_DEM_CACHE: dict = {}
+
+
+def _dem_for(cfg: dict):
+    """The `DemTerrain` for this config, or None when terrain is not DEM-backed."""
+    spec = cfg.get("terrain", {}) or {}
+    if spec.get("kind") != "dem":
+        return None
+    path = spec.get("path")
+    if not path:
+        raise ValueError("terrain.kind: dem requires terrain.path (a dem_fetch.py sidecar)")
+    origin_e = float(spec.get("site_origin_easting", 0.0))
+    origin_n = float(spec.get("site_origin_northing", 0.0))
+    key = (str(path), origin_e, origin_n, spec.get("datum", "hardware_mean"))
+    if key not in _DEM_CACHE:
+        from solar_twin.world.dem import DemTerrain
+
+        # No bounds needed: dem_fetch.py already cropped the grid to this site
+        # plus a margin, so the grid mean IS the site mean. Passing the panel
+        # footprint would be circular — the footprint needs terrain to exist.
+        _DEM_CACHE[key] = DemTerrain.load(
+            str(path), origin_e, origin_n,
+            datum=str(spec.get("datum", "hardware_mean")),
+        )
+    return _DEM_CACHE[key]
+
+
 def terrain_height(x: float, y: float, cfg: dict) -> float:
     """Ground elevation (meters) at stage-local (x, y). Pure + deterministic so
     the farm builder (mesh), the panel mounts, and the drone waypoints all agree
-    on where the ground is — the whole point of a shared terrain function. `flat`
-    (or a missing block) returns 0.0, preserving the old flat-ground behaviour.
+    on where the ground is — the whole point of a shared terrain function.
 
-    A sum of two orthogonal sines gives smooth, seed-free, gentle undulation
-    (no numpy — stays importable in the Isaac-free tests)."""
+    Three kinds:
+    - `flat` (or missing) returns 0.0 — the original behaviour.
+    - `heightfield` sums two orthogonal sines: smooth, seed-free, **synthetic**.
+      Fine for the procedural test farm, never for a real site.
+    - `dem` samples a real Copernicus GLO-30 patch baked by `tools/dem_fetch.py`
+      (see `world/dem.py`). Heights are relative to a datum so the plant still
+      straddles z=0 rather than sitting at its true 4 m above sea level.
+    """
     spec = cfg.get("terrain", {}) or {}
-    if spec.get("kind", "flat") != "heightfield":
+    kind = spec.get("kind", "flat")
+    if kind == "dem":
+        dem = _dem_for(cfg)
+        return dem.height(x, y) if dem else 0.0
+    if kind != "heightfield":
         return 0.0
     amp = float(spec.get("amplitude", 0.0))
     wl = float(spec.get("wavelength", 12.0)) or 12.0
@@ -213,6 +252,14 @@ class FarmLayout:
         if max_tables:
             site = subset_site(site, max_tables)
         self.site = site
+        # A DEM is indexed in survey coordinates, and the anchor that maps stage
+        # (0,0) to them lives in the site file. Inject it rather than asking a
+        # config to restate it: two copies of a georeference is one too many.
+        tspec = self.cfg.get("terrain") or {}
+        if tspec.get("kind") == "dem":
+            tspec.setdefault("site_origin_easting", site.origin_easting)
+            tspec.setdefault("site_origin_northing", site.origin_northing)
+            self.cfg["terrain"] = tspec
         self.origin = (0.0, 0.0, 0.0)  # stage origin == site file's `origin` anchor
         # Grid-shaped attributes still have consumers (`inspection_targets`'s
         # approach offset, the builder's ground extent). Derive honest analogues:
