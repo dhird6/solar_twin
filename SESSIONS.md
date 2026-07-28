@@ -17,6 +17,69 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 11b: audited the CAD ingest — BLOCK-02 is 100% in; the gap is that we only have ONE block's drawing
+
+Asked to parse the DWG, cross-check the PDF, and rebuild `farm_builder`'s layout
+generation because "only some panels/tables from that layout have been added".
+**Audited it instead of rebuilding it, and the premise does not hold.** Findings,
+all reproducible via the new `tools/audit_layout.py`:
+
+**BLOCK-02 is completely ingested and completely built.** Independent count from the
+plotted PDF's own vector geometry (not the ingest's self-report, which cannot
+corroborate itself):
+
+| | tables | 64.4 m | 96.5 m | 128.6 m | modules |
+|---|---|---|---|---|---|
+| ingest (DXF) | 273 | 6 | 8 | 259 | 30,016 |
+| PDF vectors | 279 | 6 | 8 | 259 | — |
+
+The residual of **6 is exactly the `DETAILS` entities the ingest reported skipping**
+— three extra length pairs (66.4, 99.4, 132.5 m, two each) which are the **legend
+swatches** showing one of each HSAT type, drawn a few metres longer than a real
+table. Module arithmetic closes independently: 6x56 + 8x84 + 259x112 = 30,016, and
+the layer names (`Interior HSAT (1x112)` etc.) state those counts. Geometry audit:
+**0 overlaps, 0 missing dimensions, 0 pitch mismatches, 0 duplicate ids or
+positions**, all `rot_deg` = 0. Nothing was approximated or silently skipped, so
+there was nothing to rebuild — `farm_builder` already authors all 273 tables /
+30,016 panels (verified on the stage). `--subset` is opt-in for fast builds; the
+default is the whole block.
+
+**⚠ The real gap is different, and bigger.** The title block reads *"BLOCK-02 PILE
+FOUNDATION LAYOUT (PLOT: A10b - 567.5 MW)"*, sheets 1 and 2 of 2 — both sheets are
+the same block. So the drawing we hold is **one ~18 MWdc DC block of a 567.5 MW
+plot**, i.e. of order 3% of PLOT A10b, which is itself part of a much larger park.
+Scaling the twin needs the *other blocks'* DC drawings, which we do not have.
+
+**⚠ The master drawing cannot supply them.** `6841-Khavda Overall Master plant
+layout` covers E 527k-552k / N 2,656k-2,677k (~25 x 21 km, and BLOCK-02 does fall
+inside it), but it carries **no per-table geometry**. Measured: 400,878 vector paths
+of which 92% are degenerate lines and only 49 are elongated at all, none with a
+table's signature — against 435 elongated paths and 259 identical 631.4 x 11.2 pt
+(56:1) table shapes in the one block sheet. Its own title block agrees: the block
+drawing says *"FOR BLOCK LOCATION REFER OVERALL PLANT LAYOUT"* — the master gives
+block **locations**, substations, 33 kV panels, gantries and ramps, not tables.
+
+**⚠ Could NOT parse the DWG directly.** Both files are AC1032 (AutoCAD 2018).
+`libredwg-tools` is not in the Ubuntu noble repos, no `dwg2dxf`/ODA converter is on
+this box, and the DXF that produced the current layout is gone (gitignored). The
+audit therefore corroborated the ingest from the **PDF**, which is sufficient to
+answer "is it complete?" but is NOT a substitute for a DXF when ingesting new
+geometry. To add blocks: export DXF from AutoCAD, or build LibreDWG.
+(`tools/layout_from_pdf.py` still fails closed — its two calibration sources
+disagree by 9.2%, so the PDF must never become the geometry source.)
+
+**Calibrating the PDF cross-check took three anchors, two of them wrong** — worth
+recording because both failures were silent and plausible:
+- the **longest** elongated shape biased every length ~3% low (it is a legend
+  swatch, longer than any real table);
+- the **mode over all** elongated shapes was off by 30x (most shapes passing an
+  aspect filter are thin hatch and dimension lines);
+- correct: the mode **within 80% of the longest**, which lands on the 259 identical
+  full-length tables — the one anchor a DC sheet is guaranteed to carry many of.
+
+**209 Isaac-free tests** (was 201). New: `tools/audit_layout.py` (exits non-zero if
+a layout cannot be reconciled with its drawing) + `tests/test_audit_layout.py`.
+
 ## 2026-07-28 — Session 11: wake-sited turbines, roads on the grade, fleet at named real scale
 
 Worked a four-part brief (terrain / roads / robot+drone scale / windmill placement).

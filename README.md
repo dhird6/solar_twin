@@ -11,7 +11,7 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 201 Isaac-free tests.
+rotor spin and rolling wheels. 209 Isaac-free tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade
@@ -27,7 +27,7 @@ first**.
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-PYTHONPATH=src python3 -m pytest -q                   # 201 tests, ~5 s, no GPU
+PYTHONPATH=src python3 -m pytest -q                   # 209 tests, ~5 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
@@ -111,6 +111,30 @@ that carries a radiometric thermal payload) and a **Husky A200-class** rover
 and payload height are reported separately, because a masted rover cannot be 0.4-0.5 m
 tall when its wheels and deck already reach 0.39 m. `tests/test_robot_builder_usd.py`
 measures the authored geometry against those figures.
+
+## Is the layout the whole drawing?
+`tools/audit_layout.py` answers that with evidence rather than the ingest's own
+word — it recounts the hardware independently from the plotted PDF's vector geometry
+and reconciles the two, and lists anything ambiguous (overlapping tables, missing
+dimension data, a length that disagrees with its own module count) instead of
+approximating it. Exits non-zero if a layout cannot be reconciled.
+
+```bash
+python3 tools/audit_layout.py configs/layouts/khavda_a10b_block02.yaml \
+    --pdf solar_plant_layout/6024-E-A10-PLE-DC-L-I-0002_01.pdf
+```
+
+For BLOCK-02 it reconciles exactly: **273 tables / 30,016 modules ingested**, 279
+table-shaped paths in the PDF, residual 6 = the `DETAILS` legend swatches showing one
+of each HSAT type. 0 overlaps, 0 missing dimensions, 0 pitch mismatches.
+
+⚠ **Scope of what we hold.** That drawing is *"BLOCK-02 PILE FOUNDATION LAYOUT (PLOT:
+A10b - 567.5 MW)"*, sheets 1-2 of 2 — **one ~18 MWdc block**, fully ingested. The
+rest of the plot needs the other blocks' DC drawings. The **overall master layout
+cannot supply them**: it carries block locations, substations and 33 kV gear but no
+per-table geometry (measured — 49 elongated paths in 400,878, none table-shaped,
+versus 259 identical table shapes in the one block sheet). Both DWGs are AC1032 and
+there is no DWG converter on this box, so new geometry needs a DXF export.
 
 Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see
