@@ -7,24 +7,32 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-27, Session 10)
+## ⇢ NEXT SESSION — start here (updated 2026-07-28, Session 10d)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Session 10.
+is just the current front of work. Full detail in `SESSIONS.md` Session 10d.
 
-**State:** branch `ID-2-Layout-Integration`, nothing pushed, working tree clean,
-108 Isaac-free tests. The twin runs on the real Khavda BLOCK-02 layout and now
-has a **real KPI-03 number: 0.00 false faults on 560 healthy panels** under a
-verified on-panel tracker-self-shading stimulus (`runs/20260727T183423`).
+**State:** branch `ID-2-Layout-Integration`, 157 Isaac-free tests (2 skipped).
+The twin runs on the real Khavda BLOCK-02 layout, on **real Copernicus GLO-30
+terrain**, and a run can now be **watched live** (`--gui` / `--livestream` /
+`--live`). KPI-03 still stands at **0.00 false faults on 560 healthy panels**
+under a verified on-panel tracker-self-shading stimulus (`runs/20260727T183423`).
 
-**Done since the last list:** KPI-03 re-run ✅ (item 1) — and it exposed two
-geometry bugs that were live in the Session-9 build (transposed module chord,
-tilt-blind `panel_top_z`), both fixed. Item 2 (merge `docs/cosmos3-edge-serving`)
-was **already merged** at `16e9a35`; the entry was stale.
+**Done since the last list:** item 2 (Real DEM) ✅ at `be52eea` — GLO-30 off AWS
+Open Data (no credentials), 2.2 m of relief, and straight least-squares torque
+tubes rather than beams bent to follow the desert. Plus live viewing, serpentine
+/ stride routing, and 5 INFERRED turbines with keep-out volumes on the real block.
 
 **Do these first, in this order:**
 
-0. **⚠ Quantify VLM run-to-run variance before quoting any KPI as a constant.**
+0. **⚠ Finish the cruise-speed wiring — it is built but inert.**
+   `KinematicControl` takes `cruise_speeds` / `cruise_above_m` and is tested, but
+   `run.py` never passes them and `configs/mission.yaml` has no cruise key. Also
+   the deploy-at-the-first-panel shortcut is guarded on `--video` only. Until
+   both are closed, a `--live` run on the full block flies the ~490 m commute to
+   the first table tick-by-tick (~4,900 frames) and looks like a hang. Small, and
+   it gates every long live demo.
+1. **⚠ Quantify VLM run-to-run variance before quoting any KPI as a constant.**
    Two identical 24-panel runs (2026-07-28) disagreed on one panel: R258-C013
    diagnosed `soiled` in one and `hotspot` in the other. `cosmos_reason.py` sends
    `temperature: 0.0` but vLLM clamps it to 0.01 and logs the substitution, and
@@ -32,20 +40,30 @@ was **already merged** at `16e9a35`; the entry was stale.
    model is not.** Either pin a sampling seed / force greedy decoding, or run
    each KPI N times and report a spread. Cheap to do and it gates the honesty of
    every number in `SESSIONS.md`.
-1. **A second KPI-03 point at a lower sun** (`2026-06-21T01:30:00Z`: elevation
+2. **A second KPI-03 point at a lower sun** (`2026-06-21T01:30:00Z`: elevation
    10.7 deg, ~50% of each row shaded, whole scene dimmer). 02:00Z is the readable
    hard-shadow case and the model was untroubled by it — 01:30Z is where the
    shading-vs-defect distinction should start to break, and where "shadow"
    becomes confounded with "underexposed". Same scenario file, one timestamp
    change (and update the `test_solar.py` guard's expected band).
-2. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
-   the synthetic sine field on a real site. Now the biggest remaining fidelity
-   gap, since everything above ground level is built.
-3. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
+3. **A watchable live Cosmos run** — Kit only repaints on `app.update()`, so with
+   `perception: cosmos_reason` the viewport freezes for the ~12 s each panel
+   spends in a `urllib` request. Needs perception on a worker thread with the app
+   pumped on the main thread. Until then, live viewing means `ground_truth`.
+4. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
    installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
-4. **More balance-of-plant** — substation / control room, module-level torque
+5. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
-   anything not in the drawing must be tagged `INFERRED` like the rest.
+   anything not in the drawing must be tagged `INFERRED` like the rest. Pile
+   heights now have a real target: `fit_line` reports up to 0.461 m of variation.
+
+**Done 2026-07-28 (Session 10d), was item 2:**
+- ~~Real DEM~~ ✅ Copernicus GLO-30 off AWS Open Data (`be52eea`). 2.2 m of relief
+  over the block, `datum: hardware_mean` so the site mean stays at z=0, and
+  **straight** least-squares torque tubes rather than beams bent to the grade.
+  ⚠ Heavy geo deps (GDAL/rasterio) live in `/home/simulationhub/venvs/dem-ingest`
+  — installing rasterio with `--user` dragged numpy 2.5.1 over the system 1.26.4
+  and broke scipy.
 
 **Done 2026-07-28 (Session 10c), was items 2-4:**
 - ~~Instancing / LOD (`IF-09`)~~ ✅ the full 273 tables now build: 2.25M prims →

@@ -17,6 +17,125 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 10d: the plant sits on REAL ground ✅ + you can WATCH a run ✅ (and the commute that hangs one ⚠)
+**Two things closed and one half-open.** Terrain is no longer `flat` — it samples the
+actual Khavda ground. And a run is now watchable live, in a window or over WebRTC,
+instead of only as an mp4 rendered after the fact. The half-open one is the 490 m
+commute to the first table: the fix for it is built and tested but **not wired**, so
+read §5 before starting a long live run.
+
+**1. Real terrain — Copernicus GLO-30 (committed at `be52eea`).** Closes the last item
+Session 10c left open. Source chosen for *reproducibility*: GLO-30 is on AWS Open Data
+with no credentials, where SRTM / NASADEM / AW3D30 all want an Earthdata or JAXA login —
+a pipeline that needs someone's password is not reproducible. BLOCK-02 measures
+**3.3–5.4 m above sea level: 2.2 m of relief over 1.1 × 1.4 km**, which is a real number
+about the Rann of Kutch rather than an invented one.
+- **Two-stage, like the CAD ingest.** `tools/dem_fetch.py` needs GDAL, which must not go
+  into Isaac's bundled Python (the build step runs there), so it lives in its own venv
+  (`/home/simulationhub/venvs/dem-ingest`) and bakes a `.npy` + YAML sidecar;
+  `world/dem.py` samples that with numpy alone.
+  ⚠ **Banked:** `pip install --user rasterio` dragged numpy 2.5.1 over the system
+  1.26.4 and broke scipy. Reverted. Heavy geo deps go in a venv, never `--user`.
+- **Straight torque tubes — the fidelity point.** A tracker tube is a rigid beam up to
+  128 m long. Sampling the DEM per module and mounting each at its own height would bend
+  that beam into the shape of the desert: wrong, and wrong in the *flattering* direction.
+  `fit_line` does what an installer does — least-squares a straight line through the
+  grade — and its residual is a real engineering quantity. Measured here: tube slopes
+  **−0.64% to +0.89%**, worst row (T0130) needs **0.461 m of pile-height variation**.
+  The build prints it.
+- **Datum matters.** Absolute elevation would put the plant 4 m off the stage origin and
+  silently invalidate every waypoint standoff, which are measured from the panel.
+  `datum: hardware_mean` puts the site mean at z=0 and keeps the relief.
+- Sampling outside the DEM patch **clamps to the edge deliberately** — the ground mesh
+  reaches kilometres further, and returning 0.0 would tear a cliff around the site.
+
+**2. Turbines on the real block.** `turbines: []` became 5, tagged **⚠ INFERRED** like
+the roads and fencing: Khavda genuinely is a hybrid wind+solar park, but this drawing
+covers DC-block hardware only and contains no turbine positions — so 120 m hub / 70 m
+blade / 10.5–12.5 rpm is utility-class typical and the placement is ours. They sit
+**outside the panel footprint** (x < 0 and x > 321), which is both how a hybrid park is
+laid out and the honest choice: a turbine standing among the rows would throw blade
+shadows onto panels, and any KPI-03 measured against it would be an artefact of where
+*we* put it. `world/keepout.py` authors the no-fly volumes `SafeControl` clamps against
+(`FR-09`); the run record now carries the audit —
+`keepout: {turbines: 5, min_clearance_m: 92.149, waypoints_clamped: 0}`. Zero clamps is
+the *expected* result for turbines outside the footprint: the audit ran, and had nothing
+to catch.
+
+**3. Watching a run live — three deliberately separate flags.** Runbook (with the traps)
+is now in `docs/ENVIRONMENT.md`.
+
+| flag | what it does |
+|---|---|
+| `--gui` | Isaac Sim window on **this machine's** display (`DISPLAY=:1`) |
+| `--livestream` | headless, UI streamed over **WebRTC** — the only way to watch from another machine |
+| `--live` | **interpolated** motion: the fleet flies between waypoints instead of teleporting |
+| `--video` | unrelated to the above: renders offscreen and writes `inspection.mp4` |
+
+They are separate on purpose. **Teleport stays the default** so a measurement run cannot
+silently inherit ~10x the sim steps. Traps found and banked:
+- **`--gui` alone used to teleport.** Interpolated motion was reachable only via
+  `--video`, so a GUI run showed robots popping between waypoints. `--live` is now the
+  knob, and 5 tests pin the flag → `sim_opts` mapping — because that mapping is exactly
+  what decides whether a KPI run picks up interpolation by accident.
+- **The viewport must be aimed.** The default perspective camera makes the fleet a few
+  pixels of a 320 × 647 m block. `SimRuntime.set_viewport_camera()` points it at
+  `/World/Overview` — the same chase camera `--video` uses — so `chase()` now drives
+  what the human sees. API **verified against this build**, not remembered:
+  `omni.kit.viewport.utility 2.0.1` has `get_active_viewport()`, and `camera_path` is a
+  real setter on `omni.kit.widget.viewport 109.2.0`. Best-effort: a failure costs the
+  view, never the mission.
+- **Livestream is `headless: True` + `hide_ui: False`**, NOT `headless: False` — per this
+  build's `standalone_examples/api/isaacsim.simulation_app/livestream.py`. Ports from
+  `apps/isaacsim.exp.full.streaming.kit`: signal **49100**, stream **47998**.
+- ⚠ **Kit only repaints when `app.update()` is called.** With `perception: cosmos_reason`
+  each panel blocks ~12 s inside a `urllib` request and the window is frozen for that
+  whole time. Use `ground_truth` for a watchable run; a smooth live Cosmos run needs
+  perception on a worker thread with the app pumped on the main thread — **not done**.
+- A live viewport gets the chase **camera prim** but **no render product**, so `chase()`
+  now gates on the prim rather than the annotator. Attaching an annotator nobody reads
+  would render the scene an extra time per step.
+
+Proof it works: **`runs/20260728T143911`** — 5 panels of the full 30,016-module stage
+watched through a GUI viewport, serpentine + stride 14, 11 sim steps, 7.4 s,
+detection_rate 1.00.
+
+**4. Route order: serpentine and stride (`layout.route_sites`).** `linear` stays the
+default because every KPI so far was measured in that order, and changing it would make
+new numbers incomparable with old ones. `serpentine` reverses alternate tables so the
+fleet turns round at the end of a row: a one-way sweep of a 128 m table means a 128 m
+deadhead back to the start of the next one, every row — the test asserts the worst
+consecutive hop drops below **25%** of linear's. `panel_stride` samples every Nth module.
+⚠ **Stride changes what the run measures** — the denominator becomes panels VISITED, not
+panels on site. `--route` / `--panel-stride` override `mission.yaml` so a demo doesn't
+need its own config file.
+
+**5. ⚠⚠ THE OPEN ONE: the commute is what hangs a live run, and the fix is only
+half-wired.** The first table of the full block is **~490 m from the stage origin**. At
+inspection speed (2 m/s, 0.1 s ticks) that is **~4,900 rendered frames of empty desert
+before anything is inspected** — which is exactly how the first attempt at this appeared
+to hang. Two things were built for it, and neither is fully live:
+- `KinematicControl(cruise_speeds=…, cruise_above_m=6.0)` — cruise beyond 6 m of
+  remaining distance, ease back to inspection speed for the approach, which is what a
+  survey drone actually does. Built, and 2 tests cover it (including a regression check
+  that behaviour is unchanged without a cruise speed). **But `run.py` still builds
+  `KinematicControl(runtime, speeds=…, dt=…)` with no `cruise_speeds`, and
+  `configs/mission.yaml` has no cruise key — so the feature is inert.** Wiring it is the
+  first job next session.
+- The deploy-at-the-first-panel shortcut (place the fleet AT `targets[0]` instead of
+  flying it there, as a real survey launches from a point at the work) is guarded on
+  `recorder is not None` — i.e. **`--video` only**. A `--live --gui` run on the full
+  block therefore still flies the whole commute.
+
+So `--live` is proven over **short hops only**; the long-haul live run is not yet
+demonstrated. Don't quote it as working until both bullets above are closed.
+
+**Tests / state:** **157 Isaac-free tests pass** (2 skipped) — was 146 after the DEM
+commit, 137 before it. New: 9 DEM, 2 cruise-speed, 4 route-order, 5 live-flag plumbing.
+The DEM work is committed at `be52eea` on `ID-2-Layout-Integration`; the live-view,
+route and turbine work was still **uncommitted in the working tree** when this entry was
+written.
+
 ## 2026-07-28 — Session 10c: the WHOLE plant builds and looks like a plant ✅ (IF-09 done)
 **All 273 tables, 30,016 modules, in one stage, with roads, fencing, inverter stations
 and a real sky.** `assets/khavda_flythrough.mp4` (769 frames / 32 s) is the tour:

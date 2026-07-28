@@ -11,7 +11,11 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 108 Isaac-free tests.
+rotor spin and rolling wheels. The whole block stands on **real Copernicus GLO-30
+terrain** (2.2 m of relief, straight least-squares torque tubes), and a run can be
+**watched live** — `--gui` for a window here, `--livestream` for WebRTC from
+another machine, `--live` for actual flight between waypoints. 157 Isaac-free
+tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade
@@ -27,7 +31,7 @@ first**.
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-PYTHONPATH=src python3 -m pytest -q                   # 100 tests, ~4 s, no GPU
+PYTHONPATH=src python3 -m pytest -q                   # 157 tests, ~5 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
