@@ -38,14 +38,23 @@ was **already merged** at `16e9a35`; the entry was stale.
    shading-vs-defect distinction should start to break, and where "shadow"
    becomes confounded with "underexposed". Same scenario file, one timestamp
    change (and update the `test_solar.py` guard's expected band).
-2. **PBR materials + HDRI sky.** Everything is flat `displayColor` /
-   `UsdPreviewSurface` and the ground is a uniform tan sheet. Biggest remaining
-   visual step.
-3. **Instancing / LOD (`IF-09`)** before authoring all 273 tables (~2.2M prims).
-4. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
+2. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
+   the synthetic sine field on a real site. Now the biggest remaining fidelity
+   gap, since everything above ground level is built.
+3. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
    installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
-5. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
-   the synthetic sine field on a real site.
+4. **More balance-of-plant** — substation / control room, module-level torque
+   tube and pile geometry, cable trenches. `world/site.py` is the place, and
+   anything not in the drawing must be tagged `INFERRED` like the rest.
+
+**Done 2026-07-28 (Session 10c), was items 2-4:**
+- ~~Instancing / LOD (`IF-09`)~~ ✅ the full 273 tables now build: 2.25M prims →
+  75,464, 85 s. Healthy panels reference one prototype; faulted ones stay unique.
+- ~~PBR materials + HDRI sky~~ ✅ generated latlong sky on the `DomeLight` (one
+  object is both background and fill), ground reaching the horizon with distance
+  haze, and roads/fence/inverter stations via `world/site.py`.
+  ⚠ **Do not "improve" this back into an emissive sky dome** — measured, it acts
+  as a giant area light and turns the desert floor blue (R-B +16 → -38).
 
 **Known ⚠ to resolve, not to forget:**
 - `panel.mount_height: 1.5` in `configs/farm_khavda_block02.yaml` is a guess —

@@ -5,6 +5,7 @@ runs/
 *.webm
 
 # Large binaries — regenerate via farm_builder.py, never commit
+assets/
 *.usd
 *.usda
 *.usdc

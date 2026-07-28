@@ -17,6 +17,66 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 10c: the WHOLE plant builds and looks like a plant ✅ (IF-09 done)
+**All 273 tables, 30,016 modules, in one stage, with roads, fencing, inverter stations
+and a real sky.** `assets/khavda_flythrough.mp4` (769 frames / 32 s) is the tour:
+establishing aerial over the block, descent onto the internal access road past the
+inverter skids, low pass along the rows, then a climb turning back over the site.
+
+**IF-09 instancing — the thing that gated all of it.** Every module authored its own
+geometry (one Geom + a 12x6 cell grid = **75 prims each**), so the real block came to
+**~2.25M prims** and had never been built whole. Healthy panels now reference a single
+instanced prototype:
+
+| | before | after |
+|---|---|---|
+| 5 tables / 560 panels | 42,025 prims | **582** |
+| 273 tables / 30,016 panels | ~2.25M prims (never built) | **75,464**, 85 s build, opens in 24 s |
+
+The panel prim is still a real per-panel prim carrying the `pv:` attrs — **only the
+geometry is shared** — so the stage remains the source of truth and verdict writeback is
+untouched. Faulted panels (~2%, 600 of them) still author in full, because a hotspot
+recolours specific cells and soiling bakes a per-panel dust film; neither survives
+instancing. Fence posts use the same trick.
+
+**`world/site.py` — balance of plant, with provenance.** Access roads, perimeter fence,
+inverter/transformer skids. Split honestly: **DERIVED** (the CAD's own 11 m corridor at
+x=143 among 5-6 m maintenance aisles really is a road — found by threshold, not
+invented) vs **INFERRED** (the drawing describes hardware only, so the ring road, fence
+and inverters are standard practice placed by us). Every element carries
+`st:provenance`, the build log prints the split, and inverter COUNT follows capacity
+(30,016 x ~600 W / ~4 MW per station → 5) rather than a magic number. 9 tests.
+
+**⚠ The sky mistake worth remembering: an emissive dome is a light.** First version was
+a self-lit hemisphere. It looked right and was wrong — under raytraced lighting a 1.4 km
+emissive dome is a colossal area light and it **lit the desert floor blue**. Measured, on
+identical stages: dome OFF → ground R-B **+16** (warm), dome ON → **-38** (cold). Two
+objects were disagreeing about the sky, which is the same failure the sun-vs-tracker fix
+already dealt with once. Now **one `DomeLight` carries both the generated latlong sky
+image and the fill**, so they cannot diverge. Orientation **verified empirically, not
+assumed**: looking east gives a saturated sun glow (max 255), west does not (128), and
+the zenith is darkest — so no Z-up correction rotation is needed on this build.
+
+**Other visual fixes, each from looking at a frame:**
+- Ground albedo 0.17 → 0.30. The old near-black was chosen when the ground was a small
+  backdrop behind ten panels; across 320 x 647 m it read as cold grey slate. 0.44 was
+  then measured as a near-white blowout that buried the roads and fence in glare.
+- Ground now reaches ~5 km and **fades into the sky's own horizon haze**. A finite plane
+  ends in a hard edge with void beyond it from any altitude — visible in the first
+  aerial as a literal hole in the world.
+- Below-horizon sky is haze, not ground tone: looking down from altitude puts that
+  region on screen, where a dark value reads as void.
+- Ground colour variation moved to three incommensurate octaves; one sin*cos pair beat
+  into visible corduroy stripes across a site this size.
+
+**Gotcha banked:** `import pxr` must come **after** `SimulationApp` exists. A module-level
+`from pxr import ...` leaves Isaac's schema extensions unregistered and the app dies in a
+wall of `TfNotice wrapper has not been created yet` errors.
+
+**Scope:** terrain is still deliberately `flat` (no real DEM), and there is no substation,
+control room, or module-level torque-tube/pile geometry yet. 137 Isaac-free tests
+(was 123).
+
 ## 2026-07-28 — Session 10b: a demo video you can watch ✅ + the VLM is NOT deterministic ⚠
 **`--video` makes the twin show its work.** `runs/20260728T115737/inspection.mp4` —
 24 panels of the real Khavda block, live Reason-1, 576 frames / 38 s: a chase camera

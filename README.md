@@ -54,6 +54,20 @@ PYTHONPATH=src $ISAAC -m solar_twin.run \
 PYTHONPATH=src $ISAAC -m solar_twin.run configs/farm.yaml configs/mission.yaml
 ```
 
+## The whole plant
+All 273 tracker tables / 30,016 modules build into one stage (75k prims via
+`IF-09` instancing, ~85 s), with access roads, perimeter fencing and inverter
+stations. `world/site.py` tags every element `derived` (read from the vendor CAD
+— e.g. its 11 m internal corridor) or `inferred` (standard plant practice placed
+by us, since the drawing describes hardware only), and the build prints the split.
+
+```bash
+PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+    configs/farm_khavda_block02.yaml --out assets/khavda_full.usd
+PYTHONPATH=src $ISAAC -m solar_twin.world.flythrough assets/khavda_full.usd \
+    --out assets/khavda_flythrough.mp4
+```
+
 ## A run you can watch
 `--video` writes `runs/<ts>/inspection.mp4`: a chase camera following the fleet
 down the row, the drone's own camera inset, and the panel / phase / verdict
