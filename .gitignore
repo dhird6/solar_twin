@@ -48,3 +48,8 @@ htmlcov/
 solar_plant_layout/
 *.dwg
 *.dxf
+
+# Isaac Sim / NvStreamer trace logs, dropped in the CWD by GUI and livestream runs.
+# Diagnostics, not artifacts — they appear as untracked noise after every viewer run.
+NvStreamer-*.etli
+*.etli
