@@ -233,9 +233,22 @@ suspicion that ground-level rendering on the full plant is expensive: 4,900 tick
 of fleet commute looked like a hang because it is 58 minutes of render, not
 because row-level frames are dear. Startup is ~23 s.
 
+**A rendered frame is not a finished frame.** Costs of one frame written to an mp4,
+measured over whole chapters of a 720p tour:
+
+| stage | s/frame |
+|---|---|
+| render only (`step` + `capture_overview`) | 0.71 |
+| + overlay + streaming encode (a camera chapter) | 0.90 |
+| fleet chapter (`capture_pair` renders two cameras, plus inset compositing) | ~1.05 |
+
+Budget off the **end-to-end** figure. `plant_tour.SECONDS_PER_FRAME` is 0.95, not
+0.71: projecting from the render alone under-promises by ~30% and overruns the cap
+it exists to enforce.
+
 Consequences worth knowing:
 - Budget frames, not pixels. `world/plant_tour.py --budget-minutes` projects
-  `frames x 0.71 s` and shortens the shots (loudly) to fit.
+  `frames x 0.95 s` and shortens the shots (loudly) to fit.
 - **Fixed 2026-07-28:** the overview render product was hardcoded to `(960, 540)`,
   so `flythrough.py --width/--height` silently did nothing and every flythrough
   was 540p regardless of flags. Now `SimRuntime(overview_resolution=...)`,

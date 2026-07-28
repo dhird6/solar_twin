@@ -97,11 +97,12 @@ PYTHONPATH=src $ISAAC -m solar_twin.world.plant_tour assets/khavda_full.usd \
     --out assets/plant_status_tour.mp4 --budget-minutes 25
 ```
 
-`--budget-minutes` is a wall-clock **render** budget: a frame costs ~0.71 s at
-either 540p or 720p, and — measured, not assumed — that cost does *not* rise at
-ground level, so a tour's cost is set by its frame count alone. Over budget, the
-shots are shortened proportionally and the shortening is logged; the text cards
-are never cut.
+`--budget-minutes` is a wall-clock budget. A finished frame costs **~0.95 s**
+end-to-end here (a 0.71 s render, plus the overlay and the encode) and — measured,
+not assumed — that cost does *not* rise at ground level and is the same at 540p and
+720p, so a tour's cost is set by its frame count alone. Over budget, the shots are
+shortened proportionally and the shortening is logged; the text cards are never
+cut. The 85 s tour above is 1,300 rendered frames, ~20 min.
 
 So the three video artifacts answer three different questions:
 

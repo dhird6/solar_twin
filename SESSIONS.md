@@ -38,9 +38,19 @@ thousands of panels in frame". Measured on the real block with a 4-pose probe:
 **Flat. Ground level is not dearer than the aerial, at 540p or at 720p.** The
 cost of a video here is its FRAME COUNT and nothing else — which is why 4,900
 ticks of commute read as a hang (that is 58 min of render) while the same stage
-tours comfortably in 15. So the fix was never "make frames cheaper", it was
-`--budget-minutes`: state the budget, project frames x 0.71 s against it, and
-shorten the shots proportionally (loudly — text cards are never cut).
+tours comfortably in ~20 min. So the fix was never "make frames cheaper", it was
+`--budget-minutes`: state the budget, project against it, and shorten the shots
+proportionally (loudly — text cards are never cut).
+
+⚠ **And then I budgeted off the wrong number.** 0.71 s is the RENDER; a frame
+written to the mp4 also pays the PIL overlay and the encode. Measured over whole
+720p chapters: **0.90 s** for a camera chapter (0.909 over 220 frames, 0.895 over
+200) and **~1.05 s** for the fleet chapter, which renders two cameras via
+`capture_pair` and composites the drone inset. `SECONDS_PER_FRAME` is therefore
+**0.95**, rounded up towards the fleet figure — a budget projected off 0.71
+under-promises by ~30% and would overrun the cap it exists to enforce.
+Over-projecting shortens the tour a little and says so; under-projecting overruns
+in silence, which is the worse failure.
 
 **A real bug this surfaced:** `sim_runtime.py` hardcoded the overview render
 product at `(960, 540)`, so `flythrough.py --width/--height` had been silently

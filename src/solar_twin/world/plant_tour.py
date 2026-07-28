@@ -24,10 +24,23 @@ from __future__ import annotations
 import argparse
 import time
 
-#: Measured on this box at 960x540 AND at 1280x720: a frame costs ~0.71 s and the
-#: cost does NOT rise at ground level, which is what Session 10d assumed. Used
-#: only to project the render time up front so `--budget-minutes` can hold.
-SECONDS_PER_FRAME = 0.71
+#: End-to-end cost of ONE finished frame on this box, used to project the tour
+#: against `--budget-minutes`. This is deliberately NOT the render figure:
+#:
+#:   * 0.71 s — the render alone (`step` + `capture_overview`). Flat across
+#:     420 m / 140 m / 6 m / 2.5 m altitude and identical at 540p and 720p, which
+#:     is what retires Session 10d's "ground level is expensive" theory.
+#:   * ~0.90 s — a camera chapter as actually written to the mp4: the render plus
+#:     the PIL overlay plus the streaming encode. Measured 0.909 and 0.895 over
+#:     220- and 200-frame chapters at 1280x720.
+#:   * ~1.05 s — the fleet chapter, which renders TWO cameras via `capture_pair`
+#:     and composites the drone inset on top.
+#:
+#: A budget projected off 0.71 under-promises by ~30% and would blow the cap it
+#: exists to hold, so the constant is the end-to-end cost, rounded UP towards the
+#: fleet chapter's number. Over-projecting shortens the tour slightly and says so;
+#: under-projecting silently overruns.
+SECONDS_PER_FRAME = 0.95
 
 
 def stage_facts(stage, layout_path: str | None = None, dem_path: str | None = None) -> dict:

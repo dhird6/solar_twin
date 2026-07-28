@@ -310,11 +310,16 @@ def scale_to_budget(
     """Shorten every rendered chapter proportionally until the tour fits a
     wall-clock render budget, and say so out loud.
 
-    Measured on this box, a frame costs ~0.71 s at 960x540 **regardless of
-    altitude** — the ground-level shots are no dearer than the aerial, which is
-    the opposite of what Session 10d assumed. So the cost of a tour is set by its
-    frame COUNT alone, which makes it a budget worth stating rather than a
-    mystery worth fearing.
+    Measured on this box, the RENDER costs ~0.71 s/frame **regardless of
+    altitude** and regardless of 540p vs 720p — the ground-level shots are no
+    dearer than the aerial, which is the opposite of what Session 10d assumed. So
+    the cost of a tour is set by its frame COUNT alone, which makes it a budget
+    worth stating rather than a mystery worth fearing.
+
+    `seconds_per_frame` should be the **end-to-end** cost (render + overlay +
+    encode, ~0.95 s here), not the render figure: a budget projected off the
+    render alone under-promises by ~30% and overruns the cap it exists to hold.
+    See `plant_tour.SECONDS_PER_FRAME` for the breakdown.
 
     Returns the (possibly shortened) chapters. Cards are never shortened: they
     carry the text a reviewer has to be able to read.

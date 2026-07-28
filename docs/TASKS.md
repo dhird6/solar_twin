@@ -25,11 +25,13 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
   `assets/plant_status_tour.mp4`: the plant with every shot labelled built /
   inferred / not-modelled, closing on the backlog below.
 - **Session 10d's "video path is too expensive" is resolved and its diagnosis was
-  wrong.** A frame costs ~0.71 s and that is FLAT with altitude (measured, 4
-  poses, 540p and 720p) — the cost is frame COUNT alone. `--budget-minutes`
-  projects and shortens loudly. Also fixed: the overview render product was
-  hardcoded to 960x540, so `flythrough.py --width/--height` had been silently
-  doing nothing.
+  wrong.** The render costs ~0.71 s/frame and that is FLAT with altitude (measured,
+  4 poses, 540p and 720p) — the cost is frame COUNT alone. `--budget-minutes`
+  projects and shortens loudly. ⚠ Budget off the **end-to-end** 0.95 s/frame
+  (render + overlay + encode; the fleet chapter is ~1.05), not the 0.71 render
+  figure — that mistake under-promises by ~30%. Also fixed: the overview render
+  product was hardcoded to 960x540, so `flythrough.py --width/--height` had been
+  silently doing nothing.
 - ⚠ Stale-entry warning that keeps recurring: this block claimed "nothing pushed"
   and listed the DEM as to-do for a day after both were false. Check `git log`
   and `SESSIONS.md` before trusting it.
