@@ -7,20 +7,32 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-27, Session 10)
+## ⇢ NEXT SESSION — start here (updated 2026-07-28, Session 10e)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Session 10.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d/10e.
 
-**State:** branch `ID-2-Layout-Integration`, nothing pushed, working tree clean,
-108 Isaac-free tests. The twin runs on the real Khavda BLOCK-02 layout and now
-has a **real KPI-03 number: 0.00 false faults on 560 healthy panels** under a
-verified on-panel tracker-self-shading stimulus (`runs/20260727T183423`).
+**State:** branch `ID-2-Layout-Integration` (pushed, 20 commits ahead of `main`,
+no PR to `main` yet), **188 Isaac-free tests**. The twin runs on the real Khavda
+BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, with a **real KPI-03
+number: 0.00 false faults on 560 healthy panels** under a verified on-panel
+tracker-self-shading stimulus (`runs/20260727T183423`).
 
-**Done since the last list:** KPI-03 re-run ✅ (item 1) — and it exposed two
-geometry bugs that were live in the Session-9 build (transposed module chord,
-tilt-blind `panel_top_z`), both fixed. Item 2 (merge `docs/cosmos3-edge-serving`)
-was **already merged** at `16e9a35`; the entry was stale.
+**Done since the last list:**
+- ~~Real DEM~~ ✅ (was item 2) — Session 10d. Plus turbines, serpentine routing,
+  cruise speeds.
+- **Status tour video** ✅ — Session 10e. `world/plant_tour.py` renders
+  `assets/plant_status_tour.mp4`: the plant with every shot labelled built /
+  inferred / not-modelled, closing on the backlog below.
+- **Session 10d's "video path is too expensive" is resolved and its diagnosis was
+  wrong.** A frame costs ~0.71 s and that is FLAT with altitude (measured, 4
+  poses, 540p and 720p) — the cost is frame COUNT alone. `--budget-minutes`
+  projects and shortens loudly. Also fixed: the overview render product was
+  hardcoded to 960x540, so `flythrough.py --width/--height` had been silently
+  doing nothing.
+- ⚠ Stale-entry warning that keeps recurring: this block claimed "nothing pushed"
+  and listed the DEM as to-do for a day after both were false. Check `git log`
+  and `SESSIONS.md` before trusting it.
 
 **Do these first, in this order:**
 
@@ -38,14 +50,16 @@ was **already merged** at `16e9a35`; the entry was stale.
    shading-vs-defect distinction should start to break, and where "shadow"
    becomes confounded with "underexposed". Same scenario file, one timestamp
    change (and update the `test_solar.py` guard's expected band).
-2. **Real DEM** — terrain is deliberately `flat`; Khavda is graded. Do not ship
-   the synthetic sine field on a real site. Now the biggest remaining fidelity
-   gap, since everything above ground level is built.
-3. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
+2. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
    installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
-4. **More balance-of-plant** — substation / control room, module-level torque
+3. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
-   anything not in the drawing must be tagged `INFERRED` like the rest.
+   anything not in the drawing must be tagged `INFERRED` like the rest. The
+   **graded civil surface** belongs here too: GLO-30 is a pre-grading DSM, so the
+   twin's ground is the desert's shape, not the engineered pad's.
+4. **`transport/ros2_bridge.py`** — does not exist. camera→ROS 2 is proven on this
+   box (Session 2), the contract is written (`docs/ROS2_CONTRACT.md`), the file
+   is not.
 
 **Done 2026-07-28 (Session 10c), was items 2-4:**
 - ~~Instancing / LOD (`IF-09`)~~ ✅ the full 273 tables now build: 2.25M prims →
@@ -70,6 +84,14 @@ was **already merged** at `16e9a35`; the entry was stale.
   a 0/560 false-fault result, but do not read them as per-panel analysis.
 - `tools/layout_from_pdf.py` deliberately **fails closed** — the PDF's two
   calibration sources disagree by 9.2%. Use the DXF path.
+- **Camera framing on this stage is lens arithmetic — do not eyeball it.** Three
+  separate attempts at the turbine shot failed (hazed lines at 453 m; a perfect
+  turbine with the entire array below the frame at 38 m up aiming 18 deg up). A
+  22 mm lens on the 36 mm aperture is a ~49 deg vertical field; work out where the
+  frame's bottom edge meets the ground before rendering. `tour.look_at` exists so
+  shots aim at a prim position instead of a guessed heading.
+- **Turbine blades render very thin** and read faintly beyond ~200 m. Cosmetic,
+  lives in `farm_builder`'s turbine geometry.
 
 **Never score a shading stimulus on whole-frame brightness.** Twice now the frame
 mean separated shaded from unshaded while the PANELS were identically lit — the

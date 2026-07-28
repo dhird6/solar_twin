@@ -119,10 +119,17 @@ def compose(main, inset=None, caption: Caption | None = None, canvas=CANVAS):
 class RunRecorder:
     """Accumulates composed frames and writes them out as an mp4.
 
-    Frames are held in RAM: at 1280x720x3 that is ~2.6 MB each, so a few hundred
-    is fine and a few thousand is not. `max_frames` is a hard stop that LOGS
-    when it bites — a silently truncated video is exactly the kind of quiet cap
-    this project treats as a defect (`NFR-07`).
+    Two modes, because the two videos have different shapes:
+
+    * **buffered** (default) — frames are held in RAM. At 1280x720x3 that is
+      ~2.8 MB each, so a few hundred is fine and a few thousand is not.
+      `max_frames` is a hard stop that LOGS when it bites — a silently truncated
+      video is exactly the kind of quiet cap this project treats as a defect
+      (`NFR-07`). Keeping the frames lets a caller revisit them (the tests do).
+    * **streaming** (`stream_path=...`) — each frame goes straight to the encoder
+      and is dropped. A minutes-long tour is thousands of frames, i.e. multiple
+      GB buffered, on a box that is also holding a 75k-prim stage in the same
+      unified memory. `max_frames` does not apply: there is nothing to bound.
     """
 
     fps: int = 15
@@ -130,16 +137,49 @@ class RunRecorder:
     frames: list = field(default_factory=list)
     caption: Caption = field(default_factory=Caption)
     dropped: int = 0
+    #: Set to encode incrementally instead of buffering. `write()` still returns
+    #: the path, so callers do not branch.
+    stream_path: str | None = None
+    _writer: object = None
+    _streamed: int = 0
+
+    def __len__(self) -> int:
+        """Frames accepted so far, buffered or streamed — so progress logs and
+        `write()`'s own report read the same either way."""
+        return self._streamed if self.stream_path else len(self.frames)
 
     def add(self, main, inset=None) -> None:
         if main is None:
             return
+        self.add_composed(compose(main, inset, self.caption))
+
+    def add_composed(self, frame) -> None:
+        """Accept an ALREADY-composed frame (an overlay drawn elsewhere, e.g.
+        `tour.annotate`) without running `compose` over it a second time."""
+        if frame is None:
+            return
+        if self.stream_path:
+            if self._writer is None:
+                import imageio.v2 as imageio
+
+                self._writer = imageio.get_writer(
+                    str(self.stream_path), fps=self.fps, macro_block_size=None
+                )
+            self._writer.append_data(frame)
+            self._streamed += 1
+            return
         if len(self.frames) >= self.max_frames:
             self.dropped += 1
             return
-        self.frames.append(compose(main, inset, self.caption))
+        self.frames.append(frame)
 
     def write(self, path: str) -> str | None:
+        if self.stream_path:
+            if self._writer is None:
+                return None
+            self._writer.close()
+            self._writer = None
+            return str(self.stream_path)
         if not self.frames:
             return None
         import imageio.v2 as imageio

@@ -32,6 +32,7 @@ class SimRuntime:
         resolution: tuple[int, int] = (640, 480),
         overview_pose: Optional[tuple[float, float, float]] = None,
         overview_capture: bool = True,
+        overview_resolution: Optional[tuple[int, int]] = None,
         livestream: bool = False,
     ):
         from isaacsim import SimulationApp
@@ -165,7 +166,13 @@ class SimRuntime:
             ov.CreateHorizontalApertureAttr(36.0)
             ov.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
             if overview_capture:
-                ov_rp = rep.create.render_product("/World/Overview", (960, 540))
+                # Deliberately NOT `resolution`: that one sizes the drone cameras,
+                # and a run that wants 640x480 inspection frames still wants a
+                # watchable external view. Defaulted rather than hardcoded because
+                # it used to be a literal (960, 540) — which silently ignored
+                # `flythrough.py --width/--height` and capped every tour at 540p.
+                ov_res = overview_resolution or (960, 540)
+                ov_rp = rep.create.render_product("/World/Overview", ov_res)
                 self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
                 self._overview_annot.attach([ov_rp])
 

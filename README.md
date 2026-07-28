@@ -83,6 +83,34 @@ PYTHONPATH=src $ISAAC -m solar_twin.run \
     --farm-usd assets/demo.usd --video --max-panels 24
 ```
 
+## A status tour you can hand to a reviewer
+`world/plant_tour.py` renders the annotated tour: the same plant, but every shot
+carries a checklist of what is in it, tagged **built** (filled dot) / **inferred —
+ours, not the drawing's** (barred dot) / **not modelled** (hollow dot), and it
+closes on the backlog. Every number in the overlay is counted off the stage or
+read from a generated sidecar, so the captions cannot drift from the build.
+
+```bash
+PYTHONPATH=src $ISAAC -m solar_twin.world.plant_tour assets/khavda_full.usd \
+    --layout configs/layouts/khavda_a10b_block02.yaml \
+    --dem assets/dem/khavda_block02.yaml \
+    --out assets/plant_status_tour.mp4 --budget-minutes 25
+```
+
+`--budget-minutes` is a wall-clock **render** budget: a frame costs ~0.71 s at
+either 540p or 720p, and — measured, not assumed — that cost does *not* rise at
+ground level, so a tour's cost is set by its frame count alone. Over budget, the
+shots are shortened proportionally and the shortening is logged; the text cards
+are never cut.
+
+So the three video artifacts answer three different questions:
+
+| script | question |
+|---|---|
+| `world/flythrough.py` | what does the site look like? |
+| `run.py --video` | what did the fleet do on this run? |
+| `world/plant_tour.py` | which parts of the twin are real, and what is missing? |
+
 Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see
 `docs/ENVIRONMENT.md`).

@@ -17,6 +17,85 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 10e: the status tour video ✅ + the "video path is too expensive" claim was wrong
+
+**Asked for:** a video of the twin as it stands, watchable end to end, that says
+which parts are done and which still need building. Built as `world/plant_tour.py`
+(Isaac-bound renderer) + `world/tour.py` (pure: chapters, budget, overlay) →
+`assets/plant_status_tour.mp4`, 85 s at 1280x720, 8 chapters.
+
+**⭐ The measurement that unblocked it — Session 10d's diagnosis was wrong.**
+10d left the video path "open: render cost at ground level on the full plant …
+thousands of panels in frame". Measured on the real block with a 4-pose probe:
+
+| camera | z | mean frame |
+|---|---|---|
+| aerial, whole block | 420 m | 0.71 s |
+| mid-descent | 140 m | 0.72 s |
+| in the rows | 6 m | 0.71 s |
+| low along a row | 2.5 m | 0.70 s |
+
+**Flat. Ground level is not dearer than the aerial, at 540p or at 720p.** The
+cost of a video here is its FRAME COUNT and nothing else — which is why 4,900
+ticks of commute read as a hang (that is 58 min of render) while the same stage
+tours comfortably in 15. So the fix was never "make frames cheaper", it was
+`--budget-minutes`: state the budget, project frames x 0.71 s against it, and
+shorten the shots proportionally (loudly — text cards are never cut).
+
+**A real bug this surfaced:** `sim_runtime.py` hardcoded the overview render
+product at `(960, 540)`, so `flythrough.py --width/--height` had been silently
+doing nothing — every flythrough ever rendered was 540p whatever the flags said.
+Now `overview_resolution`, defaulted not hardcoded. Deliberately NOT reusing
+`resolution`: that one sizes the drone cameras, and a run wanting 640x480
+inspection frames still wants a watchable external view.
+
+**Three-way status, not two.** `BUILT` / `TODO` cannot express the status most of
+this site actually has, so `INFERRED` is a first-class tag: the roads, fence,
+inverter stations and turbines are *in* the twin and look real, but they are our
+placement, not the drawing's. A test asserts each of those four is labelled
+`INFERRED` — mislabelling one as built would overclaim the CAD ingest, which is
+the one thing this video must not do. `TODO` items sit in the shot where their
+absence is visible, not quarantined in the end card (also tested).
+
+**Captions are counted, never typed.** The overlay's numbers come from the prims
+(30,016 modules · 29,416 instanced · 313 hotspot + 287 soiled · 75,572 prims · 5
+turbines/inverters/roads) or from a generated sidecar (273 tables; 2.17 m of DEM
+relief). A test changes `facts` and asserts the captions change with it.
+
+**⚠ Framing is lens arithmetic, and guessing it cost three iterations.** Worth
+recording because every instinct here was wrong:
+- Turbines, guess #1: heading westward from the block centre → two hazed white
+  lines 160 m off. Correct geometry, no evidence of anything.
+- Guess #2: aim at the prim, stand off 2.4 tip-heights (453 m) → worse, pure haze.
+- Guess #3: 1.05 tip-heights, camera 38 m up, aimed at the hub → a fine turbine
+  and **no panels at all**. A 22 mm lens on a 36 mm aperture has a ~49 deg
+  vertical field; aiming 18 deg up puts the frame's bottom edge 6 deg below
+  horizontal, which from 38 m up first meets the ground **355 m away** — past the
+  turbine. The array was under the frame the whole time.
+- Works: 1.4 tip-heights, camera low (~17 m), aim at 0.37 of tip. Panels in the
+  foreground, machine standing clear of them — the chapter's claim, shown.
+Same lesson for the balance-of-plant chapter: a shot down the middle of the site
+contains the inverters and renders them as an 8-pixel grey box. Both chapters now
+aim at a prim position read off the stage (`tour.look_at`, `_turbine_shot`,
+`_plant_shot`), and `facts["turbine_tip_m"]` is named `tip` on purpose — the Hub
+prim's bound includes its blade children, so it is the 189 m blade-tip height, and
+calling it the hub height aims the camera 70 m too high.
+
+**Also:** `RunRecorder` gained a streaming mode. A 1,300-frame tour buffered at
+720p is ~5.5 GB of RAM on a box already holding a 75k-prim stage in the same
+unified memory; frames now go straight to the encoder. Buffered mode is unchanged
+(`max_frames` still logs what it drops). Its tests inject a fake writer, because
+`imageio` lives only in Isaac's bundled python and the logic must stay Isaac-free.
+
+**188 Isaac-free tests (was 157), 3 skipped.**
+
+**Next:** unchanged and still the honest backlog — quantify VLM run-to-run
+variance before quoting any KPI as a constant; the low-sun (01:30Z) KPI-03 point;
+Pegasus/PX4; the rest of the balance of plant. The tour's closing card is that
+list, so it stays current with the docs by construction.
+⚠ Turbine blades render very thin and read faintly at distance. Cosmetic, in
+`farm_builder`'s turbine geometry, not in the tour.
+
 ## 2026-07-28 — Session 10d: real DEM terrain ✅ + turbines + serpentine routing (full-plant fleet video ⚠ IN PROGRESS)
 **The plant now stands on the real ground.** Terrain was `flat` with a note not to
 ship a synthetic sine field on a real site; it now samples **Copernicus DEM GLO-30**.

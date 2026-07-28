@@ -118,6 +118,10 @@ def render(
         marker_robots=[],
         headless=True,
         resolution=resolution,
+        # The tour renders through the OVERVIEW camera, so its render product is
+        # what --width/--height have to size. Passing `resolution` alone left
+        # every flythrough at a hardcoded 960x540 whatever the flags said.
+        overview_resolution=resolution,
         overview_pose=(0.0, 0.0, 100.0),  # re-aimed per frame below
     )
     # pxr only AFTER SimulationApp exists: importing it first leaves Isaac's

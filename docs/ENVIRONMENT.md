@@ -216,6 +216,34 @@ Notes, each of which was a real trap:
   attaching an annotator nobody reads would render the scene an extra time per
   step.
 
+### Render cost, measured (added 2026-07-28)
+Offscreen frame cost on the full Khavda block (`assets/khavda_full.usd`, 75.5k
+prims, `RaytracedLighting`), via a 4-pose probe reading `capture_overview()`:
+
+| camera | altitude | mean s/frame |
+|---|---|---|
+| aerial, whole block in frame | 420 m | 0.71 |
+| mid-descent | 140 m | 0.72 |
+| at row level, in the array | 6 m | 0.71 |
+| low along a torque tube | 2.5 m | 0.70 |
+
+**Flat with altitude, and the same at 960x540 and 1280x720.** So the cost of any
+video on this stage is its **frame count** alone. This retires the standing
+suspicion that ground-level rendering on the full plant is expensive: 4,900 ticks
+of fleet commute looked like a hang because it is 58 minutes of render, not
+because row-level frames are dear. Startup is ~23 s.
+
+Consequences worth knowing:
+- Budget frames, not pixels. `world/plant_tour.py --budget-minutes` projects
+  `frames x 0.71 s` and shortens the shots (loudly) to fit.
+- **Fixed 2026-07-28:** the overview render product was hardcoded to `(960, 540)`,
+  so `flythrough.py --width/--height` silently did nothing and every flythrough
+  was 540p regardless of flags. Now `SimRuntime(overview_resolution=...)`,
+  defaulted to `(960, 540)` rather than hardcoded. It is deliberately separate
+  from `resolution`, which sizes the drone/inspection cameras.
+- Buffering frames is the real memory risk, not rendering them: 1,300 frames at
+  720p is ~5.5 GB. `RunRecorder(stream_path=...)` encodes incrementally.
+
 ## ROS 2 status (updated 2026-07-21)
 - **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).
   Installed via `tools/install_ros2_jazzy.sh` → `/opt/ros/jazzy`, 201 pkgs.
