@@ -21,6 +21,7 @@ in the sim, or a fake in tests) — no Isaac import here.
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional
 
 from solar_twin.control.base import RobotControl, Waypoint
@@ -39,6 +40,8 @@ class KinematicControl(RobotControl):
         speeds: Optional[dict[str, float]] = None,
         dt: float = 0.1,
         on_tick: Optional[Callable[[str], None]] = None,
+        cruise_speeds: Optional[dict[str, float]] = None,
+        cruise_above_m: float = 6.0,
     ):
         """`runtime` exposes set_pose(id, x, y, z, yaw), get_pose(id) and
         (for interpolated motion) step(n).
@@ -46,9 +49,21 @@ class KinematicControl(RobotControl):
         `speeds` maps robot_id -> m/s. Omit it (or pass a speed <= 0) to keep the
         Slice 0 teleport. `on_tick(robot_id)` fires after every interpolated step
         with the sim already advanced — the video recorder grabs its frames there.
+
+        **`cruise_speeds` is not a nicety.** A real survey drone transits between
+        work at cruise and slows down to take the shot; flying an entire plant at
+        inspection speed is not what the hardware does. It is also the difference
+        between a demo that runs and one that does not: the first table of the
+        full Khavda block is ~490 m from the stage origin, and covering that at
+        1 m/s in 0.1 s ticks is 4,900 rendered frames for a commute — which is
+        exactly how this hung. Beyond `cruise_above_m` of remaining distance the
+        robot moves at its cruise speed, then eases back to inspection speed for
+        the approach.
         """
         self._rt = runtime
         self._speeds = dict(speeds or {})
+        self._cruise = dict(cruise_speeds or {})
+        self._cruise_above = float(cruise_above_m)
         self._dt = float(dt)
         self._on_tick = on_tick
 
@@ -64,12 +79,17 @@ class KinematicControl(RobotControl):
             self._rt.set_pose(robot_id, waypoint.x, waypoint.y, waypoint.z, waypoint.yaw)
             return
 
+        cruise = float(self._cruise.get(robot_id, 0.0)) or speed
         x, y, z, yaw = self._rt.get_pose(robot_id)
         current = Waypoint(x, y, z, yaw)
         for _ in range(_MAX_TICKS):
             if reached(current, waypoint):
                 break
-            current = step_towards(current, waypoint, speed, self._dt)
+            remaining = math.dist(
+                (current.x, current.y, current.z), (waypoint.x, waypoint.y, waypoint.z)
+            )
+            v = cruise if remaining > self._cruise_above else speed
+            current = step_towards(current, waypoint, v, self._dt)
             # Yaw is left to the runtime, which derives heading from the motion
             # delta — passing this waypoint's yaw would snap the nose to the goal
             # orientation on tick one and undo that.

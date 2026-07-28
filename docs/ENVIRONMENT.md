@@ -162,13 +162,59 @@ PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml 
 ```
 Writes `runs/<ts>/` with `results.json` (injected-vs-detected, detection_rate).
 
-**Full mission (Isaac world, on the Spark — Slice 0 Day 6-8+):**
+**Full mission (Isaac world, on the Spark).** Run from the project root so the
+config's relative paths (`configs/layouts/...`, `assets/dem/...`) resolve:
 ```bash
-./python.sh -m solar_twin.run configs/farm.yaml configs/mission.yaml   # --backend sim_native (default)
+PYTHONPATH=src "$ISAACSIM_PYTHON_EXE" -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --farm-usd assets/khavda_full.usd          # --backend sim_native is the default
 ```
-`--backend sim_native` currently raises `NotImplementedError` until
-`world/farm_builder.py`, `world/sim_runtime.py`, and `transport/sim_native.py`
-are built and wired into `run._build_backend`.
+`$ISAACSIM_PYTHON_EXE` is exported by `~/.bashrc`
+(`$HOME/IsaacSim/_build/linux-aarch64/release/python.sh`).
+
+### Watching a run in the Isaac Sim viewport (added 2026-07-28)
+Three separate things, deliberately separate flags — a measurement run must never
+inherit any of them:
+
+| flag | what it does |
+|---|---|
+| `--gui` | opens the Isaac Sim window on **this machine's** display (`DISPLAY=:1`, GNOME on seat0) |
+| `--livestream` | stays headless but streams the UI over **WebRTC** — the only way to watch from another machine |
+| `--live` | **interpolated** motion: the fleet actually flies between waypoints instead of teleporting |
+| `--video` | unrelated to the above: renders offscreen and writes `inspection.mp4` |
+
+```bash
+# watch locally, fleet actually flying, short demo sweep
+DISPLAY=:1 PYTHONPATH=src "$ISAACSIM_PYTHON_EXE" -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --farm-usd assets/khavda_full.usd --gui --live --max-panels 12
+
+# watch from your laptop instead
+... --livestream --live --max-panels 12
+# then point the Isaac Sim WebRTC Streaming Client at this host
+```
+
+Notes, each of which was a real trap:
+- **`--gui` alone teleports.** Interpolated motion used to be reachable only via
+  `--video`, so a GUI run showed robots popping between waypoints. `--live` is
+  now the knob; teleport stays the default (a KPI run must not silently take
+  ~10x the sim steps).
+- **The viewport must be aimed.** Default is the perspective camera, in which the
+  fleet is a few pixels of a 320 x 647 m block. `SimRuntime.set_viewport_camera()`
+  points it at `/World/Overview`, the same chase camera `--video` uses, and
+  `chase()` keeps it on the fleet.
+- **Livestream is `headless: True` + `hide_ui: False`**, NOT `headless: False` —
+  per this build's `standalone_examples/api/isaacsim.simulation_app/livestream.py`.
+  Ports come from `apps/isaacsim.exp.full.streaming.kit`: signal **49100**,
+  stream **47998**.
+- **Kit only repaints when `app.update()` is called.** With
+  `perception: cosmos_reason` each panel blocks ~12 s inside a `urllib` request
+  and the window is frozen for that whole time. For a watchable run use
+  `perception: ground_truth`; making a live Cosmos run smooth needs perception on
+  a worker thread with the app pumped on the main thread (not done).
+- A live viewport gets the chase **camera prim** but **no render product** —
+  attaching an annotator nobody reads would render the scene an extra time per
+  step.
 
 ## ROS 2 status (updated 2026-07-21)
 - **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).

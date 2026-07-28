@@ -68,11 +68,15 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
                 f"  ./python.sh -m solar_twin.world.farm_builder <farm.yaml> --out {farm_usd}"
             )
         fleet = mission_cfg["fleet"]
+        # The chase camera is wanted by the video AND by a live viewport, but only
+        # the video needs a render product behind it.
+        capture_overview = bool(sim_opts.get("record") or sim_opts.get("video"))
+        watching = bool(sim_opts.get("livestream") or not sim_opts["headless"])
         overview_pose = None
-        if sim_opts.get("record") or sim_opts.get("video"):
+        if capture_overview or watching:
             xs = [s.position[0] for s in layout.sites]
             cx = (min(xs) + max(xs)) / 2 if xs else 0.0
-            overview_pose = (cx, 0.0, 30.0)  # bird's-eye; --video re-aims it as a chase cam
+            overview_pose = (cx, 0.0, 30.0)  # bird's-eye; re-aimed as a chase cam
         runtime = SimRuntime(
             farm_usd,
             camera_robots=[fleet["screen_drone"], fleet["confirm_drone"]],
@@ -80,16 +84,20 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             headless=sim_opts["headless"],
             resolution=sim_opts["resolution"],
             overview_pose=overview_pose,
+            overview_capture=capture_overview,
+            livestream=bool(sim_opts.get("livestream")),
         )
         panel_paths = {
             s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
             for s in layout.sites
         }
-        # Interpolated flight is opt-in: it costs ~10x the sim steps, and only
-        # the demo video needs to watch the robot travel (see kinematic.py).
+        # Interpolated flight is opt-in: it costs ~10x the sim steps, and only a
+        # human watching (video, window, or stream) needs to see the robot travel
+        # (see kinematic.py). Teleport stays the default so KPI runs cannot
+        # silently pick up the extra steps.
         kin = mission_cfg.get("kinematics", {}) or {}
         speeds = {}
-        if sim_opts.get("video"):
+        if sim_opts.get("video") or sim_opts.get("live"):
             speeds = {
                 fleet["ground_bot"]: float(kin.get("bot_speed", 1.0)),
                 fleet["screen_drone"]: float(kin.get("drone_speed", 2.0)),
@@ -223,9 +231,33 @@ def run(
     else:
         _on_phase = None
 
+    # --- live view: a window or a WebRTC stream, nothing written to disk ----
+    # Distinct from --video, which renders offscreen products and stitches an mp4.
+    # Here the human IS the consumer, so all this needs is the viewport aimed at
+    # the chase camera and that camera kept on the fleet.
+    live_view = (
+        not sim_opts.get("video")
+        and runtime is not None
+        and getattr(runtime, "interactive", False)
+    )
+    if live_view:
+        runtime.set_viewport_camera("/World/Overview")
+        target_ctl = control.inner if isinstance(control, SafeControl) else control
+        if hasattr(target_ctl, "set_on_tick"):
+            # With --live this fires every interpolation tick, so the camera flies
+            # with the drone. Under teleport it never fires and the per-panel
+            # chase below is the only thing moving the view.
+            target_ctl.set_on_tick(runtime.chase)
+
     def _progress(i: int, r) -> None:
         tag = f"{r.detected_state} ESCALATED" if r.escalated else r.detected_state
         print(f"  [{i + 1}/{len(targets)}] {r.panel_id}: {tag}", flush=True)
+        if live_view:
+            # Re-aim on the drone that actually made the call, and pump the app so
+            # the viewport repaints — Kit only draws when update() is called, so a
+            # loop that never steps shows a frozen window.
+            runtime.chase(fleet_cfg["confirm_drone"] if r.escalated else fleet_cfg["screen_drone"])
+            runtime.step(2)
         if recorder is not None:
             recorder.caption.verdict = (
                 f"{r.detected_state.upper()}"
@@ -246,6 +278,24 @@ def run(
             fr = transport.capture_overview()
             if fr is not None:
                 frames.append(fr[..., :3])
+
+    if recorder is not None and targets:
+        # Deploy the fleet AT the first panel instead of flying it there from the
+        # stage origin. On the full block that origin is ~490 m from the first
+        # table, and rendering that commute tick-by-tick is thousands of frames of
+        # empty desert before anything is inspected — which is exactly how the
+        # first attempt at this appeared to hang. A real survey launches from a
+        # point at the work, so this is also the more honest opening.
+        first = targets[0]
+        runtime.set_pose(
+            fleet_cfg["ground_bot"], first.approach.x, first.approach.y, first.approach.z
+        )
+        runtime.set_pose(
+            fleet_cfg["screen_drone"], first.screen.x, first.screen.y, first.screen.z
+        )
+        runtime.set_pose(
+            fleet_cfg["confirm_drone"], first.confirm.x, first.confirm.y, first.confirm.z
+        )
 
     mission = Mission(transport, control, perception, fleet)
     t0 = time.perf_counter()
@@ -369,7 +419,26 @@ def main(argv: list[str] | None = None) -> int:
         default="assets/farm.usd",
         help="built USD farm (sim_native); build via world.farm_builder",
     )
-    ap.add_argument("--gui", action="store_true", help="sim_native: show the Isaac window")
+    ap.add_argument(
+        "--gui",
+        action="store_true",
+        help="sim_native: open the Isaac Sim window on THIS machine's display and "
+        "watch the run live (viewport follows the fleet). Needs a display.",
+    )
+    ap.add_argument(
+        "--livestream",
+        action="store_true",
+        help="sim_native: run headless but stream the Isaac Sim UI over WebRTC, so "
+        "you can watch from another machine — connect the Isaac Sim WebRTC "
+        "Streaming Client to this host (signal 49100 / stream 47998).",
+    )
+    ap.add_argument(
+        "--live",
+        action="store_true",
+        help="interpolated motion WITHOUT recording a video: the fleet actually "
+        "flies between waypoints instead of teleporting. Pair with --gui or "
+        "--livestream. ⚠ ~10x the sim steps — for watching, not for KPIs.",
+    )
     ap.add_argument("--width", type=int, default=640, help="sim_native camera width")
     ap.add_argument("--height", type=int, default=480, help="sim_native camera height")
     ap.add_argument(
@@ -392,6 +461,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
     ap.add_argument(
+        "--route",
+        choices=["linear", "serpentine"],
+        help="panel visit order. serpentine turns round at the end of each table "
+        "instead of deadheading 128 m back to the next row's start. Overrides "
+        "mission.yaml's `route`.",
+    )
+    ap.add_argument(
+        "--panel-stride",
+        type=int,
+        default=0,
+        help="inspect every Nth panel — a coverage sweep rather than a census. "
+        "⚠ changes what the run measures (denominator = panels VISITED).",
+    )
+    ap.add_argument(
         "--max-panels",
         type=int,
         default=0,
@@ -403,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
     sim_opts = {
         "farm_usd": args.farm_usd,
         "headless": not args.gui,
+        "livestream": args.livestream,
+        "live": args.live,
         "resolution": (args.width, args.height),
         "save_usd": args.save_usd,
         "record": args.record,
@@ -410,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
         "video_fps": args.video_fps,
         "max_panels": args.max_panels,
     }
+    if args.live and not (args.gui or args.livestream or args.video):
+        print(
+            "  [note] --live without --gui/--livestream/--video: the fleet will fly "
+            "the route at ~10x the sim steps with nobody watching",
+            flush=True,
+        )
 
     farm_cfg = mission_cfg = scenario_name = None
     if args.scenario:
@@ -420,6 +511,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"scenario: {scn.name}  kpi_gates={scn.kpi_gates or '{}'}", flush=True)
     elif not (args.farm and args.mission):
         ap.error("provide farm and mission paths, or --scenario")
+
+    # CLI route/stride override mission.yaml so a demo does not need its own file.
+    route_overrides = {}
+    if args.route:
+        route_overrides["route"] = args.route
+    if args.panel_stride:
+        route_overrides["panel_stride"] = args.panel_stride
+    if route_overrides:
+        if mission_cfg is None:
+            mission_cfg = _load_yaml(args.mission)
+        mission_cfg = {**mission_cfg, **route_overrides}
+        print(f"  route: {mission_cfg.get('route', 'linear')} "
+              f"stride={mission_cfg.get('panel_stride', 1)}", flush=True)
 
     if args.subset:
         # Must mirror farm_builder's --subset: the mission may only target panels

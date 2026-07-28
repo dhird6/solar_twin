@@ -17,6 +17,64 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 10d: real DEM terrain ✅ + turbines + serpentine routing (full-plant fleet video ⚠ IN PROGRESS)
+**The plant now stands on the real ground.** Terrain was `flat` with a note not to
+ship a synthetic sine field on a real site; it now samples **Copernicus DEM GLO-30**.
+
+- **Source:** AWS Open Data, **no credentials, no registration** — SRTM, NASADEM and
+  AW3D30 all need an Earthdata or JAXA login, which a reproducible pipeline should not
+  depend on. Khavda BLOCK-02 measures **3.3–5.4 m above sea level: 2.2 m of relief over
+  1.1 x 1.4 km**, which is what the Rann of Kutch actually is.
+- **Two-stage, mirroring the CAD ingest.** `tools/dem_fetch.py` needs GDAL, which must
+  not go into Isaac's bundled Python because the build runs there — so it lives in
+  `/home/simulationhub/venvs/dem-ingest` and bakes a `.npy` + YAML sidecar;
+  `world/dem.py` samples that with **numpy alone**.
+  ⚠ **Near-miss on this box:** `pip install --user rasterio` dragged numpy 2.5.1 over the
+  system 1.26.4 and broke scipy 1.11.4. Reverted and isolated in the venv. Never
+  `--user`-install a package with a numpy pin on this machine.
+- **⭐ Straight torque tubes — the fidelity point.** A tracker's tube is a rigid beam up
+  to 128 m long. Sampling the DEM per module and mounting each at its own height would
+  **bend that beam into the shape of the desert** — wrong, and wrong in the flattering
+  direction (`NFR-07`). `fit_line` does what an installer does: least-squares a straight
+  line through the grade. Its residual is a real engineering quantity, and the build
+  prints it. Measured: tube slopes **-0.64% to +0.89%**, worst row **T0130 needs 0.461 m
+  of pile-height variation**. Panel z now spans 1.10 m across the block.
+- **Datum:** absolute elevation would sit the plant 4 m off the stage origin and silently
+  invalidate every waypoint standoff (they are measured from the panel).
+  `datum: hardware_mean` puts the site mean at z=0; relief is preserved. Sampling outside
+  the DEM patch **clamps to the edge on purpose** — the ground mesh reaches kilometres
+  further, and returning 0.0 would tear a cliff around the site.
+
+**Wind turbines added** (5, utility class: 120 m hub, 70 m blade, ~11-12 rpm). ⚠ Tagged
+**INFERRED** like the roads: Khavda is a real hybrid wind+solar park but this drawing
+carries DC block hardware only, so the placement is ours. They sit **outside** the panel
+footprint (x < 0 and x > 321) — both how a hybrid park is laid out, and the honest choice,
+because a turbine standing inside the array would throw blade shadows on panels and any
+KPI-03 number measured against it would be an artefact of where *we* put it.
+
+**Serpentine routing + panel stride** (`route:`/`panel_stride`, `--route`/`--panel-stride`).
+A one-way sweep of a 128 m table means a 128 m deadhead back to the next row's start,
+every row; serpentine turns round instead (worst consecutive hop drops >4x in test).
+Default stays `linear` so existing KPI numbers remain comparable.
+
+**⚠⚠ WHAT IS NOT DONE: the full-plant fleet video.** It looked like a hang; it was
+geometry, twice over, and only the first is fixed:
+1. **Fixed — a 490 m commute at walking pace.** On the full block the first table is
+   ~490 m from the stage origin. At 1 m/s in 0.1 s ticks that is 4,900 *rendered* frames
+   of empty desert before anything is inspected. Two fixes, both what real hardware does:
+   `cruise_speeds` (transit at 16 m/s, ease to 2 m/s inside 6 m of the target — a survey
+   drone cruises and slows for the shot), and the fleet is now **deployed at the first
+   panel** instead of flying there from the origin.
+2. **Open — render cost at ground level on the full plant.** `capture_pair` measures
+   160 ms with the camera high over a small stage, but the chase cam at row level on the
+   real block has *thousands* of panels in frame, and a single stride-14 panel took over
+   5 minutes. Next step is a frame budget, not more speed: raise `dt` so each rendered
+   frame covers more ground (a labelled time-lapse patrol), and/or drop the chase render
+   to 960x540. **Do not conclude the pipeline is broken — teleport mode inspects the full
+   block fine (5 panels in 7 s); only the frame-per-tick video path is too expensive.**
+
+157 Isaac-free tests (was 137).
+
 ## 2026-07-28 — Session 10c: the WHOLE plant builds and looks like a plant ✅ (IF-09 done)
 **All 273 tables, 30,016 modules, in one stage, with roads, fencing, inverter stations
 and a real sky.** `assets/khavda_flythrough.mp4` (769 frames / 32 s) is the tour:

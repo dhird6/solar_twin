@@ -66,8 +66,24 @@ faults:
   rate: 0.02
   states: [hotspot, soiled]
 
-# No turbines in this block; the keep-out audit simply finds nothing to clamp.
-turbines: []
+# Wind turbines. ⚠ INFERRED, like the roads and fencing: Khavda is a real
+# HYBRID renewable park (wind and solar share the site), but this drawing covers
+# DC block hardware only and contains no turbine positions. So the count and hub
+# geometry are utility-class typical (~120 m hub, ~70 m blade, ~12 rpm) and the
+# placement is ours.
+#
+# They sit OUTSIDE the panel footprint (x < 0 and x > 321) rather than among the
+# rows. That is both how a hybrid park is laid out and the honest choice here: a
+# turbine standing inside the array would throw blade shadows across panels and
+# any KPI-03 number measured against it would be an artefact of where WE put it.
+# Blades spin at runtime (sim_runtime turns each hub), and world/keepout.py
+# authors the no-fly volumes SafeControl clamps waypoints against (FR-09).
+turbines:
+  - { pos: [-95.0,  60.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.0 }
+  - { pos: [-95.0, 300.0], hub_height: 120.0, blade_len: 70.0, rpm: 12.0 }
+  - { pos: [-95.0, 540.0], hub_height: 120.0, blade_len: 70.0, rpm: 10.5 }
+  - { pos: [415.0, 150.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.5 }
+  - { pos: [415.0, 430.0], hub_height: 120.0, blade_len: 70.0, rpm: 12.5 }
 
 # Real solar time. Drives BOTH the sun light and the HSAT tracker angle from one
 # instant, so they cannot disagree. Solar noon at 69.42 E is 07:22 UTC, so this is

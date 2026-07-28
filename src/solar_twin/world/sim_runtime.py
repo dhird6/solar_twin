@@ -31,14 +31,45 @@ class SimRuntime:
         headless: bool = True,
         resolution: tuple[int, int] = (640, 480),
         overview_pose: Optional[tuple[float, float, float]] = None,
+        overview_capture: bool = True,
+        livestream: bool = False,
     ):
         from isaacsim import SimulationApp
 
-        self._app = SimulationApp({"renderer": "RaytracedLighting", "headless": headless})
+        # Watching the run and recording it are different modes. `headless=False`
+        # opens a window on THIS machine's display; `livestream=True` stays
+        # headless but streams the same UI over WebRTC, which is the only way to
+        # watch from another machine. Livestream must keep headless True and turn
+        # the UI back on — the pattern in this build's
+        # standalone_examples/api/isaacsim.simulation_app/livestream.py.
+        launch: dict = {"renderer": "RaytracedLighting", "headless": headless}
+        if livestream:
+            launch.update(
+                headless=True,
+                hide_ui=False,
+                width=1280,
+                height=720,
+                window_width=1920,
+                window_height=1080,
+            )
+        self._app = SimulationApp(launch)
+        #: True when a human is watching a viewport (window or stream), which is
+        #: what makes the chase camera and interpolated motion worth their cost.
+        self.interactive = bool(livestream or not headless)
 
         import isaacsim.core.experimental.utils.app as app_utils
         import omni.usd
         from pxr import Gf, Usd, UsdGeom
+
+        if livestream:
+            self._app.set_setting("/app/window/drawMouse", True)
+            app_utils.enable_extension("omni.kit.livestream.app")
+            self._app.update()
+            print(
+                "livestream: connect the Isaac Sim WebRTC Streaming Client to this "
+                "host (signal 49100 / stream 47998)",
+                flush=True,
+            )
 
         self._Usd = Usd
 
@@ -121,7 +152,11 @@ class SimRuntime:
                 rpm = float(rpm_attr.Get()) if rpm_attr and rpm_attr.IsValid() else 10.0
                 self._turbines.append([prim, rpm * 0.2, [0.0]])
 
-        # Optional fixed bird's-eye camera for a run video.
+        # Optional bird's-eye / chase camera. It serves two unrelated jobs: the
+        # source camera for a run video, and the camera a live viewport looks
+        # through. Only the video needs a render product — attaching an annotator
+        # for a live view would render the scene an extra time per step for
+        # frames nobody reads.
         self._overview_annot = None
         if overview_pose is not None:
             ov = UsdGeom.Camera.Define(self._stage, "/World/Overview")
@@ -129,9 +164,10 @@ class SimRuntime:
             ov.CreateFocalLengthAttr(15.0)
             ov.CreateHorizontalApertureAttr(36.0)
             ov.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
-            ov_rp = rep.create.render_product("/World/Overview", (960, 540))
-            self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
-            self._overview_annot.attach([ov_rp])
+            if overview_capture:
+                ov_rp = rep.create.render_product("/World/Overview", (960, 540))
+                self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+                self._overview_annot.attach([ov_rp])
 
         # Warm up the renderer so the first capture is valid.
         self.step(_RENDER_SETTLE_UPDATES + 2)
@@ -312,12 +348,14 @@ class SimRuntime:
         """
         import math
 
-        if self._overview_annot is None or robot_id not in self._robot_paths:
+        if robot_id not in self._robot_paths:
             return
-        x, y, z, _ = self.get_pose(robot_id)
+        # Gate on the camera PRIM, not on the annotator: a live viewport chases
+        # the fleet through this same camera and has no render product attached.
         cam = self._stage.GetPrimAtPath("/World/Overview")
         if not cam or not cam.IsValid():
             return
+        x, y, z, _ = self.get_pose(robot_id)
         api = self._UsdGeom.XformCommonAPI(cam)
         api.SetTranslate(self._Gf.Vec3d(float(x), float(y) - back, float(z) + up))
         pitch = math.degrees(math.atan2(up, max(1e-3, back)))
@@ -325,6 +363,32 @@ class SimRuntime:
             (90.0 - pitch, 0.0, 0.0),
             self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
         )
+
+    def set_viewport_camera(self, prim_path: str = "/World/Overview") -> bool:
+        """Aim the interactive viewport through `prim_path`. Returns success.
+
+        Without this a GUI/livestream run shows the default perspective camera —
+        a static shot of a 320 x 647 m block in which the fleet is a few pixels.
+        Pointing the viewport at the chase camera means `chase()` drives what the
+        human sees, exactly as it already drives the recorded video.
+
+        API verified against this build: `omni.kit.viewport.utility 2.0.1`
+        exposes `get_active_viewport()`, and `camera_path` is a real setter on
+        `omni.kit.widget.viewport 109.2.0`'s ViewportAPI. Best-effort — a failure
+        here costs the view, never the mission.
+        """
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+
+            vp = get_active_viewport()
+            if vp is None:
+                return False
+            vp.camera_path = prim_path
+            self._app.update()
+            return True
+        except Exception as exc:  # noqa: BLE001 — viewing is never worth the run
+            print(f"  [warn] could not set viewport camera: {exc}", flush=True)
+            return False
 
     def export(self, path: str) -> None:
         """Save the current (post-run) stage — panels now hold verdicts."""

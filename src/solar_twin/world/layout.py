@@ -431,6 +431,44 @@ class FarmLayout:
             return site.tilt_deg
         return float((self.cfg.get("panel", {}) or {}).get("tilt_deg", DEFAULT_TILT_DEG))
 
+    def route_sites(self, mission_cfg: dict) -> list[PanelSite]:
+        """The order the fleet visits panels in.
+
+        `route: linear` (default) walks `self.sites` as laid out — table by table,
+        module 0 upward. It is the order every KPI so far was measured in, so it
+        stays the default: changing it would make new numbers incomparable with
+        old ones.
+
+        `route: serpentine` reverses every second table, so the fleet turns round
+        at the end of a row and comes back down the next one. On a real block that
+        is the difference between a patrol and a farce: a 128 m table walked
+        one-way means a 128 m deadhead back to the start of the next row, every
+        row. This is the coverage pattern a real survey flies (and the shape
+        `cuOpt` would optimise later, `FR-xx`).
+
+        `stride` samples every Nth module — a coverage sweep rather than a census.
+        ⚠ It changes what the run measures: the denominator is the panels VISITED,
+        not the panels on site.
+        """
+        route = str(mission_cfg.get("route", "linear"))
+        stride = max(1, int(mission_cfg.get("panel_stride", 1)))
+
+        sites = list(self.sites)
+        if stride > 1:
+            sites = sites[::stride]
+        if route != "serpentine":
+            return sites
+
+        # Group by table, preserving the order tables first appear, then flip the
+        # traversal of alternate tables.
+        by_table: dict[int, list[PanelSite]] = {}
+        for s in sites:
+            by_table.setdefault(s.row, []).append(s)
+        out: list[PanelSite] = []
+        for i, (_row, group) in enumerate(by_table.items()):
+            out.extend(reversed(group) if i % 2 else group)
+        return out
+
     def inspection_targets(self, mission_cfg: dict) -> list[InspectionTarget]:
         """Waypoints per panel derived from layout + mission kinematics.
 
@@ -441,7 +479,7 @@ class FarmLayout:
         confirm_z = float(kin.get("confirm_standoff", 0.8))
         approach_offset = self.row_pitch / 2.0
         targets: list[InspectionTarget] = []
-        for s in self.sites:
+        for s in self.route_sites(mission_cfg):
             x, y, z = s.position  # z already follows the terrain
             top = self.panel_top_z(z, s)
             targets.append(

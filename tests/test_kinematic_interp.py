@@ -68,3 +68,32 @@ def test_already_at_the_goal_does_not_loop():
     ctl = KinematicControl(rt, speeds={"drone1": 2.0})
     ctl.move_to("drone1", Waypoint(3.0, 0.0, 1.0))
     assert rt.steps == 0
+
+
+def test_cruise_speed_is_used_for_long_hops_and_inspection_speed_for_the_approach():
+    """A survey drone transits at cruise and slows to take the shot. It is also
+    what stops a 490 m commute from becoming 4,900 rendered frames."""
+    rt = FakeRuntime()
+    ctl = KinematicControl(
+        rt, speeds={"drone1": 2.0}, cruise_speeds={"drone1": 20.0},
+        cruise_above_m=6.0, dt=0.1,
+    )
+    ctl.move_to("drone1", Waypoint(100.0, 0.0, 0.0))
+    # At inspection speed alone this is 500 ticks; cruising most of it is ~50.
+    assert rt.steps < 100, rt.steps
+    assert rt.pose[:3] == (100.0, 0.0, 0.0)
+
+    # The last stretch is flown slowly: steps inside the final 6 m are small.
+    xs = [p[0] for p in rt.poses]
+    approach = [b - a for a, b in zip(xs, xs[1:]) if b > 94.0]
+    assert approach and max(approach) <= 2.0 * 0.1 + 1e-9
+
+
+def test_without_a_cruise_speed_behaviour_is_unchanged():
+    rt_a = FakeRuntime()
+    KinematicControl(rt_a, speeds={"d": 2.0}, dt=0.1).move_to("d", Waypoint(20.0, 0, 0))
+    rt_b = FakeRuntime()
+    KinematicControl(
+        rt_b, speeds={"d": 2.0}, cruise_speeds={"d": 2.0}, dt=0.1
+    ).move_to("d", Waypoint(20.0, 0, 0))
+    assert rt_a.steps == rt_b.steps
