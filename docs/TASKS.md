@@ -24,6 +24,14 @@ was **already merged** at `16e9a35`; the entry was stale.
 
 **Do these first, in this order:**
 
+0. **⚠ Quantify VLM run-to-run variance before quoting any KPI as a constant.**
+   Two identical 24-panel runs (2026-07-28) disagreed on one panel: R258-C013
+   diagnosed `soiled` in one and `hotspot` in the other. `cosmos_reason.py` sends
+   `temperature: 0.0` but vLLM clamps it to 0.01 and logs the substitution, and
+   GPU batching is not bit-reproducible regardless. **The world is seeded; the
+   model is not.** Either pin a sampling seed / force greedy decoding, or run
+   each KPI N times and report a spread. Cheap to do and it gates the honesty of
+   every number in `SESSIONS.md`.
 1. **A second KPI-03 point at a lower sun** (`2026-06-21T01:30:00Z`: elevation
    10.7 deg, ~50% of each row shaded, whole scene dimmer). 02:00Z is the readable
    hard-shadow case and the model was untroubled by it — 01:30Z is where the

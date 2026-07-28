@@ -54,6 +54,21 @@ PYTHONPATH=src $ISAAC -m solar_twin.run \
 PYTHONPATH=src $ISAAC -m solar_twin.run configs/farm.yaml configs/mission.yaml
 ```
 
+## A run you can watch
+`--video` writes `runs/<ts>/inspection.mp4`: a chase camera following the fleet
+down the row, the drone's own camera inset, and the panel / phase / verdict
+captioned as it happens. It switches the controller from teleport to
+**interpolated** motion (~10x the sim steps), so pair it with `--max-panels` —
+it is a demo, not a measurement.
+
+```bash
+PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+    --scenario configs/scenarios/demo_video.yaml --subset 1 --out assets/demo.usd
+PYTHONPATH=src $ISAAC -m solar_twin.run \
+    --scenario configs/scenarios/demo_video.yaml --subset 1 \
+    --farm-usd assets/demo.usd --video --max-panels 24
+```
+
 Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see
 `docs/ENVIRONMENT.md`).

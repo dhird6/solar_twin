@@ -17,6 +17,49 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-28 — Session 10b: a demo video you can watch ✅ + the VLM is NOT deterministic ⚠
+**`--video` makes the twin show its work.** `runs/20260728T115737/inspection.mp4` —
+24 panels of the real Khavda block, live Reason-1, 576 frames / 38 s: a chase camera
+following the fleet down a 128 m tracker table, the drone's own camera inset, and a
+caption naming the panel, the FSM phase and the verdict as it lands on the USD prim.
+
+**Teleport was why no video existed.** `control/kinematic.py` placed each robot AT its
+waypoint, so the fleet never travelled and there was nothing to film. It now has an
+**interpolated** mode driving the `step_towards` math that had been sitting built and
+tested since Session 3. Teleport stays the default — the KPI runs must not silently
+pick up ~10x the sim steps. Both modes are kinematic (`NFR-07`): this is animation, not
+flight dynamics.
+
+Also built: `world/recorder.py` (Isaac-free, 8 tests), `SimRuntime.capture_pair` (both
+views from ONE render pass — two passes would put the two cameras a render apart, so a
+moving drone would sit in different places in the same frame), `SimRuntime.chase()`
+(the old fixed bird's-eye was written for a 10-panel row and loses the drone within a
+few panels of a real table), `Mission.run(on_phase=...)`, and `--max-panels` with
+`panels_targeted` stamped into the record so a truncated sweep cannot be read as a full
+one. 123 Isaac-free tests (was 108).
+
+**⚠⚠ THE FINDING THAT MATTERS: the same panel got two different diagnoses across two
+identical runs.** Same stage, same config, same seed, back to back:
+
+| panel | injected | run A | run B |
+|---|---|---|---|
+| R258-C013 | soiled | screen suspect → **soiled** | screen suspect → **hotspot** |
+
+detection_rate 0.917 vs 0.875 on 24 panels — one flip. `cosmos_reason.py` does send
+`temperature: 0.0`, but vLLM clamps that to 0.01 (it logs the substitution), and GPU
+batching is not bit-reproducible either way. **So the world is seeded and the model is
+not: a KPI from a single run carries unquantified run-to-run variance.** This does not
+overturn Session 10's KPI-03 = 0.00 (0 false faults across 560 panels is a lot of
+evidence), but every future single-run KPI should be treated as a sample, not a
+constant. Repeat-runs or a fixed sampling seed are owed before any KPI is quoted as
+*the* number.
+
+**Smaller notes.** A 15-min hang on the first `--video` attempt did not reproduce and
+sent no request to vLLM (its log shows a 17-hour gap) — cause unknown, watch for it.
+The confirm drone is visible in the screening drone's camera when both are over the
+same panel; the verdict hold now shows the CONFIRM drone's view for an escalated panel,
+which is the frame the diagnosis was actually made from.
+
 ## 2026-07-27 — Session 10: KPI-03 measured for real ✅ (0.00 on 560 panels) + two geometry bugs the check exposed
 **The false-fault number is finally trustworthy.** SLICE-3's 0.00 was hollow — the
 turbine shadow missed the panels. This one has a **verified on-panel stimulus and its
