@@ -61,11 +61,22 @@ class TurbineKeepout:
 
 
 def build_keepouts(
-    farm_cfg: dict, rotor_margin: float = 2.0, tower_margin: float = 1.0
+    farm_cfg: dict, layout=None, rotor_margin: float = 2.0, tower_margin: float = 1.0
 ) -> list[TurbineKeepout]:
-    """Keep-out volumes for every turbine in ``farm_cfg``, on the shared terrain."""
+    """Keep-out volumes for every turbine in ``farm_cfg``, on the shared terrain.
+
+    ``layout`` is needed only when the config asks for a **scattered** turbine
+    field (`turbine_scatter.enabled`), because the scatter is sized from the panel
+    footprint. It goes through the same `siting.resolve_turbines` the builder
+    uses, which is the point: if this function read the raw `turbines:` list while
+    the builder scattered, the enforced no-fly volumes would sit at the OLD
+    positions and the planner would happily route a drone through a tower that is
+    really somewhere else. The two must resolve identically or not at all.
+    """
+    from solar_twin.world.siting import resolve_turbines
+
     outs: list[TurbineKeepout] = []
-    for spec in farm_cfg.get("turbines", []) or []:
+    for spec in resolve_turbines(farm_cfg, layout):
         x, y = float(spec["pos"][0]), float(spec["pos"][1])
         gz = terrain_height(x, y, farm_cfg)
         hub_h = float(spec.get("hub_height", 18.0))

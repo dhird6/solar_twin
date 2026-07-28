@@ -11,7 +11,7 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 108 Isaac-free tests.
+rotor spin and rolling wheels. 201 Isaac-free tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade
@@ -27,7 +27,7 @@ first**.
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-PYTHONPATH=src python3 -m pytest -q                   # 100 tests, ~4 s, no GPU
+PYTHONPATH=src python3 -m pytest -q                   # 201 tests, ~5 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
@@ -82,6 +82,35 @@ PYTHONPATH=src $ISAAC -m solar_twin.run \
     --scenario configs/scenarios/demo_video.yaml --subset 1 \
     --farm-usd assets/demo.usd --video --max-panels 24
 ```
+
+## Site layout, turbine siting and fleet scale
+`world/site.py` derives roads from the drawing (a corridor the CAD leaves empty IS a
+road) and infers the rest, tagging every element `derived` or `inferred`. Roads
+follow the grade: each strip is cut into <=25 m segments and sampled individually,
+because one flat quad per road floated or buried itself by up to 0.87 m on the real
+DEM. Inverter stations get access spurs.
+
+⚠ **BLOCK-02's drawing contains no east-west vehicle corridor** — its five table
+bands are separated by 1.0 m end gaps, not roads. `derived_ew_roads` therefore finds
+none, and there is deliberately no inferred counterpart: an invented arterial would
+have to run through surveyed tracker tables. Cross traffic uses the perimeter.
+
+`world/siting.py` sites wind turbines the way a wind farm is laid out — seeded
+dart-throwing under a **wake** constraint that is an ellipse (7 rotor diameters
+downwind, 4 across), not a circle, plus a setback that keeps blade shadows off the
+panels. `lattice_score` makes "not a grid" measurable: the old hand-written field of
+two evenly-spaced columns scores 1.00, the shipped scatter 0.40. An explicit
+`turbines:` list still wins, so a KPI run pinned to known positions restores with
+`turbine_scatter.enabled: false`. Keep-outs resolve through the same function as the
+geometry, so the enforced no-fly volumes cannot drift from the towers.
+
+`world/fleet_specs.py` gives the fleet named real platforms rather than plausible
+sizes — a **DJI M350-class** drone (0.895 m motor-to-motor, 0.533 m props; the class
+that carries a radiometric thermal payload) and a **Husky A200-class** rover
+(0.990 x 0.670 x 0.390 m body, 0.330 m wheels, 1.050 m with its mast). Body height
+and payload height are reported separately, because a masted rover cannot be 0.4-0.5 m
+tall when its wheels and deck already reach 0.39 m. `tests/test_robot_builder_usd.py`
+measures the authored geometry against those figures.
 
 Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see

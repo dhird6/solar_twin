@@ -550,11 +550,14 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
     states the split. A viewer must never mistake our assumptions for survey.
     """
     from solar_twin.world.site import (
+        access_spurs,
+        derived_ew_roads,
         derived_roads,
         fence_posts,
         inverter_pads,
         perimeter_road,
         provenance_summary,
+        subdivide_strip,
         table_extent,
     )
 
@@ -566,24 +569,44 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
     ground = lambda x, y: terrain_height(x, y, farm_cfg)  # noqa: E731
     root = UsdGeom.Xform.Define(stage, "/World/Site").GetPrim()
 
-    roads = derived_roads(layout.site)
+    # North-south corridors AND east-west cross corridors, both read out of the
+    # drawing. There is deliberately no inferred cross road: an invented arterial
+    # would have to run through surveyed tracker tables, which does not add an
+    # assumption so much as contradict the CAD.
+    roads = derived_roads(layout.site) + derived_ew_roads(layout.site)
     if cfg.get("perimeter_road", True):
         roads += perimeter_road(
             extent,
-            width_m=float(cfg.get("road_width", 8.0)),
+            width_m=float(cfg.get("road_width", 6.0)),
             offset_m=float(cfg.get("road_offset", 7.0)),
         )
-    for r in roads:
-        # 3 cm proud of the grade so the road wins the depth fight with the
-        # ground mesh instead of z-fighting with it.
-        q = _quad(
-            stage,
-            f"/World/Site/Roads/{r.name}",
-            r.x0, r.y0, r.x1, r.y1,
-            ground((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2) + 0.03,
-            looks["road"],
-        )
-        q.GetPrim().CreateAttribute("st:provenance", Sdf.ValueTypeNames.String).Set(r.provenance)
+
+    def _lay(strips) -> None:
+        """Draw road strips, following the grade.
+
+        Each strip is subdivided along its long axis and every segment sampled at
+        its own centre. One flat quad per road was fine on `flat` terrain and
+        wrong on the DEM: with 2.2 m of relief across the block, a 647 m
+        perimeter road hung ~1 m clear of the ground at one end and buried itself
+        at the other.
+        """
+        seg_m = float(cfg.get("road_segment_m", 25.0))
+        for r in strips:
+            for s in subdivide_strip(r, max_seg_m=seg_m):
+                # 3 cm proud of the grade so the road wins the depth fight with
+                # the ground mesh instead of z-fighting with it.
+                q = _quad(
+                    stage,
+                    f"/World/Site/Roads/{s.name}",
+                    s.x0, s.y0, s.x1, s.y1,
+                    ground((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2) + 0.03,
+                    looks["road"],
+                )
+                q.GetPrim().CreateAttribute("st:provenance", Sdf.ValueTypeNames.String).Set(
+                    s.provenance
+                )
+
+    _lay(roads)
 
     pads = []
     if cfg.get("inverters", True):
@@ -593,6 +616,11 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
             module_watts=float(cfg.get("module_watts", 600.0)),
             mw_per_station=float(cfg.get("mw_per_station", 4.0)),
         )
+        # Access spurs: without them the stations sit in the array with no way in,
+        # and a 4 MW central inverter arrives on a low-loader.
+        spurs = access_spurs(pads, roads, width_m=float(cfg.get("spur_width", 5.0)))
+        _lay(spurs)
+        roads = roads + spurs
         for p in pads:
             gz = ground(p.x, p.y)
             base = f"/World/Site/Inverters/{p.name}"
@@ -944,7 +972,9 @@ def build(farm_cfg: dict, out_path: str) -> str:
         _label(prim, "panel", state.value)
 
     # --- wind turbines: proxies with a spin-able Hub (runtime turns the blades) -
-    turbines = farm_cfg.get("turbines", []) or []
+    from solar_twin.world.siting import resolve_turbines
+
+    turbines = resolve_turbines(farm_cfg, layout, log=print)
     if turbines:
         # A physics scene so the authored colliders are meaningful once a dynamic
         # (Pegasus/PX4) drone is stepped against them. Inert under kinematic teleport.
