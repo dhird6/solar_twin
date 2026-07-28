@@ -80,6 +80,28 @@ recording because both failures were silent and plausible:
 **209 Isaac-free tests** (was 201). New: `tools/audit_layout.py` (exits non-zero if
 a layout cannot be reconciled with its drawing) + `tests/test_audit_layout.py`.
 
+**⚠ Viewing this build: run from the WORKTREE, not the main checkout.** The siting /
+roads / fleet-scale work lives on `feat/siting-roads-scale`. `assets/khavda_infra.usd`
+was built from it and has **scattered** turbines, but the main checkout's
+`configs/farm_khavda_block02.yaml` has no `turbine_scatter` block and its `run.py`
+does not pass `layout` to `build_keepouts`. Mixing them puts the enforced no-fly
+volumes at the OLD explicit turbine positions while the towers stand somewhere else —
+the planner would route a drone through a tower and report a clean run. Code, config
+and USD have to come from the same branch.
+
+```bash
+cd /home/simulationhub/solar-twin/.claude/worktrees/terrain-infra
+DISPLAY=:1 PYTHONPATH=src "$ISAACSIM_PYTHON_EXE" -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --farm-usd assets/khavda_infra.usd --gui --live --max-panels 12
+```
+`--gui` alone teleports; `--live` is what makes the fleet fly. `mission.yaml` is on
+`perception: ground_truth`, which is the watchable setting — `cosmos_reason` blocks
+~12 s per panel inside a urllib call and freezes the window for that whole time.
+⚠ The Cosmos Reason vLLM is currently holding **44 GB** of the unified 121 GB
+(61 GB used overall). Isaac Sim fits alongside that, but it is not a lot of headroom:
+if the sim OOMs, stop the container rather than lowering the render settings.
+
 ## 2026-07-28 — Session 11: wake-sited turbines, roads on the grade, fleet at named real scale
 
 Worked a four-part brief (terrain / roads / robot+drone scale / windmill placement).
