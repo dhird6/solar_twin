@@ -13,7 +13,7 @@ Everything below this block is the older two-track plan and is still valid; this
 is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d/10e.
 
 **State:** branch `ID-2-Layout-Integration` (pushed, 20 commits ahead of `main`,
-no PR to `main` yet), **188 Isaac-free tests**. The twin runs on the real Khavda
+no PR to `main` yet), **195 Isaac-free tests**. The twin runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, with a **real KPI-03
 number: 0.00 false faults on 560 healthy panels** under a verified on-panel
 tracker-self-shading stimulus (`runs/20260727T183423`).
@@ -27,9 +27,9 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
 - **Session 10d's "video path is too expensive" is resolved and its diagnosis was
   wrong.** The render costs ~0.71 s/frame and that is FLAT with altitude (measured,
   4 poses, 540p and 720p) — the cost is frame COUNT alone. `--budget-minutes`
-  projects and shortens loudly. ⚠ Budget off the **end-to-end** 0.95 s/frame
-  (render + overlay + encode; the fleet chapter is ~1.05), not the 0.71 render
-  figure — that mistake under-promises by ~30%. Also fixed: the overview render
+  projects and shortens loudly. ⚠ Budget off the **end-to-end** 0.92 s/frame
+  (render + overlay + encode, measured 0.895 over a whole tour), not the 0.71
+  render figure — that mistake under-promises by ~25%. Also fixed: the overview render
   product was hardcoded to 960x540, so `flythrough.py --width/--height` had been
   silently doing nothing.
 - ⚠ Stale-entry warning that keeps recurring: this block claimed "nothing pushed"

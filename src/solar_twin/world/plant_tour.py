@@ -30,17 +30,20 @@ import time
 #:   * 0.71 s — the render alone (`step` + `capture_overview`). Flat across
 #:     420 m / 140 m / 6 m / 2.5 m altitude and identical at 540p and 720p, which
 #:     is what retires Session 10d's "ground level is expensive" theory.
-#:   * ~0.90 s — a camera chapter as actually written to the mp4: the render plus
-#:     the PIL overlay plus the streaming encode. Measured 0.909 and 0.895 over
-#:     220- and 200-frame chapters at 1280x720.
-#:   * ~1.05 s — the fleet chapter, which renders TWO cameras via `capture_pair`
-#:     and composites the drone inset on top.
+#:   * 0.895 s — a frame as actually written to the mp4: the render plus the PIL
+#:     overlay plus the streaming encode. Measured over a whole 1280x720 tour,
+#:     1,300 rendered frames in 1,164 s; per chapter it ranged 0.878-0.909,
+#:     and the fleet chapter — which renders TWO cameras via `capture_pair` and
+#:     composites the drone inset — came in at 0.904, i.e. inside that spread
+#:     rather than above it. (A 540p smoke had suggested ~1.05 for the fleet; that
+#:     was short-chapter overhead, not the fleet camera, and it did not survive
+#:     measurement on the real tour.)
 #:
-#: A budget projected off 0.71 under-promises by ~30% and would blow the cap it
-#: exists to hold, so the constant is the end-to-end cost, rounded UP towards the
-#: fleet chapter's number. Over-projecting shortens the tour slightly and says so;
-#: under-projecting silently overruns.
-SECONDS_PER_FRAME = 0.95
+#: A budget projected off 0.71 under-promises by ~25% and would blow the cap it
+#: exists to hold, so the constant is the end-to-end cost plus a small margin.
+#: Over-projecting shortens the tour slightly and says so; under-projecting
+#: silently overruns, which is the worse failure.
+SECONDS_PER_FRAME = 0.92
 
 
 def stage_facts(stage, layout_path: str | None = None, dem_path: str | None = None) -> dict:

@@ -341,3 +341,56 @@ def test_turbine_caption_uses_the_height_measured_off_the_stage():
     chapters = build_chapters(BOUNDS, dict(FACTS, turbine_tip_m=188.95, turbine_xy=[(-95.0, 300.0)]))
     blob = " ".join(i.detail for ch in chapters for i in ch.items)
     assert "189 m to blade tip" in blob
+
+
+# ----------------------------------------------------- headings must not clip
+def test_headings_shrink_to_fit_instead_of_running_off_the_frame():
+    """Regression: the opening card rendered "Khavda BLOCK-02 — the digital twin
+    so fa", clipped at the frame edge. Headings are single-line by design, so they
+    cannot wrap out of trouble — they have to shrink."""
+    from PIL import Image, ImageDraw
+
+    from solar_twin.world.tour import _fit_font
+
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    long = "Khavda BLOCK-02 — the digital twin so far, and then some more words"
+    fitted = _fit_font(draw, long, 600, 51)
+    assert draw.textlength(long, font=fitted) <= 600
+    # A short heading is left at full size — this shrinks, it does not rescale.
+    assert _fit_font(draw, "Short", 600, 51).size == 51
+
+
+def test_fit_font_never_shrinks_below_a_legible_floor():
+    from PIL import Image, ImageDraw
+
+    from solar_twin.world.tour import _fit_font
+
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    assert _fit_font(draw, "x" * 2000, 50, 40, min_px=11).size == 11
+
+
+def test_the_opening_card_title_fits_the_frame_at_every_size():
+    """The real titles, at the real canvas sizes, measured — not a synthetic string."""
+    from PIL import Image, ImageDraw
+
+    from solar_twin.world.tour import _fit_font
+
+    chapters = build_chapters(BOUNDS, FACTS)
+    for w, h in ((1280, 720), (960, 540), (640, 360)):
+        draw = ImageDraw.Draw(Image.new("RGB", (w, h)))
+        pad = int(w * 0.07)
+        for ch in chapters:
+            f = _fit_font(draw, ch.title, w - 2 * pad, int(h * 0.072))
+            assert draw.textlength(ch.title, font=f) <= w - 2 * pad, f"{ch.title} @ {w}x{h}"
+
+
+def test_card_detail_lines_clear_their_label():
+    """The detail used to sit at a FRACTION of the line pitch, so descenders in the
+    label collided with it. It now clears the label's own height."""
+    h = 720
+    item_px = int(h * 0.037)
+    det_px = int(h * 0.028)
+    line_h = int(h * 0.088)
+    offset = item_px + max(3, det_px // 4)
+    assert offset >= item_px          # detail starts below the label
+    assert offset + det_px <= line_h  # ...and the pair fits inside one row

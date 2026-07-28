@@ -43,14 +43,16 @@ tours comfortably in ~20 min. So the fix was never "make frames cheaper", it was
 proportionally (loudly — text cards are never cut).
 
 ⚠ **And then I budgeted off the wrong number.** 0.71 s is the RENDER; a frame
-written to the mp4 also pays the PIL overlay and the encode. Measured over whole
-720p chapters: **0.90 s** for a camera chapter (0.909 over 220 frames, 0.895 over
-200) and **~1.05 s** for the fleet chapter, which renders two cameras via
-`capture_pair` and composites the drone inset. `SECONDS_PER_FRAME` is therefore
-**0.95**, rounded up towards the fleet figure — a budget projected off 0.71
-under-promises by ~30% and would overrun the cap it exists to enforce.
+written to the mp4 also pays the PIL overlay and the encode. Measured over the
+whole 720p tour: **0.895 s**, 1,300 rendered frames in 1,164 s, per-chapter spread
+0.878-0.909. `SECONDS_PER_FRAME` is **0.92** — a budget projected off 0.71
+under-promises by ~25% and would overrun the cap it exists to enforce.
 Over-projecting shortens the tour a little and says so; under-projecting overruns
-in silence, which is the worse failure.
+in silence, which is the worse failure. (Projected 20.6 min, actual 19.9.)
+A 540p smoke had suggested the fleet chapter cost ~1.05 s/frame because it renders
+two cameras; on the real tour it came in at **0.904**, inside the ordinary spread.
+That was short-chapter overhead being amortised over 55 frames, not the second
+camera — a reminder to measure the artifact rather than the probe.
 
 **A real bug this surfaced:** `sim_runtime.py` hardcoded the overview render
 product at `(960, 540)`, so `flythrough.py --width/--height` had been silently
@@ -97,7 +99,18 @@ unified memory; frames now go straight to the encoder. Buffered mode is unchange
 (`max_frames` still logs what it drops). Its tests inject a fake writer, because
 `imageio` lives only in Isaac's bundled python and the logic must stay Isaac-free.
 
-**188 Isaac-free tests (was 157), 3 skipped.**
+**⚠ Two overlay defects the 540p smokes could not show**, both found by reading
+the finished 720p frames — worth the habit of checking the artifact at delivery
+size:
+- The opening card rendered **"Khavda BLOCK-02 — the digital twin so fa"**, clipped
+  at the frame edge. Headings are single-line by design, so they cannot wrap out of
+  trouble; `_fit_font` shrinks them to fit instead. A video whose entire purpose is
+  honest reporting must not open on a truncated sentence.
+- Card detail lines sat at a FRACTION of the line pitch, so label descenders
+  collided with them. They now clear the label's own measured height. (The in-shot
+  checklist had already been rebuilt on measured metrics for the same reason.)
+
+**195 Isaac-free tests (was 157), 3 skipped.**
 
 **Next:** unchanged and still the honest backlog — quantify VLM run-to-run
 variance before quoting any KPI as a constant; the low-sun (01:30Z) KPI-03 point;

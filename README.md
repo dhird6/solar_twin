@@ -11,7 +11,7 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 108 Isaac-free tests.
+rotor spin and rolling wheels. 195 Isaac-free tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade
@@ -27,7 +27,7 @@ first**.
 ## Quickstart (no GPU, no Isaac)
 ```bash
 pip install --break-system-packages --user pytest    # pyyaml usually present
-PYTHONPATH=src python3 -m pytest -q                   # 100 tests, ~4 s, no GPU
+PYTHONPATH=src python3 -m pytest -q                   # 195 tests, ~5 s, no GPU
 
 # Run a mission against the pure-python backend -> runs/<ts>/results.json
 PYTHONPATH=src python3 -m solar_twin.run configs/farm.yaml configs/mission.yaml --backend fake
@@ -94,10 +94,10 @@ read from a generated sidecar, so the captions cannot drift from the build.
 PYTHONPATH=src $ISAAC -m solar_twin.world.plant_tour assets/khavda_full.usd \
     --layout configs/layouts/khavda_a10b_block02.yaml \
     --dem assets/dem/khavda_block02.yaml \
-    --out assets/plant_status_tour.mp4 --budget-minutes 25
+    --out assets/plant_status_tour.mp4 --budget-minutes 30
 ```
 
-`--budget-minutes` is a wall-clock budget. A finished frame costs **~0.95 s**
+`--budget-minutes` is a wall-clock budget. A finished frame costs **~0.90 s**
 end-to-end here (a 0.71 s render, plus the overlay and the encode) and — measured,
 not assumed — that cost does *not* rise at ground level and is the same at 540p and
 720p, so a tour's cost is set by its frame count alone. Over budget, the shots are

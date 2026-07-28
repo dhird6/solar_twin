@@ -109,6 +109,20 @@ def _marker(draw, x: int, y: int, status: str, r: int = 7) -> None:
         draw.line([(x - 3, y), (x + 3, y)], fill=(18, 20, 26), width=2)
 
 
+def _fit_font(draw, text: str, width: int, start_px: int, min_px: int = 11):
+    """Largest font at or below `start_px` whose `text` fits `width`.
+
+    Headings are single-line by design, so they cannot wrap out of trouble — they
+    have to shrink. Without this the opening card rendered "Khavda BLOCK-02 — the
+    digital twin so fa", clipped at the frame edge: a video whose whole purpose is
+    honest reporting, opening on a truncated sentence.
+    """
+    px = int(start_px)
+    while px > min_px and draw.textlength(text, font=_font(px)) > width:
+        px -= 1
+    return _font(px)
+
+
 def _wrap(draw, text: str, font, width: int, max_lines: int = 2) -> list[str]:
     """Greedy word wrap to a measured pixel width.
 
@@ -189,8 +203,11 @@ def annotate(frame, chapter: Chapter, index: int, total: int, inset=None, canvas
     # --- title bar -------------------------------------------------------
     bar_h = int(h * 0.115)
     draw.rectangle([0, 0, w, bar_h], fill=(0, 0, 0, 170))
-    f_title = _font(max(20, int(h * 0.045)))
-    f_sub = _font(max(13, int(h * 0.027)))
+    # Reserve room for the chapter counter on the right, then fit the heading into
+    # what is left — a long subtitle must shrink, never run off the frame.
+    head_w = w - 2 * pad - int(w * 0.06)
+    f_title = _fit_font(draw, chapter.title, head_w, max(20, int(h * 0.045)))
+    f_sub = _fit_font(draw, chapter.subtitle or " ", head_w, max(13, int(h * 0.027)))
     draw.text((pad, int(bar_h * 0.10)), chapter.title, font=f_title, fill=(255, 255, 255))
     if chapter.subtitle:
         draw.text((pad, int(bar_h * 0.60)), chapter.subtitle, font=f_sub, fill=(195, 200, 210))
@@ -254,27 +271,40 @@ def card(chapter: Chapter, index: int, total: int, canvas=(1280, 720), footer: s
     draw = ImageDraw.Draw(base)
     pad = int(w * 0.07)
 
-    draw.text((pad, int(h * 0.11)), chapter.title, font=_font(int(h * 0.072)), fill=(255, 255, 255))
+    avail = w - 2 * pad
+    draw.text(
+        (pad, int(h * 0.11)),
+        chapter.title,
+        font=_fit_font(draw, chapter.title, avail, int(h * 0.072)),
+        fill=(255, 255, 255),
+    )
     if chapter.subtitle:
         draw.text(
-            (pad, int(h * 0.215)), chapter.subtitle, font=_font(int(h * 0.033)), fill=(160, 200, 255)
+            (pad, int(h * 0.215)),
+            chapter.subtitle,
+            font=_fit_font(draw, chapter.subtitle, avail, int(h * 0.033)),
+            fill=(160, 200, 255),
         )
     # A rule under the heading, so the list below reads as a list and not as
     # more heading.
     draw.line([(pad, int(h * 0.28)), (w - pad, int(h * 0.28))], fill=(60, 66, 80), width=2)
 
-    f_item = _font(int(h * 0.037))
-    f_det = _font(int(h * 0.028))
-    line_h = int(h * 0.082)
+    item_px = int(h * 0.037)
+    det_px = int(h * 0.028)
+    f_item, f_det = _font(item_px), _font(det_px)
+    line_h = int(h * 0.088)
+    text_x = pad + 40
     for i, item in enumerate(chapter.items):
         cy = int(h * 0.335) + i * line_h
-        _marker(draw, pad + 10, cy + 10, item.status, r=9)
-        draw.text((pad + 40, cy), item.label, font=f_item, fill=(238, 240, 245))
+        _marker(draw, pad + 10, cy + item_px // 2, item.status, r=9)
+        draw.text((text_x, cy), item.label, font=f_item, fill=(238, 240, 245))
         if item.detail:
+            # Below the label's own height, not at a fraction of the line pitch:
+            # the fraction let descenders collide with the detail line.
             draw.text(
-                (pad + 40, cy + int(line_h * 0.44)),
+                (text_x, cy + item_px + max(3, det_px // 4)),
                 item.detail,
-                font=f_det,
+                font=_fit_font(draw, item.detail, w - text_x - pad, det_px),
                 fill=_STATUS_RGB.get(item.status, (180, 180, 180)),
             )
 

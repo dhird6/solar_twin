@@ -239,16 +239,16 @@ measured over whole chapters of a 720p tour:
 | stage | s/frame |
 |---|---|
 | render only (`step` + `capture_overview`) | 0.71 |
-| + overlay + streaming encode (a camera chapter) | 0.90 |
-| fleet chapter (`capture_pair` renders two cameras, plus inset compositing) | ~1.05 |
+| + overlay + streaming encode (the finished mp4) | 0.895 (1,300 frames in 1,164 s; per-chapter 0.878-0.909) |
+| fleet chapter (`capture_pair` renders two cameras, plus inset compositing) | 0.904 — inside the ordinary spread, not above it |
 
-Budget off the **end-to-end** figure. `plant_tour.SECONDS_PER_FRAME` is 0.95, not
-0.71: projecting from the render alone under-promises by ~30% and overruns the cap
-it exists to enforce.
+Budget off the **end-to-end** figure. `plant_tour.SECONDS_PER_FRAME` is 0.92, not
+0.71: projecting from the render alone under-promises by ~25% and overruns the cap
+it exists to enforce. Projected 20.6 min against an actual 19.9 on the 85 s tour.
 
 Consequences worth knowing:
 - Budget frames, not pixels. `world/plant_tour.py --budget-minutes` projects
-  `frames x 0.95 s` and shortens the shots (loudly) to fit.
+  `frames x 0.92 s` and shortens the shots (loudly) to fit.
 - **Fixed 2026-07-28:** the overview render product was hardcoded to `(960, 540)`,
   so `flythrough.py --width/--height` silently did nothing and every flythrough
   was 540p regardless of flags. Now `SimRuntime(overview_resolution=...)`,
