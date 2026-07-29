@@ -133,6 +133,13 @@ def stage_facts(stage, layout_path: str | None = None, dem_path: str | None = No
             facts["inverter_xy"] = inv
 
     # Sidecars: generated files, so reading them is reading the build, not a guess.
+    #
+    # ⚠ The table count must describe THIS STAGE, not the layout file it came from.
+    # It used to be read straight from the sidecar's `provenance.tables`, so a subset
+    # build captioned itself **"6213 tracker tables, 22,064 modules"** — the tables
+    # from the whole 24-block plot beside the modules actually on stage, a 22x
+    # mismatch presented as one fact (`NFR-07`). `pv:grid_index`'s row IS the table
+    # index (see `IF-08`), so the stage can be counted directly.
     if layout_path:
         try:
             import yaml
@@ -140,9 +147,30 @@ def stage_facts(stage, layout_path: str | None = None, dem_path: str | None = No
             with open(layout_path) as fh:
                 doc = yaml.safe_load(fh) or {}
             prov = doc.get("provenance") or {}
-            facts["tables"] = int(prov.get("tables") or 0)
+            facts["tables_in_layout"] = int(prov.get("tables") or 0)
         except Exception as exc:  # noqa: BLE001 — a caption must not kill the render
             print(f"  [warn] could not read layout sidecar: {exc}", flush=True)
+    if farm and farm.IsValid():
+        rows = set()
+        for prim in Usd.PrimRange(farm):
+            gi = prim.GetAttribute("pv:grid_index")
+            if gi and gi.IsValid():
+                v = gi.Get()
+                if v is not None:
+                    rows.add(int(v[0]))
+        if rows:
+            facts["tables"] = len(rows)
+    facts.setdefault("tables", facts.get("tables_in_layout", 0))
+    n_layout = facts.get("tables_in_layout", 0)
+    if n_layout and facts["tables"] < n_layout:
+        # Say what fraction of the plot this is, rather than letting the shot imply
+        # it is the whole thing.
+        facts["subset_of"] = n_layout
+        print(
+            f"  stage carries {facts['tables']} of the layout's {n_layout} tables "
+            f"({100 * facts['tables'] / n_layout:.0f}%) — captions will say so",
+            flush=True,
+        )
     if dem_path:
         try:
             import yaml
@@ -197,6 +225,9 @@ def render(
     layout_path: str | None = None,
     dem_path: str | None = None,
     fleet: tuple[str, str] | None = ("drone1", "ground_bot"),
+    site_name: str = "",
+    site_desc: str = "",
+    config_name: str = "",
 ) -> str:
     from solar_twin.world.flythrough import interpolate
     from solar_twin.world.recorder import RunRecorder
@@ -229,6 +260,15 @@ def render(
     print(f"  farm bounds: {tuple(round(v, 1) for v in bounds)}", flush=True)
 
     facts = stage_facts(stage, layout_path, dem_path)
+    # Which site this is, from the caller. The title card used to name "Khavda PLOT
+    # A10b BLOCK-02" unconditionally, which is a different plot from S05b — a caption
+    # naming the wrong hardware is worse than a generic one (`NFR-07`).
+    if site_name:
+        facts["site_name"] = site_name
+    if site_desc:
+        facts["site_desc"] = site_desc
+    if config_name:
+        facts["config_name"] = config_name
     print(f"  facts off the stage: {facts}", flush=True)
 
     cam_prim = stage.GetPrimAtPath("/World/Overview")
@@ -362,6 +402,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--layout", default=None, help="generated site yaml, for the table count")
     ap.add_argument("--dem", default=None, help="DEM sidecar yaml, for the relief figure")
     ap.add_argument("--no-fleet", action="store_true", help="skip the chase chapter (no robots)")
+    ap.add_argument(
+        "--site-name", default="",
+        help="short site name for the title card (e.g. 'Khavda plot S05b'). The card "
+        "used to hard-code BLOCK-02, which is a DIFFERENT plot.",
+    )
+    ap.add_argument("--site-desc", default="", help="one-line site description for the first item")
+    ap.add_argument("--config-name", default="", help="the config this stage was built from")
     args = ap.parse_args(argv)
     render(
         args.usd,
@@ -371,6 +418,9 @@ def main(argv: list[str] | None = None) -> int:
         budget_seconds=(args.budget_minutes * 60.0) if args.budget_minutes > 0 else None,
         layout_path=args.layout,
         dem_path=args.dem,
+        site_name=args.site_name,
+        site_desc=args.site_desc,
+        config_name=args.config_name,
         fleet=None if args.no_fleet else ("drone1", "ground_bot"),
     )
     return 0

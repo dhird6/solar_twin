@@ -65,10 +65,18 @@ _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
 _TERRAIN_RES = 48
 
 #: Hard cap on ground-mesh vertices per axis, so the graded grid cannot blow the
-#: render budget. 220 x 220 = 48.4k verts, and in practice the real site comes out
-#: far below it (measured: 3.5k verts for BLOCK-02, against 25.6k for the old
-#: uniform sheet — the graded mesh is both finer where it matters and cheaper).
-_GROUND_MAX_AXIS = 220
+#: render budget. 560 x 560 = 313k verts is the worst case; in practice the real
+#: site comes out far below it (measured: 3.7k verts for BLOCK-02 and 68.6k for the
+#: whole 4.8 km S05b plot, against 25.6k for the old uniform sheet at every size).
+#:
+#: ⚠ This is a cap on COST, and it must not silently become a cap on FIDELITY. At
+#: 220 the whole plot was forced to 42.2 m spacing against a 20 m DEM — a 2x
+#: undersample of the very terrain the panels are mounted from, which is the aliasing
+#: `layout.terrain_feature_step` exists to prevent. Ground vertices are cheap next to
+#: 680k panel prims, so the cap is set where it stops mattering, and
+#: `_build_ground_heightfield` LOGS when it bites instead of quietly smoothing the
+#: desert.
+_GROUND_MAX_AXIS = 560
 
 #: How fast ground-mesh spacing may grow per step once outside the site. 1.35
 #: reaches a 5 km horizon in ~14 verts while keeping adjacent quads similar enough
@@ -518,11 +526,24 @@ def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: floa
             c, d = (j + 1) * nx + i + 1, (j + 1) * nx + i
             counts.append(4)
             idx.extend([a, b, c, d])
+    # What the mesh ACTUALLY resolves over the hardware, measured off the vertices
+    # rather than off the requested `fine` — the per-axis cap can coarsen it, and a
+    # ground mesh that undersamples its own DEM is how panels end up buried in the
+    # drawn surface (`layout.terrain_feature_step`).
+    inner = [b - a for a, b in zip(xs, xs[1:]) if min_x <= a <= max_x] or [fine]
+    got = max(inner)
     print(
-        f"  ground: {nx} x {ny} = {len(pts):,} verts, {fine:.1f} m spacing over the "
+        f"  ground: {nx} x {ny} = {len(pts):,} verts, {got:.1f} m spacing over the "
         f"site, reaching {reach:,.0f} m",
         flush=True,
     )
+    if got > fine * 1.2:
+        print(
+            f"  [warn] ground mesh resolves {got:.1f} m but the terrain source "
+            f"carries {fine:.1f} m — capped at {_GROUND_MAX_AXIS} verts/axis, so the "
+            "relief is smoothed. Raise the cap if the drape matters here.",
+            flush=True,
+        )
     mesh = UsdGeom.Mesh.Define(stage, "/World/Ground")
     mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexCountsAttr(counts)
@@ -1166,8 +1187,17 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # by construction (see _write_sky_texture for the blue-ground measurement that
     # killed the geometry-dome version).
     if (farm_cfg.get("sky", {}) or {}).get("enabled", True):
+        # Named after the STAGE as well as the sun. It used to be
+        # `sky_<elev>_<azim>.png` alone, so any two stages sharing a sun timestamp
+        # shared one texture file — and building one stage while RENDERING another
+        # overwrites the texture the live render is reading. Measured: a full-plot
+        # build clobbered `sky_44_80.png` mid-tour and RTX logged
+        # `Failed to read texture file ... or file is empty` for the rest of the run.
         tex = _write_sky_texture(
-            str(Path(out).parent / f"sky_{int(round(elev))}_{int(round(azim))}.png"),
+            str(
+                Path(out).parent
+                / f"sky_{Path(out).stem}_{int(round(elev))}_{int(round(azim))}.png"
+            ),
             elev,
             azim,
         )

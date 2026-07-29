@@ -1,0 +1,196 @@
+# Khavda plot S05b — the WHOLE PLOT, all 24 blocks, as a VISUAL stage.
+#
+#   ./python.sh -m solar_twin.world.farm_builder configs/farm_khavda_s05b_full.yaml \
+#       --out assets/khavda_s05b_full.usd
+#   ./python.sh -m solar_twin.world.flythrough assets/khavda_s05b_full.usd \
+#       --out assets/khavda_s05b_full_tour.mp4
+#
+# Measured: 6,213 tables -> 679,616 modules over 4.84 x 1.97 km, ~680k prims.
+# That is 22.6x BLOCK-02 and takes tens of minutes to author; it exists to answer
+# "what does the whole plant look like", not to run a mission on.
+#
+# ⚠ `faults.rate` IS DELIBERATELY 0.0, AND THAT IS WHAT MAKES THIS BUILDABLE.
+# A healthy panel is ONE instanced prim; a faulted one is ~75, because a hotspot
+# recolours specific cells and soiling bakes a per-panel dust film, neither of which
+# an instance can carry (`IF-09`). At the 0.02 this plot's mission config uses,
+# 13,592 faulted modules cost ~1.02M prims on their own and the stage comes to
+# **~1.69M** — worse than the 2.25M that gated the plant before instancing existed.
+#
+# ⚠ SO THIS STAGE CANNOT SCORE A KPI. There are no faults on it, so recall and
+# false-fault rate are both undefined here — do not quote either from it. Use
+# `configs/farm_khavda_s05b.yaml` with `--subset N` for anything measured
+# (`NFR-07`). This file is the wide shot, and nothing more.
+
+seed: 20260727
+
+# Real layout instead of the procedural grid. `grid:` is deliberately absent —
+# `layout.kind: file` replaces it (IF-08).
+layout:
+  kind: file
+  path: configs/layouts/khavda_s05b_digest.yaml
+
+# ⚠ Module WIDTH/LENGTH are deliberately absent: the site file already carries
+# the real CAD dimensions (2278 mm chord across the aisle x 1134 mm along the
+# torque tube) and `layout_import` feeds them straight to the builder. Naming
+# them a second time here is what transposed them — the block was authored with
+# a 1.134 m chord and 112 modules overlapping 2:1 along their own tube, which
+# silently removed the inter-row self-shading KPI-03 depends on.
+#
+# `tilt_deg` is NOT used for a tracker site either: the live angle comes from
+# `sun.timestamp` below. Cell counts drive the rendered PV cell grid only, and
+# they ARE axis-named — cols run across stage +X (the 2.278 m chord), rows along
+# +Y (the 1.134 m step), which is why they look flipped versus the module's
+# portrait mounting.
+panel:
+  height: 0.035
+  mount_height: 1.5    # HSAT torque-tube height ⚠ verify against the MMS datasheet
+  cell_cols: 12
+  cell_rows: 6
+
+# REAL terrain (FR-10/FR-20). Copernicus DEM GLO-30, fetched and baked by
+#   /home/simulationhub/venvs/dem-ingest/bin/python tools/dem_fetch.py \
+#       configs/layouts/khavda_a10b_block02.yaml --out assets/dem/khavda_block02
+# The block measures 3.3-5.4 m above sea level: 2.2 m of relief over 1.1 x 1.4 km,
+# which is what the Rann of Kutch actually looks like. `datum: hardware_mean`
+# puts that mean elevation at stage z=0 so waypoint standoffs stay meaningful.
+#
+# ⚠ GLO-30 is a DSM at 30 m native resolution, and it is PRE-grading: the real
+# plant sits on an engineered surface only the civil drawings describe. Torque
+# tubes are therefore fitted as straight lines through this grade (see
+# world/dem.py) rather than following it, and the build prints the worst
+# deviation — that number is the pile-height variation the row would need.
+# Regenerate rather than editing; `kind: flat` remains available for a fast build.
+terrain:
+  kind: dem
+  path: assets/dem/khavda_s05b.yaml
+  datum: hardware_mean
+  # The engineered civil pad (`world/grading.py`). GLO-30 is a PRE-GRADING DSM:
+  # on raw satellite ground the worst tracker row needs 0.532 m of pile-height
+  # variation, which a real plant graded away (measured: 0.013 m with the pad).
+  # ⚠ INFERRED — we hold the DC hardware drawing, not the civil grading plan.
+  # Off by default so every previously recorded KPI stays reproducible; turn it
+  # on per scenario. `pad_tolerance_m` is the as-built spec: 0.0 would claim a
+  # mathematically perfect surface needing zero pile adjustment (`NFR-07`).
+  graded: false
+  pad_tolerance_m: 0.025
+  pad_blend_m: 40.0
+
+# REAL OpenStreetMap geography (FR-10/FR-20) — the landscape the plant stands in.
+# Baked by
+#   python3 tools/osm_fetch.py configs/layouts/khavda_s05b_digest.yaml \
+#       --out configs/layouts/khavda_s05b_osm.yaml --pad 6000
+# from the official OSM API 0.6 /map call (NOT Overpass — its main instance
+# answered every request during this ingest with a 504 dispatcher timeout).
+# Projected into EPSG:32642 and anchored to the site origin at ingest, so mapped
+# roads and CAD tracker tables share one frame because both are real survey
+# metres — nothing is scaled or fitted to make them line up.
+#
+# What is actually in there, measured: 3 roads (2 unpaved `highway=track`, one
+# `tertiary`), 8 transmission lines including a 765 kV / 2-circuit / 6-cable run,
+# and the mapped boundaries of "Khavda Renewable Energy Park" (Adani Green,
+# 1000 MW) and "NTPC Khavda" (397.7 MW). Prims carry `st:provenance = "mapped"` —
+# a THIRD tag beside site.py's derived/inferred.
+#
+# ⚠ OSM CARRIES NO INTERNAL PLANT ROADS HERE. The plant's own access roads are
+# private and unmapped: the whole footprint returned 5 ways. So the internal
+# roads on this stage remain DERIVED/INFERRED from world/site.py, and the build
+# prints the two tallies separately so they cannot blur (`NFR-07`).
+#
+# ⚠ Road WIDTHS are per-class defaults — OSM tags no width out here. The
+# centreline is mapped, the breadth is a convention; each ribbon records which
+# via `st:width_source`. Conductor SAG is not modelled either: a span is a
+# straight chord between mapped tower positions.
+osm:
+  enabled: true
+  path: configs/layouts/khavda_s05b_osm.yaml
+  # Whole ways with a vertex inside this radius of the plant are kept (never
+  # split — a clipped road ending in mid-desert reads as broken geometry). Omit
+  # to default to 2.5x the footprint's long axis.
+  radius_m: 6000.0
+  # Max spacing between draped vertices. OSM digitises a straight desert track as
+  # two points kilometres apart, and an undraped chord floats over the relief.
+  drape_step_m: 40.0
+
+# Georef is carried by the site file's `crs` (EPSG:32642) and converted with
+# pyproj, so these are a fallback only, used if pyproj is unavailable.
+georef:
+  lat0: 24.0915
+  lon0: 69.4205
+  elev0: 0.0
+  heading_deg: 0.0
+
+# Fault injection stays synthetic — the CAD describes hardware, not condition.
+# 2% of 30,016 modules = 600 seeded faults.
+faults:
+  # 0.0 is REQUIRED here, not a preference — see the header. Faulted panels cannot
+  # be instanced, so any non-zero rate multiplies this plot's prim count.
+  rate: 0.0
+  states: []
+
+# Wind turbines. ⚠ INFERRED, like the roads and fencing: Khavda is a real HYBRID
+# renewable park (wind and solar share the site), but this drawing covers DC block
+# hardware only and contains no turbine positions. So the count and hub geometry
+# are utility-class typical (~120 m hub, ~70 m blade, ~12 rpm) and the placement
+# is OURS — it must never be cited as survey.
+#
+# They stay OUTSIDE the panel footprint rather than among the rows. That is both
+# how a hybrid park is laid out and the honest choice here: a turbine standing
+# inside the array would throw blade shadows across panels and any KPI-03 number
+# measured against it would be an artefact of where WE put it. Blades spin at
+# runtime (sim_runtime turns each hub), and world/keepout.py authors the no-fly
+# volumes SafeControl clamps waypoints against (FR-09).
+#
+# `turbine_scatter` sites them the way a wind farm is actually laid out: seeded
+# dart-throwing under a WAKE constraint, which is an ellipse (7 rotor diameters
+# along the prevailing wind, 4 across) rather than a circle — see world/siting.py.
+# The explicit list below is what this used to be, and it was a lattice: two
+# columns at fixed eastings, evenly spaced, which is not how anyone sites
+# turbines. It is retained so a KPI run that needs the old, known positions can
+# restore them by setting `turbine_scatter.enabled: false`.
+#
+# ⚠ **The scatter WINS over the explicit list, not the other way round** (an
+# earlier version of this comment said the opposite). `resolve_turbines` checks
+# `turbine_scatter.enabled` first. So **`turbines: []` in a scenario override does
+# NOT give you a turbine-free stage** — it removes the explicit positions and the
+# scatter then supplies its own. Measured 2026-07-29: a scenario documenting itself
+# as turbine-free built four. Set `turbine_scatter.enabled: false` to mean it.
+#
+# ⚠ Enabling the scatter MOVES the turbines, so it moves their shadows. Any number
+# measured against a turbine shadow (not the tracker self-shading KPI-03 stimulus,
+# which is unaffected) must be re-measured rather than carried over.
+turbine_scatter:
+  enabled: true
+  count: 5
+  # Omitted `seed:` falls back to the farm seed above, so the field moves only
+  # when the farm does.
+  hub_height: 120.0
+  rotor_diameter: 140.0   # 70 m blades — a real V150-class utility machine
+  wind_dir_deg: 250.0     # WSW: the Rann's summer monsoon regime ⚠ climatological, not a met mast
+  downwind_spacing_d: 7.0
+  crosswind_spacing_d: 4.0
+  array_setback_d: 1.5    # keep the machines (and their blade shadows) off the panels
+  # How far beyond the setback turbines may stand. A genuine trade-off, measured:
+  # 6.0D scatters them up to 1.2 km out (lattice_score 0.00, but they read as
+  # distant specks against the block), while 2.5D keeps them 210-560 m away where
+  # they have presence at true scale. Narrowing the ring necessarily aligns the
+  # machines somewhat — lattice_score rises to 0.40 — because a thin band leaves
+  # less freedom in one axis. That is a constrained band, not the old lattice of
+  # two evenly-spaced columns, which scored 1.00.
+  ring_depth_d: 2.5
+
+turbines:
+  - { pos: [-95.0,  60.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.0 }
+  - { pos: [-95.0, 300.0], hub_height: 120.0, blade_len: 70.0, rpm: 12.0 }
+  - { pos: [-95.0, 540.0], hub_height: 120.0, blade_len: 70.0, rpm: 10.5 }
+  - { pos: [415.0, 150.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.5 }
+  - { pos: [415.0, 430.0], hub_height: 120.0, blade_len: 70.0, rpm: 12.5 }
+
+# Real solar time. Drives BOTH the sun light and the HSAT tracker angle from one
+# instant, so they cannot disagree. Solar noon at 69.42 E is 07:22 UTC, so this is
+# mid-morning local: the sun is in the east and the rows rotate east to face it,
+# which also puts each row's shadow into the aisle west of it (the KPI-03
+# self-shading stimulus). Remove this block to fall back to hand-set
+# sun.elevation_deg / azimuth_deg.
+sun:
+  timestamp: "2026-06-21T04:00:00Z"
+  tracker_max_rotation_deg: 60.0
