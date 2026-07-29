@@ -25,6 +25,8 @@ from pathlib import Path
 import yaml
 
 from solar_twin.control.safe import SafeControl
+from solar_twin.kpi import gates as kpi_gates_mod
+from solar_twin.kpi import variance as kpi_variance
 from solar_twin.orchestrator.mission import Fleet, Mission
 from solar_twin.world.keepout import build_keepouts
 from solar_twin.world.layout import FarmLayout
@@ -129,10 +131,22 @@ def _perception(name: str, opts: dict | None = None):
             base_url=opts.get("base_url", DEFAULT_BASE_URL),
             model=opts.get("model", DEFAULT_MODEL),
             timeout=float(opts.get("timeout", DEFAULT_TIMEOUT_S)),
+            # Decoding is pinned greedy by default; `sampling:` in
+            # perception_opts merges onto those defaults (never replaces them).
+            sampling=dict(opts.get("sampling") or {}),
         )
     raise NotImplementedError(
         f"perception {name!r} not wired yet (Slice 0 uses ground_truth)."
     )
+
+
+def _perception_provenance(name: str, perception) -> dict:
+    """What judged the panels, stamped into every run record. A KPI whose
+    decoding config is not recorded cannot be reproduced or defended."""
+    prov = {"name": name}
+    if hasattr(perception, "provenance"):
+        prov.update(perception.provenance())
+    return prov
 
 
 def run(
@@ -144,6 +158,7 @@ def run(
     farm_cfg: dict | None = None,
     mission_cfg: dict | None = None,
     scenario_name: str | None = None,
+    kpi_gates: dict | None = None,
 ) -> Path:
     # Pre-composed dicts (from a scenario) win over path loading, so a scenario
     # variant runs through the exact same pipeline without temp config files.
@@ -187,8 +202,25 @@ def run(
         )
         targets = targets[:max_panels]
 
-    record = sim_opts.get("record") and hasattr(transport, "capture_overview")
+    record_overview = sim_opts.get("record") and hasattr(transport, "capture_overview")
     frames: list = []
+
+    # --- repeats: a KPI is a sample, not a constant ------------------------- #
+    n_repeats = max(1, int(sim_opts.get("repeat") or 1))
+    if n_repeats > 1:
+        if sim_opts.get("video"):
+            raise ValueError(
+                "--repeat with --video: the video path uses interpolated motion "
+                "and ~10x the sim steps — it is a demo, not a measurement. "
+                "Run them separately."
+            )
+        if not hasattr(transport, "snapshot_panels"):
+            raise ValueError(
+                f"--repeat {n_repeats} needs a transport that can rewind panel "
+                f"state; {type(transport).__name__} cannot. Without it, repeat 2 "
+                "reads repeat 1's verdicts as ground truth and every "
+                "injected_state in the record is wrong."
+            )
 
     # --- optional demo video (chase view + drone camera, captioned) --------
     recorder = None
@@ -276,7 +308,7 @@ def run(
             main, inset = runtime.capture_pair(judged_by)
             for _ in range(int(sim_opts.get("video_fps", 15)) // 2):
                 recorder.add(main, inset)
-        if record:
+        if record_overview:
             fr = transport.capture_overview()
             if fr is not None:
                 frames.append(fr[..., :3])
@@ -300,60 +332,129 @@ def run(
         )
 
     mission = Mission(transport, control, perception, fleet)
-    t0 = time.perf_counter()
-    result = mission.run(targets, on_result=_progress, on_phase=_on_phase)
-    wall_s = time.perf_counter() - t0
+    provenance = _perception_provenance(
+        str(mission_cfg.get("perception", "ground_truth")), perception
+    )
 
-    # ---- run record --------------------------------------------------- #
-    # Write (and print) the record BEFORE closing the sim: SimulationApp.close()
-    # terminates the process, so anything after it would never run.
+    # ---- run (once, or N repeats of the identical scenario) ------------- #
     ts = time.strftime("%Y%m%dT%H%M%S")
     out = Path(runs_dir) / ts
     out.mkdir(parents=True, exist_ok=True)
-
     (out / "farm.yaml").write_text(yaml.safe_dump(farm_cfg, sort_keys=False))
     (out / "mission.yaml").write_text(yaml.safe_dump(mission_cfg, sort_keys=False))
 
-    record = {
-        "timestamp": ts,
-        "backend": backend_name,
-        "scenario": scenario_name,
-        "seed": farm_cfg.get("seed"),
-        "n_panels": layout.n_panels,
-        # Stated explicitly: with --max-panels the stage holds more panels than
-        # the mission visited, so `n_panels` is NOT the metric denominator.
-        "panels_targeted": len(targets),
-        "injected_faults": {pid: s.value for pid, s in faults.items()},
-        "metrics": {
-            "panels_inspected": result.panels_inspected,
-            "faults_detected": result.faults_detected,
-            "detection_rate": result.detection_rate,
-            "false_fault_rate": result.false_fault_rate,  # KPI-03
-            "sim_steps": result.steps,
-            "wall_seconds": round(wall_s, 4),
-        },
-        "panels": [asdict(r) for r in result.results],
-        "fault_events": [e.to_dict() for e in result.fault_events],
-    }
-    if isinstance(control, SafeControl):
-        record["keepout"] = {
-            "turbines": len(keepouts),
-            "waypoints_clamped": len(control.events),
-            "min_clearance_m": (
-                None if control.min_clearance_m == float("inf")
-                else round(control.min_clearance_m, 3)
-            ),
-            "events": [e.to_dict() for e in control.events],
-        }
-    (out / "results.json").write_text(json.dumps(record, indent=2))
-    m = record["metrics"]
-    print(
-        f"run record: {out}\n"
-        f"panels={m['panels_inspected']} faults={m['faults_detected']} "
-        f"detection_rate={m['detection_rate']:.2f} "
-        f"injected={len(record['injected_faults'])}",
-        flush=True,
+    snapshot = (
+        transport.snapshot_panels([t.panel_id for t in targets])
+        if n_repeats > 1
+        else None
     )
+    records: list[dict] = []
+    for rep in range(n_repeats):
+        if rep:
+            # Rewind the stage: without this, repeat 2 reads repeat 1's verdict
+            # as ground truth (see pv_module.restore_state).
+            transport.restore_panels(snapshot)
+            print(f"  --- repeat {rep + 1}/{n_repeats} ---", flush=True)
+            if isinstance(control, SafeControl):
+                control.reset()  # per-repeat keep-out tally, not cumulative
+        t0 = time.perf_counter()
+        result = mission.run(targets, on_result=_progress, on_phase=_on_phase)
+        wall_s = time.perf_counter() - t0
+
+        # ---- run record ------------------------------------------------ #
+        # Write (and print) records BEFORE closing the sim: SimulationApp.close()
+        # terminates the process, so anything after it would never run.
+        record = {
+            "timestamp": ts,
+            "repeat": rep + 1,
+            "repeats": n_repeats,
+            "backend": backend_name,
+            "scenario": scenario_name,
+            "seed": farm_cfg.get("seed"),
+            # What judged the panels, including the decoding config — a KPI
+            # without this cannot be reproduced.
+            "perception": provenance,
+            "n_panels": layout.n_panels,
+            # Stated explicitly: with --max-panels the stage holds more panels than
+            # the mission visited, so `n_panels` is NOT the metric denominator.
+            "panels_targeted": len(targets),
+            "injected_faults": {pid: s.value for pid, s in faults.items()},
+            "metrics": {
+                "panels_inspected": result.panels_inspected,
+                "faults_detected": result.faults_detected,
+                "detection_rate": result.detection_rate,
+                "false_fault_rate": result.false_fault_rate,  # KPI-03
+                "sim_steps": result.steps,
+                "wall_seconds": round(wall_s, 4),
+            },
+            "panels": [asdict(r) for r in result.results],
+            "fault_events": [e.to_dict() for e in result.fault_events],
+        }
+        if isinstance(control, SafeControl):
+            record["keepout"] = {
+                "turbines": len(keepouts),
+                "waypoints_clamped": len(control.events),
+                "min_clearance_m": (
+                    None if control.min_clearance_m == float("inf")
+                    else round(control.min_clearance_m, 3)
+                ),
+                "events": [e.to_dict() for e in control.events],
+            }
+        records.append(record)
+
+        # Single run keeps the historic layout (results.json at the top); repeats
+        # get a directory each, so no repeat is silently "the" result.
+        rec_dir = out if n_repeats == 1 else out / f"repeat_{rep + 1:02d}"
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        (rec_dir / "results.json").write_text(json.dumps(record, indent=2))
+        m = record["metrics"]
+        print(
+            f"run record: {rec_dir}\n"
+            f"panels={m['panels_inspected']} faults={m['faults_detected']} "
+            f"detection_rate={m['detection_rate']:.2f} "
+            f"false_fault_rate={m['false_fault_rate']:.3f} "
+            f"injected={len(record['injected_faults'])}",
+            flush=True,
+        )
+
+    # ---- variance across repeats ---------------------------------------- #
+    var_report = None
+    if n_repeats > 1:
+        var_report = kpi_variance.summarize(records)
+        (out / "variance.json").write_text(
+            json.dumps(var_report.to_dict(), indent=2)
+        )
+        print(var_report.describe(), flush=True)
+
+    # ---- KPI gates (FR-17) ---------------------------------------------- #
+    # The scenario's declared bounds are now CHECKED, not just printed. Repeats
+    # are judged on the worst run in the set, never the mean.
+    gate_report = None
+    if kpi_gates:
+        if n_repeats > 1:
+            measured = kpi_gates_mod.worst_metrics(records, kpi_gates)
+            basis = f"worst-of-{n_repeats}"
+        else:
+            measured = records[0]["metrics"]
+            basis = None
+        gate_report = kpi_gates_mod.evaluate(kpi_gates, measured, basis=basis)
+        (out / "gates.json").write_text(json.dumps(gate_report.to_dict(), indent=2))
+        print(gate_report.describe(), flush=True)
+
+    if n_repeats > 1 or gate_report is not None:
+        (out / "summary.json").write_text(
+            json.dumps(
+                {
+                    "timestamp": ts,
+                    "scenario": scenario_name,
+                    "repeats": n_repeats,
+                    "perception": provenance,
+                    "variance": var_report.to_dict() if var_report else None,
+                    "gates": gate_report.to_dict() if gate_report else None,
+                },
+                indent=2,
+            )
+        )
 
     # ---- optional artifacts (before close) ---------------------------- #
     if sim_opts.get("save_usd") and hasattr(transport, "export_usd"):
@@ -373,7 +474,7 @@ def run(
         except Exception as exc:  # noqa: BLE001 — the video must not lose the run record
             print(f"[warn] demo video write failed: {exc}", flush=True)
 
-    if record_frames := (frames if record else []):
+    if record_frames := (frames if record_overview else []):
         try:
             import imageio.v2 as imageio
 
@@ -483,6 +584,15 @@ def main(argv: list[str] | None = None) -> int:
         help="inspect only the first N panels (0 = all). ⚠ changes every "
         "denominator in the run record — for demos, not for KPIs.",
     )
+    ap.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="run the SAME scenario N times and report the spread instead of one "
+        "number (writes variance.json; panel state is rewound between repeats). "
+        "The world is seeded but the VLM is only reproducible when served "
+        "serially, so a single-run KPI is a sample — use this before quoting one.",
+    )
     args = ap.parse_args(argv)
 
     sim_opts = {
@@ -496,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         "video": args.video,
         "video_fps": args.video_fps,
         "max_panels": args.max_panels,
+        "repeat": args.repeat,
     }
     if args.live and not (args.gui or args.livestream or args.video):
         print(
@@ -505,11 +616,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     farm_cfg = mission_cfg = scenario_name = None
+    gates = None
     if args.scenario:
         from solar_twin.scenario import load_scenario
 
         scn = load_scenario(args.scenario)
         farm_cfg, mission_cfg, scenario_name = scn.farm_cfg, scn.mission_cfg, scn.name
+        gates = scn.kpi_gates
         print(f"scenario: {scn.name}  kpi_gates={scn.kpi_gates or '{}'}", flush=True)
     elif not (args.farm and args.mission):
         ap.error("provide farm and mission paths, or --scenario")
@@ -540,9 +653,11 @@ def main(argv: list[str] | None = None) -> int:
         farm_cfg = {**farm_cfg, "layout": layout_cfg}
         print(f"subset: first {args.subset} tracker tables only", flush=True)
 
-    # run() writes + prints the record before closing the sim (which may
-    # terminate the process), so no extra printing is needed here.
-    run(
+    # run() writes + prints the record (and the gate verdict) before closing the
+    # sim, because SimulationApp.close() may terminate the process — so the
+    # printed verdict and gates.json are authoritative, and this exit code is a
+    # convenience for the runs that do return.
+    out = run(
         args.farm,
         args.mission,
         args.backend,
@@ -551,7 +666,12 @@ def main(argv: list[str] | None = None) -> int:
         farm_cfg=farm_cfg,
         mission_cfg=mission_cfg,
         scenario_name=scenario_name,
+        kpi_gates=gates,
     )
+    gates_file = Path(out) / "gates.json" if out else None
+    if gates_file and gates_file.exists():
+        if not json.loads(gates_file.read_text())["passed"]:
+            return 1  # a breached KPI gate fails the run (FR-17)
     return 0
 
 

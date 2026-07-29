@@ -169,6 +169,34 @@ Re-generate the site file from the vendor CAD with
 `tools/layout_from_dxf.py` (DWG → DXF via LibreDWG first; see
 `docs/ENVIRONMENT.md`).
 
+## A measurement you can defend
+A KPI from a single run is a **sample**, not a constant: the world is seeded but
+the VLM is only byte-reproducible while it is served serially — fire four
+identical requests concurrently and the same frame comes back `soiled` twice and
+`healthy` twice (measured; `docs/specs/08-platform-and-risk-register.md`
+`RISK-23`). So:
+
+- decoding is pinned greedy and **recorded** in every run record's `perception`
+  block, alongside the endpoint and served model;
+- `--repeat N` runs one scenario N times — rewinding panel state between repeats,
+  or repeat 2 would read repeat 1's verdicts as ground truth — and writes
+  `variance.json`: min/median/max per metric plus every panel the repeats
+  disagreed about, each attributed to the **renderer** or the **model** by frame
+  digest;
+- a scenario's `kpi_gates` are **checked**, not just printed: `gates.json`, a
+  printed verdict, non-zero exit on breach, worst-of-N for a repeat set, and an
+  unmeasured gate counts as a failure rather than a silent pass.
+
+```bash
+# KPI-03 (false-fault rate) on the real block, tracker self-shading at low sun
+PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+    --scenario configs/scenarios/khavda_selfshade_lowsun.yaml --subset 5 \
+    --out assets/khavda_selfshade_lowsun.usd
+PYTHONPATH=src $ISAAC -m solar_twin.run \
+    --scenario configs/scenarios/khavda_selfshade_lowsun.yaml --subset 5 \
+    --farm-usd assets/khavda_selfshade_lowsun.usd --panel-stride 14 --repeat 3
+```
+
 ## Layout
 Pure-python (imports without Isaac): `schema/`, `perception/`, `transport/base`,
 `control/base`, `orchestrator/`, `world/layout.py`, `run.py`, `tests/`.

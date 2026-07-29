@@ -7,18 +7,21 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-28, Session 11c)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 11c)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11b.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c.
 
-**State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11 and
-11b are merged in (PRs #7 and #8), so there is ONE trunk again rather than three
-divergent worktrees. **247 Isaac-free tests**, 4 skipped. ⚠ Still **no PR to `main`**,
-now 26 commits ahead of it — that is the largest outstanding structural item. The twin runs on the real Khavda
-BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, with a **real KPI-03
-number: 0.00 false faults on 560 healthy panels** under a verified on-panel
-tracker-self-shading stimulus (`runs/20260727T183423`).
+**State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
+and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
+so there is ONE trunk again rather than divergent worktrees. **294 Isaac-free
+tests**, 4 skipped. ⚠ Still **no PR to `main`**, now 29 commits ahead of it — that
+is the largest outstanding structural item. The twin runs on the real Khavda
+BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, and KPI-03 now has **two
+verified-stimulus points, both 0.00** — 560 healthy panels at 02:00Z
+(`runs/20260727T183423`) and 40 panels at 01:30Z measured as a **spread over 3
+repeats** with the gate enforced (`runs/20260728T200755`). KPI numbers are quoted
+with N and a gate from here on, not from a single run.
 
 **Done since the last list:**
 - ~~Real DEM~~ ✅ (was item 2) — Session 10d. Plus turbines, serpentine routing,
@@ -48,26 +51,49 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
   render figure — that mistake under-promises by ~25%. Also fixed: the overview render
   product was hardcoded to 960x540, so `flythrough.py --width/--height` had been
   silently doing nothing.
+- ~~**Quantify VLM run-to-run variance** (was item 0)~~ ✅ **and the diagnosis
+  changed.** Measured directly against the live server on a real saved frame:
+  **served serially the model is byte-repeatable — 15/15 identical, even without
+  a seed.** Fire 4 identical requests *concurrently* and the same frame returns
+  2× `soiled` / 2× `healthy`. So `temperature` was never the culprit; continuous
+  **batching** is, and no request-level parameter fixes it (`RISK-23`). Shipped:
+  greedy decoding pinned + recorded (`DEFAULT_SAMPLING` → the run record's
+  `perception` block), `run.py --repeat N` reporting a spread (`variance.json`),
+  and per-panel **frame digests** so a flip is attributed to the renderer or the
+  model instead of argued about. `kpi_gates` are now **enforced** (`FR-17`) —
+  they had been loaded, printed and never checked.
+- ~~**Second KPI-03 point at a lower sun** (was item 1)~~ ✅ 01:30Z scenario
+  (`configs/scenarios/khavda_selfshade_lowsun.yaml`, sun 10.7 deg, 54% of each
+  module shaded, geometry asserted in `test_solar.py`). **Measured:
+  false_fault_rate 0.000, N=3, identical across repeats; gate PASS worst-of-3**
+  (`runs/20260728T200755`, 40 panels at stride 14, 825 s). Stimulus proven with
+  `tools/verify_shade.py`: shaded rows 77.5-83.0% dark glass vs the control's
+  40.0%, a **+40 point differential** (02:00Z measured +14). See that run's
+  `STIMULUS.md`.
 - ⚠ Stale-entry warning that keeps recurring: this block claimed "nothing pushed"
   and listed the DEM as to-do for a day after both were false. Check `git log`
   and `SESSIONS.md` before trusting it.
 
 **Do these first, in this order:**
 
-0. **⚠ Quantify VLM run-to-run variance before quoting any KPI as a constant.**
-   Two identical 24-panel runs (2026-07-28) disagreed on one panel: R258-C013
-   diagnosed `soiled` in one and `hotspot` in the other. `cosmos_reason.py` sends
-   `temperature: 0.0` but vLLM clamps it to 0.01 and logs the substitution, and
-   GPU batching is not bit-reproducible regardless. **The world is seeded; the
-   model is not.** Either pin a sampling seed / force greedy decoding, or run
-   each KPI N times and report a spread. Cheap to do and it gates the honesty of
-   every number in `SESSIONS.md`.
-1. **A second KPI-03 point at a lower sun** (`2026-06-21T01:30:00Z`: elevation
-   10.7 deg, ~50% of each row shaded, whole scene dimmer). 02:00Z is the readable
-   hard-shadow case and the model was untroubled by it — 01:30Z is where the
-   shading-vs-defect distinction should start to break, and where "shadow"
-   becomes confounded with "underexposed". Same scenario file, one timestamp
-   change (and update the `test_solar.py` guard's expected band).
+0. **Perception robustness, now that the flip is explained (`RISK-25`).** Two
+   `--repeat 3` sets on `demo_video` reproduced and attributed it: the model reads
+   the *same picture* two ways (`R258-C013` `soiled`→`hotspot`; in the second set
+   `R258-C014` `hotspot`→`healthy`/`soiled`). Given identical bytes it is
+   repeatable, but the renderer never sends identical bytes and the difference is
+   invisible at picture level — so this is **fragility, not nondeterminism**, and
+   it is not a sim bug to fix (a real camera has sensor noise too). The number to
+   drive is `KPI-01 = 0.875` with **2 of 3 misses stable across repeats** — a
+   soiled↔hotspot discrimination problem that `_STATE_DEFINITIONS` reduced but did
+   not remove. Prompt/model/ensembling work, measured with `--repeat`.
+1. **Decide how `unknown` should score in KPI-03.** It currently counts as a false
+   fault, so "called a fault that isn't there" and "we lost the model's answer"
+   are the same number with opposite fixes. Measured 2026-07-29: a VLM response
+   that omitted its closing brace was scored as a false fault (0.00 → 0.053) even
+   though the model had said `healthy` with confidence 1.0. The parser bug is
+   fixed and KPI-03 returned to 0.000 across 3 repeats, but the conflation stands.
+   Recommendation: report an abstention rate alongside rather than redefine the
+   metric — it is a locked contract (§6.5 / `FR-03`), so it is an owner call.
 2. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
    installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
 3. **More balance-of-plant** — substation / control room, module-level torque
@@ -78,6 +104,21 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
 4. **`transport/ros2_bridge.py`** — does not exist. camera→ROS 2 is proven on this
    box (Session 2), the contract is written (`docs/ROS2_CONTRACT.md`), the file
    is not.
+
+**⚠ The renderer is stochastic — do not design around bit-equality.** Measured
+(`tools/probe_render_determinism.py`): 4 captures from a camera that never moved
+gave 4 different images (0.85/255 mean pixel delta, ~52% of pixels), and extra
+settling steps do not converge it. Block-averaged to an 8x8 thumbnail that noise
+is 0.2–0.6 LSB while a real difference (shaded panel vs the unshaded control) is
+**35.5 LSB**, so attribution compares *pictures* with a tolerance, never hashes
+(`RISK-24`). A quantised hash was tried and rejected — it still flipped a
+quantisation boundary on 3 of 4 unchanged captures.
+
+**How to quote a KPI from now on:** run it with `--repeat N` and quote
+`variance.json`'s spread (`MetricSpread.quote()` formats it), with the run
+record's `perception.sampling` naming the decoding config. A bare single-run
+number is a sample presented as a constant, and this project has already been
+bitten by one.
 
 **Done 2026-07-28 (Session 10c), was items 2-4:**
 - ~~Instancing / LOD (`IF-09`)~~ ✅ the full 273 tables now build: 2.25M prims →
@@ -98,8 +139,11 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
   Realistic for the hazard, but not an inspection-optimal camera pose — a real
   survey would fly the panel normal. Worth a `mission.yaml` knob before drawing
   conclusions about detection at low sun.
-- Reason-1's confirm-pass notes are **near-boilerplate** across panels. Fine for
-  a 0/560 false-fault result, but do not read them as per-panel analysis.
+- Reason-1's confirm-pass notes are **near-boilerplate on an all-healthy stage**
+  (the KPI-03 scenarios) — do not read those as per-panel analysis. On the faulted
+  `demo_video` stage they are genuinely panel-specific and diagnostic ("opaque tan
+  or brown patch… soiling" vs "a small, bright red/orange spot"), which is what
+  made the `RISK-25` flips readable. Judge the notes by what the frame contains.
 - `tools/layout_from_pdf.py` deliberately **fails closed** — the PDF's two
   calibration sources disagree by 9.2%. Use the DXF path.
 - **Camera framing on this stage is lens arithmetic — do not eyeball it.** Three
@@ -110,6 +154,14 @@ tracker-self-shading stimulus (`runs/20260727T183423`).
   shots aim at a prim position instead of a guessed heading.
 - **Turbine blades render very thin** and read faintly beyond ~200 m. Cosmetic,
   lives in `farm_builder`'s turbine geometry.
+- **Never parallelise VLM inference in a measurement run.** Serial is repeatable
+  on this build, batched is not (`RISK-23`, measured). If a future fleet screens
+  panels concurrently for throughput, every KPI it produces needs its variance
+  re-measured — the fix is not a seed.
+- The **nadir-viewpoint** caveat above matters more at 01:30Z than at 02:00Z: a
+  half-shaded, foreshortened module in dimmer light is the hardest frame the
+  suite currently produces. Do not read a clean KPI-03 there as proof the model
+  handles low sun in general — it is one geometry, honestly reported.
 
 **Never score a shading stimulus on whole-frame brightness.** Twice now the frame
 mean separated shaded from unshaded while the PANELS were identically lit — the

@@ -282,6 +282,49 @@ denominator caveat (only ~3 of 10 healthy panels carried the earlier shadow).
 
 **Status:** Proposed. **Slice:** `SLICE-3` (revisit) / `SLICE-2`.
 
+### IF-10 — Measurement provenance & repeat rewind (SHIPPED — recorded for traceability)
+
+**Problem.** A KPI in a run record used to state *what* was measured but not
+*what did the measuring*, and a repeat of one scenario could not be run at all —
+the first mission's verdict lands on `pv:state`, so a second pass would read it
+as ground truth and every `injected_state` in the record would be fiction.
+
+**Three additive pieces, no ABC touched (`NFR-04`):**
+
+1. **Provenance on the record.** `Perception` implementations MAY expose
+   `provenance() -> dict` (duck-typed, discovered with `hasattr` — *not* added to
+   the ABC, so `ground_truth.py` and any future impl stay valid). `run.py` stamps
+   it as the record's `perception` block: endpoint, served model, exact decoding
+   config, and the honest determinism caveat.
+2. **Frame fingerprints on the result.** `PanelResult` gains four optional
+   default-`None` fields: `screen_frame_sha` / `confirm_frame_sha` (exact digest,
+   `perception.base.frame_digest`) and `screen_frame_thumb` /
+   `confirm_frame_thumb` (an 8x8 luminance thumbnail, `frame_thumbnail`).
+   **Two of them because one is not enough:** RTX capture is measurably not
+   bit-reproducible (`RISK-24` — 4 captures from an unmoved camera give 4 distinct
+   digests), so exact equality answers "same pixels?" while attribution needs
+   "same picture?" — the thumbnail compared with a measured tolerance
+   (`kpi.variance.thumbnails_differ`). Reporting both makes the renderer's noise
+   floor visible rather than implicit.
+3. **Rewind as a transport *extra*, not an interface method.**
+   `snapshot_panels(ids)` / `restore_panels(snapshot)` sit alongside the existing
+   `capture_overview` / `export_usd` extras on `SimNativeTransport` (mirrored on
+   `FakeSimBackend`, so the whole `--repeat` path is covered by Isaac-free
+   tests), backed by `pv_module.restore_state`. Deliberately **not** on the
+   `Transport` ABC: it rewinds a measurement harness, and a real robot cannot
+   un-inspect a panel. `--repeat` on a transport lacking it is a hard error, not
+   a silent single run. The restore resets the inspection **log** as well as the
+   state — the log feeds `history` into the perception prompt, so leftover
+   entries would ask the next repeat a different question.
+
+**Consumers:** `kpi/variance.py` (spread + attribution) and `kpi/gates.py`
+(`FR-17` enforcement), both pure-python over run-record dicts, so they also work
+on archived runs.
+
+**Status:** Shipped 2026-07-28. **Slice:** `SLICE-3`. **Tests:**
+`tests/test_repeat_runs.py`, `tests/test_kpi_variance.py`,
+`tests/test_kpi_gates.py`, `tests/test_schema_usd.py` (USD-level rewind).
+
 ## USD schema: explicitly NOT extended
 
 No new `pv:` attributes are anticipated by this spec set. Environmental/hazard

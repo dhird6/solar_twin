@@ -271,6 +271,27 @@ def read_panel(prim) -> PanelRecord:
     )
 
 
+def restore_state(prim, record: PanelRecord) -> None:
+    """Rewrite a panel's mutable fields from `record` **without** logging.
+
+    The inverse of `write_state`, for repeat runs of one scenario (`--repeat`):
+    the first mission writes its verdict onto ``pv:state``, so a second mission
+    would read that verdict as ground truth and every `injected_state` in the
+    record would be a lie. Restoring resets the state, the last-inspected stamp
+    AND the log — the log is not bookkeeping, it feeds ``history`` in the
+    perception prompt, so leaving run 1's notes in place would ask run 2 a
+    different question and destroy the thing a repeat is measuring.
+
+    Deliberately not part of the `Transport` ABC: it exists to rewind a
+    measurement harness, and a real robot cannot un-inspect a panel.
+    """
+    from pxr import Vt  # noqa: PLC0415 — lazy Isaac import
+
+    prim.GetAttribute(ATTR_STATE).Set(record.state.value)
+    prim.GetAttribute(ATTR_LAST_INSPECTED).Set(record.last_inspected)
+    prim.GetAttribute(ATTR_INSPECTION_LOG).Set(Vt.StringArray(list(record.inspection_log)))
+
+
 def write_state(prim, state: PanelState, note: str, timestamp: str) -> None:
     """Write a new state to the prim and append one line to the log (§6.1)."""
     from pxr import Vt  # noqa: PLC0415 — lazy Isaac import

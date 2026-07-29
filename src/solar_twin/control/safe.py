@@ -45,6 +45,14 @@ class SafeControl(RobotControl):
         self.events: list[KeepoutEvent] = []
         self.min_clearance_m: float = math.inf
 
+    def reset(self) -> None:
+        """Clear the per-run keep-out tally (`run.py --repeat`). Both fields go
+        together: a cleared event list beside a `min_clearance_m` still carrying
+        the previous repeat's tightest approach would report a clearance no
+        waypoint in this run produced."""
+        self.events = []
+        self.min_clearance_m = math.inf
+
     @property
     def inner(self) -> RobotControl:
         """The wrapped controller. SafeControl is a decorator, so a caller that

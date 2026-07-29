@@ -17,6 +17,205 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 11c: the KPIs get honest — measured determinism, spreads, and gates that actually gate
+
+**This closes the first two items on Session 11b's `Next` list** — "quantify VLM run-to-run variance before quoting any KPI as a constant" and the low-sun (01:30Z) KPI-03 point. Developed in parallel with 11b, so it touches `perception/`, `orchestrator/`, `kpi/` and the specs while 11b worked in `world/`; `run.py` was the only code file both touched and it merged cleanly.
+
+**The pending item at the top of `TASKS.md` was "quantify VLM run-to-run variance
+before quoting any KPI as a constant." Measuring it changed the diagnosis.**
+
+**⭐ The finding: the model is deterministic; the *batching* is not.** Probed
+directly against the live vLLM server on a real saved camera frame from the
+KPI-03 run (`runs/20260727T183423/shade_R253-C050_confirm.png`) — no Isaac, no
+stage, ~2 minutes:
+
+| config | serial, N=5 each | concurrent, N=4 |
+|---|---|---|
+| `temperature: 0.0` (what shipped) | **1 distinct response / 5** | — |
+| `+ seed` | 1 / 5 | — |
+| `+ top_p 1.0 + top_k 1` | 1 / 5 | — |
+| real code path (taxonomy prompt) | **4/4 identical** (`clean` → `soiled`) | **2× `soiled`, 2× `healthy`** |
+
+So the Session-10b suspicion — "vLLM clamps temperature 0.0 to 0.01, so the
+sampler wobbles" — is **wrong**: served serially it is byte-repeatable even with
+no seed at all. Fire four identical requests *concurrently* and the same frame
+comes back two ways. **Continuous batching changes the arithmetic and no
+request-level parameter fixes it** (`RISK-23`). The mission FSM is serial, so
+today's runs are reproducible — but a future parallelised fleet would silently
+make every KPI non-reproducible, and that is now written down instead of assumed.
+
+That leaves the actual Session-10b flip (`R258-C013`: `soiled` vs `hotspot`)
+unexplained, with the **renderer** as the remaining suspect. It cannot be settled
+retroactively — those runs saved no frames — so the twin now records the evidence:
+
+**What shipped (all of it Isaac-free-tested, 196 tests, was 157):**
+- **Decoding pinned and recorded.** `cosmos_reason.DEFAULT_SAMPLING` sends
+  greedy (`top_k: 1`, `top_p: 1.0`, `seed: 0`) — `top_k` makes the argmax
+  explicit so a server default cannot reintroduce sampling — and
+  `provenance()` stamps endpoint, model and the exact sampling into every run
+  record's new `perception` block, batching caveat included.
+- **Frame digests, then frame thumbnails** — and the second one only exists
+  because the first one *measured something*. A digest of every judged frame
+  (`PanelResult.screen_frame_sha`) went in to turn "renderer or model?" into a
+  lookup; the first 3-repeat run then reported **40/40 panels rendered
+  differently between repeats**, so the probe below was written to find out how
+  differently:
+
+  | `tools/probe_render_determinism.py`, 640x480 | distinct digests | mean pixel Δ | 8x8-thumbnail Δ |
+  |---|---|---|---|
+  | camera held still, 4 captures | **4/4** | 0.85/255 | 0.36 LSB |
+  | leave the pose and return | 4/4 | 2.39/255 | 0.59 LSB |
+  | + 10 settling steps (does it converge?) | 4/4 | 0.70/255 | 0.20 LSB |
+  | **a different panel** (shaded vs. control) | 2/2 | — | **35.5 LSB** |
+
+  **RTX capture is not bit-reproducible even from a camera that never moves, and
+  more settling steps do not fix it** (`RISK-24`). Which means the digest-equality
+  attribution I had just shipped was **wrong in practice**: exact digests always
+  differ in a rendered run, so every future flip would have been blamed on the
+  renderer. The amplitude is the way out — noise is sub-LSB after block
+  averaging, a real difference is 35 LSB, a ~60x gap — so attribution now compares
+  an **8x8 luminance thumbnail with a measured tolerance** (`frame_thumbnail` +
+  `thumbnails_differ`, 1.0 LSB: 1.7x above the worst noise, 35x below the smallest
+  real signal). A quantised *hash* was tried first and rejected by measurement, not
+  by taste: 256 blocks at 16 levels still flipped a boundary on 3 of 4 unchanged
+  captures. Both counts are reported — "same bits" and "same picture" — because the
+  gap between them *is* the renderer's noise.
+- **`run.py --repeat N`** — one scenario N times, `variance.json`: min/median/max
+  per metric (`MetricSpread.quote()` formats a number so it *cannot* be quoted
+  bare), every disagreeing panel attributed `model` / `render` / `both` /
+  `unknown`, plus **renderer stability on every panel** so a flip-free repeat set
+  still answers `RISK-24`.
+  ⚠ **The trap in repeats:** the first mission writes its verdict onto
+  `pv:state`, so repeat 2 would read that verdict as ground truth and every
+  `injected_state` in the record would be fiction. `pv_module.restore_state` +
+  `snapshot_panels`/`restore_panels` rewind it — including the **inspection log**,
+  because the log feeds `history` into the perception prompt, so a leftover line
+  asks the next repeat a different question. Verified at the USD level under
+  Isaac's own Python, not just against the fake backend.
+- **`kpi_gates` are enforced (`FR-17`).** They had been *loaded, printed and
+  never checked* in every scenario config since `IF-03` landed. Now
+  `kpi/gates.py` judges them: `gates.json`, a printed verdict, non-zero exit on
+  breach, **worst-of-N** for a repeat set (not the mean — a fleet flies each
+  sortie once), and a gate naming an unmeasured metric **fails** rather than
+  passing silently.
+- **The second KPI-03 point** (`configs/scenarios/khavda_selfshade_lowsun.yaml`,
+  was `TASKS.md` item 1): 01:30Z, sun 10.7°, cross-axis angle 78.5°, shadow
+  chord 10.87 m → **54% of each module shaded at the 5 m pitch** versus 30% at
+  02:00Z, in a dimmer scene so shading is confounded with underexposure. The
+  geometry is asserted in `test_solar.py` before any run — the SLICE-3 lesson
+  that a KPI-03 of 0.00 means nothing if the stimulus was absent.
+
+- **`tools/kpi_variance.py`** aggregates *archived* run directories, so history
+  can be re-examined without re-running the sim. Pointed at the three 24-panel
+  Session-10b/10c runs it reproduces the finding as a number:
+
+  ```
+  records: 3  scenario=demo_video  seed=20260728
+    false_fault_rate = 0 (N=3, identical across repeats)
+    detection_rate = 0.9167 median (N=3, range 0.875–0.9167)  ⚠ varies
+    per-panel agreement 0.958 (1/24 panels flipped)
+    - R258-C013 (injected soiled): soiled / soiled / hotspot → cause=unknown
+  ```
+
+  Two of three runs said `soiled`, one said `hotspot`; **`KPI-03` was rock
+  stable at 0.00 across all three** while `KPI-01` moved. `cause=unknown` is the
+  honest verdict for those runs — they carry no frame digests, which is exactly
+  the gap now closed. It also refuses to aggregate records whose scenario, seed
+  or decoding config differ: that would be an A/B test wearing a variance report's
+  clothes.
+
+**⭐ Measured result — KPI-03 at low sun (`runs/20260728T200755`, live Reason-1):**
+
+| | value |
+|---|---|
+| **false_fault_rate (KPI-03)** | **0.000 — N=3, identical across all three repeats** |
+| detection_rate (KPI-01) | 1.000, N=3, identical |
+| panels | 40 healthy, stride 14 across all five tables (control included) |
+| per-panel agreement | 1.000 — 0/40 panels flipped |
+| gate | `false_fault_rate_max: 0.05` → **PASS**, basis **worst-of-3** |
+| wall | 825 s for 3 repeats |
+
+**And the stimulus is proven, not assumed** (`tools/verify_shade.py`, promoted out
+of a run directory into a real tool, PV-glass masking built in): shaded rows read
+**77.5–83.0% dark glass** against the unshaded control's **40.0%** — a **+40.1
+point differential**, versus +14 at 02:00Z. Full evidence in the run's
+`STIMULUS.md`. So Reason-1 held clean on ~half-shaded, foreshortened modules in a
+dimmer scene — one geometry, honestly reported, now with N and a gate behind it.
+
+⚠ **Third instance of the same class of bug, caught by the tool's own check.** The
+verifier first announced "NO STIMULUS" on this stage — because it picked the
+control table by **row number**, and row numbering does not run west-to-east here
+(R258 is westmost, R243 eastmost). It was comparing the wrong panel. Ordering is
+now by stage x. Worth noting that the fail-loud check is what surfaced it: an
+honest verifier that shouts is better than a silent one that agrees with you.
+
+**Denominator caveat, stated because `--panel-stride` changes it:** 40 of 560
+panels. The metric denominator is panels VISITED, not the block. A full 560-panel
+census at 3 repeats would be ~5.6 h; the stride keeps all five tables at ~1/14
+the cost.
+
+### The repeat set WITH faults — where the harness earned its keep
+
+The low-sun set is all-healthy, so nothing escalated and no flip could be
+attributed. `demo_video` (20% faults, 24 panels, **7 escalations per repeat**)
+closed that, `--repeat 3`, twice — and the two runs tell the whole story:
+
+| | set A `runs/20260729T112424` | set B `runs/20260729T113839` (after the fix below) |
+|---|---|---|
+| KPI-03 false_fault_rate | 0.00 median, **range 0.00–0.053 ⚠ varies** | **0.000, N=3, identical** |
+| KPI-01 detection_rate | 0.875 median, **range 0.833–0.917 ⚠ varies** | **0.875, N=3, identical** |
+| panels flipped | 2/24 | 1/24 |
+| causes | `model` 1, `both` 1 | `model` 1 |
+
+**⭐ 1. The Session-10b flip reproduced and is attributed.** `R258-C013` (injected
+`soiled`) → `soiled / hotspot / hotspot`, with screen Δ 1.25 and confirm Δ 1.28
+LSB — both inside the measured noise tolerance, so **the model saw the same
+picture and read it differently** (`cause=model`). Its notes are two confident,
+incompatible readings: "opaque tan or brown patch… soiling" vs. "a small, bright
+red/orange spot… localized overheating".
+
+**Be precise about what that means.** It is model **fragility**, not model
+nondeterminism: given identical *bytes* the model is byte-repeatable (measured,
+15/15), but the renderer never sends identical bytes, and a difference invisible
+at picture level was enough to change the verdict. Set B flipped a *different*
+panel the same way (`R258-C014`, injected `hotspot` → `healthy/healthy/soiled`),
+which confirms the mechanism rather than the panel. Logged as **`RISK-25`** — and
+deliberately not treated as a sim bug: a real camera has sensor noise too, so a
+model that flips on it flips in the field. Both flips are on **faulted** panels,
+so this is `KPI-01` fragility; `KPI-03` was 0.000 across all six runs.
+
+**⚠⚠ 2. The harness found a bug in OUR code that was manufacturing false faults.**
+`R258-C004` (healthy) came back `healthy / healthy / unknown` and pushed KPI-03
+from 0.00 to 0.053. The model was not at fault — it answered
+`"fault_type": "healthy"`, confidence 1.0 — and then **closed its ```json fence
+without closing the brace**. No `}` existed anywhere, so `_parse_json_response`
+returned `{}`, the fail-safe mapped it to `unknown`, and because `unknown !=
+healthy` that scored as a **false fault**. *One missing character moved the
+project's headline metric.* The parser now strips fences and repairs an unclosed
+object (still failing closed on genuine garbage), tested against the verbatim
+response; set B re-ran the identical scenario and KPI-03 came back **0.000,
+identical across three repeats**.
+
+**Left as an owner decision, flagged at the definition site:** `unknown` is
+`!= healthy`, so "the model reported a fault that isn't there" and "we lost the
+model's answer" score identically in KPI-03 — opposite fixes. Redefining it
+touches a locked contract (§6.5 / `FR-03`); the recommendation is to report an
+abstention rate alongside rather than change the metric.
+
+**3. The "materially different picture" flag is one panel per CAMERA, explained.**
+Both sets flagged the first frame each camera takes in a repeat — repeat 1
+approaches from the stage home pose, later repeats from the previous repeat's last
+panel, so the renderer's accumulation history genuinely differs. The confirm-camera
+figure reproduced at **38.11 and 38.05 LSB** across two independent runs, which is
+what makes it an approach artifact rather than noise. Verdicts on those panels were
+unaffected in both sets.
+
+**4. `KPI-01 = 0.875` is a discrimination problem before it is a variance problem.**
+3 misses in 24, **2 of them stable across all repeats** (`R258-C013` reads
+`hotspot` every time in set B; `R258-C014` reads `healthy` twice of three). The
+`_STATE_DEFINITIONS` taxonomy block was added precisely to stop dust reading as a
+hotspot — it reduced that confusion, it has not removed it.
+
 ## 2026-07-28 — Session 11b: audited the CAD ingest — BLOCK-02 is 100% in; the gap is that we only have ONE block's drawing
 
 Asked to parse the DWG, cross-check the PDF, and rebuild `farm_builder`'s layout

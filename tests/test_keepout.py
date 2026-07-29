@@ -90,3 +90,26 @@ def test_safecontrol_passes_safe_waypoint_untouched():
     assert ctl.events == []
     assert inner.moves[-1][1] == Waypoint(0.0, 0.0, 3.0)
     assert ctl.min_clearance_m > 0
+
+
+def test_reset_clears_both_events_and_min_clearance():
+    """`--repeat` reports a per-repeat keep-out tally. Clearing the events but
+    keeping the running minimum would report a clearance no waypoint in that
+    repeat actually produced."""
+    class _Rec:
+        def __init__(self):
+            self.seen = []
+
+        def move_to(self, robot_id, waypoint):
+            self.seen.append((robot_id, waypoint))
+
+        def at_goal(self, robot_id, waypoint, tol=0.05):
+            return True
+
+    ctl = SafeControl(_Rec(), build_keepouts(FARM))
+    ctl.move_to("drone", Waypoint(9.5, -14.0, 18.0))  # the hub itself: a violation
+    assert ctl.events and ctl.min_clearance_m < 0.0
+
+    ctl.reset()
+    assert ctl.events == []
+    assert ctl.min_clearance_m == math.inf

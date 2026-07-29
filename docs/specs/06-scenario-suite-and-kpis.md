@@ -42,12 +42,34 @@ starting set, not the final one.
 | `SC-08` | `graded_terrain` | ground bot on 5/10/15/20° ramp testbed | `HAZ-04` | `KPI-07` | `SLICE-2`/`SLICE-6` |
 | `SC-09` | `dust_haze_variant_pack` | off-box Transfer/Predict-generated corpus over `SC-05`/`SC-06` | `HAZ-07` | `KPI-03`, `KPI-08` | `SLICE-4` |
 | `SC-10` | `full_farm_battery_window` | full farm, both robots, N panels, declared daylight/battery window | `HAZ-06` | `KPI-02`, `KPI-06` | `SLICE-7` |
+| `SC-11` | `khavda_selfshade` | real Khavda BLOCK-02, HSAT trackers pinned at their 60° stop, sun 17.2° (02:00Z), every panel healthy, no turbines | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade.yaml` |
+| `SC-12` | `khavda_selfshade_lowsun` | `SC-11` one hour earlier (01:30Z, sun 10.7°): ~54% of each module shaded *and* the whole scene dimmer, so shading is confounded with underexposure | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade_lowsun.yaml` |
+
+`SC-11`/`SC-12` supersede `SC-05`'s original stimulus rather than extending it:
+the turbine-blade shadow sailed over the elevated rows onto the ground, while
+tracker self-shading is a real, on-surface, many-panel shadow produced by the
+plant's own hardware. Both are asserted geometrically in `tests/test_solar.py`
+before any run — a KPI-03 of 0.00 means nothing if the stimulus was absent.
 
 ## Gating discipline
 
 - Every scenario config declares its own `kpi_gates` block (see `IF-03`
   example); a slice's exit criteria (`07-roadmap-and-milestones.md`) is
   "all scenarios introduced at or before this slice meet their gates."
+- **Gates are enforced, not decorative** (`FR-17`). `run.py` evaluates the
+  declared block against the measured metrics via `kpi/gates.py`, writes
+  `gates.json`, prints the verdict and exits non-zero on a breach. A gate naming
+  a metric the run never measured **does not pass** — it reports `unmeasured`
+  and fails, because a silently unevaluated bound reads as a green tick.
+- **Quote a spread, not a number.** The world is seeded; the VLM is only
+  reproducible when served serially (measured — see `08-platform-and-risk-register.md`
+  `RISK-23`). `run.py --repeat N` re-runs one scenario N times, rewinding panel
+  state between repeats, and writes `variance.json`: per-metric min/median/max
+  plus every panel the repeats disagreed about, each attributed to the
+  **renderer** or the **model** by comparing frame thumbnails with a measured
+  tolerance — bit-exact digests cannot do this job, because the renderer is
+  stochastic (`RISK-24`). Repeat sets are gated on the
+  **worst** run, never the mean — a fleet flies each sortie once.
 - A KPI regression on an **earlier**-slice scenario blocks merging
   **later**-slice work until fixed or explicitly waived with a tracked
   `RISK-nn` entry — fidelity deepens along a working loop, it should never

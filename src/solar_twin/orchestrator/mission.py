@@ -16,7 +16,14 @@ from enum import Enum, auto
 from typing import Callable, Optional
 
 from solar_twin.control.base import RobotControl, Waypoint
-from solar_twin.perception.base import Diagnosis, PanelContext, Perception, Verdict
+from solar_twin.perception.base import (
+    Diagnosis,
+    PanelContext,
+    Perception,
+    Verdict,
+    frame_digest,
+    frame_thumbnail,
+)
 from solar_twin.schema.pv_module import FaultReport, PanelRecord, PanelState, coerce_state
 from solar_twin.transport.base import Transport
 
@@ -58,6 +65,16 @@ class PanelResult:
     escalated: bool
     detected_state: str  # state written back after inspection
     note: str
+    #: Content hash of the frame each pass was judged FROM (None when the
+    #: backend has no pixels): `_sha` is exact, `_key` is the noise-tolerant
+    #: 8x8 luminance thumbnail. Two of them because RTX capture is measurably
+    #: NOT bit-reproducible (`RISK-24`): the digest answers "same pixels?", the
+    #: thumbnail (compared with a tolerance) answers the question attribution
+    #: actually needs — "same picture?". See `perception.base.frame_thumbnail`.
+    screen_frame_sha: Optional[str] = None
+    confirm_frame_sha: Optional[str] = None
+    screen_frame_thumb: Optional[str] = None
+    confirm_frame_thumb: Optional[str] = None
 
     @property
     def correct(self) -> bool:
@@ -90,7 +107,19 @@ class MissionResult:
         """KPI-03: fraction of *healthy* panels misread as faulted (detected
         state != healthy). This is the central thesis metric — a swept blade
         shadow or dust film on a good panel must not be logged as a fault. Only
-        healthy panels count; returns 0.0 when there are none to judge."""
+        healthy panels count; returns 0.0 when there are none to judge.
+
+        ⚠ **Open question, deliberately not decided here:** ``unknown`` is
+        ``!= healthy``, so a panel the model *failed to answer for* scores
+        identically to one it wrongly called faulty. Those need opposite fixes —
+        plumbing/prompt vs. model robustness — and measured 2026-07-29 the
+        difference was one missing ``}`` in a VLM response, which moved this
+        metric from 0.00 to 0.053 (see `cosmos_reason._parse_json_response`).
+        That parse bug is fixed, but the conflation remains: a genuinely
+        unanswerable frame still counts as a false fault. Changing it means
+        changing a locked contract (`PROJECT_BIBLE.md` §6.5, `FR-03`), so it is
+        an owner decision; the recommendation on the table is to report an
+        abstention rate alongside, not to redefine this."""
         healthy = [r for r in self.results if r.injected_state == "healthy"]
         if not healthy:
             return 0.0
@@ -178,6 +207,10 @@ class Mission:
         verdict: Optional[Verdict] = None
         diagnosis: Optional[Diagnosis] = None
         record: Optional[PanelRecord] = None
+        screen_sha: Optional[str] = None
+        confirm_sha: Optional[str] = None
+        screen_thumb: Optional[str] = None
+        confirm_thumb: Optional[str] = None
 
         while phase is not Phase.DONE:
             if on_phase is not None:
@@ -194,6 +227,8 @@ class Mission:
                 record = self.transport.read_panel(pid)
                 injected = record.state  # ground truth, pre-verdict
                 frame = self.transport.capture(self.fleet.screen_drone)
+                screen_sha = frame_digest(frame)
+                screen_thumb = frame_thumbnail(frame)
                 verdict = self.perception.assess(frame, _context(record))
                 phase = Phase.CONFIRM if verdict.is_suspect else Phase.WRITEBACK
 
@@ -202,6 +237,8 @@ class Mission:
                 self.transport.step()
                 record = self.transport.read_panel(pid)
                 frame = self.transport.capture(self.fleet.confirm_drone)
+                confirm_sha = frame_digest(frame)
+                confirm_thumb = frame_thumbnail(frame)
                 diagnosis = self.perception.diagnose(frame, _context(record))
                 phase = Phase.WRITEBACK
 
@@ -240,4 +277,8 @@ class Mission:
                 else PanelState.HEALTHY.value
             ),
             note=(diagnosis.note if (verdict.is_suspect and diagnosis) else verdict.note),
+            screen_frame_sha=screen_sha,
+            confirm_frame_sha=confirm_sha,
+            screen_frame_thumb=screen_thumb,
+            confirm_frame_thumb=confirm_thumb,
         )
