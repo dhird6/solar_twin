@@ -52,6 +52,11 @@ farm_overrides:
     timestamp: "2026-06-21T02:00:00Z"
     tracker_max_rotation_deg: 60.0
   turbines: []       # isolate the self-shading stressor
+  # ⚠ Required alongside the empty list — see khavda_selfshade_lowsun.yaml. The
+  # scatter wins over an explicit list, so without this a rebuild inserts turbines
+  # that were not present when KPI-03 was measured on this scenario.
+  turbine_scatter:
+    enabled: false
 
 kpi_gates:
   false_fault_rate_max: 0.05

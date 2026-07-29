@@ -312,3 +312,39 @@ def test_disabling_the_scatter_is_how_you_get_a_turbine_free_stage():
 
     cfg = {"seed": 1, "turbines": [], "turbine_scatter": {"enabled": False}}
     assert resolve_turbines(cfg, None) == []
+
+
+def test_every_scenario_claiming_no_turbines_actually_disables_the_scatter():
+    """The reproducibility guard. A scenario writing `turbines: []` is stating an
+    intent ("isolate my stressor from blade shadows") that the empty list alone
+    does not deliver — the scatter wins. Measured 2026-07-29: rebuilding
+    `khavda_selfshade_lowsun` produced 3 turbines while the stage its recorded
+    KPI-03 was measured on has 0, so the scenario no longer regenerated what it
+    measured.
+
+    Checks the **effective** config via `load_scenario`, not the override block: a
+    scenario extending `configs/farm.yaml` (no scatter defined) is fine with a bare
+    empty list, while one extending `farm_khavda_block02.yaml` (scatter enabled) is
+    not. Testing the raw override would flag the former and is how a guard becomes
+    noise nobody trusts.
+    """
+    import pathlib
+
+    from solar_twin.scenario import load_scenario
+    from solar_twin.world.siting import resolve_turbines
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted((root / "configs" / "scenarios").glob("*.yaml")):
+        farm_cfg = load_scenario(str(path)).farm_cfg
+        declared_none = not (farm_cfg.get("turbines") or [])
+        scatter_on = bool((farm_cfg.get("turbine_scatter") or {}).get("enabled"))
+        if declared_none and scatter_on:
+            offenders.append(path.name)
+        elif declared_none:
+            # ...and with the scatter off it really does resolve to nothing.
+            assert resolve_turbines(farm_cfg, None) == [], path.name
+    assert not offenders, (
+        "these scenarios resolve to a turbine-free stage in intent but build "
+        "turbines because `turbine_scatter` is still enabled: " + ", ".join(offenders)
+    )

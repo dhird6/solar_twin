@@ -60,6 +60,16 @@ farm_overrides:
     timestamp: "2026-06-21T01:30:00Z"
     tracker_max_rotation_deg: 60.0
   turbines: []       # isolate the self-shading stressor
+  # ⚠ The empty list above is NOT sufficient — `resolve_turbines` checks
+  # `turbine_scatter.enabled` first and the scatter wins, so `turbines: []` only
+  # clears the *explicit* positions. Measured 2026-07-29: rebuilding this scenario
+  # from the current configs produced **3 scattered turbines**, while the stage the
+  # recorded KPI-03 (0.000, N=3, runs/20260728T200755) was measured on has **0** —
+  # that stage was built before the scatter merged onto this branch. This line
+  # restores reproducibility: it regenerates the scene that was actually measured,
+  # rather than a new one with blade shadows crossing the rows.
+  turbine_scatter:
+    enabled: false
 
 kpi_gates:
   # Same bound as the 02:00Z scenario, deliberately: the target does not get

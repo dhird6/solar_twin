@@ -42,7 +42,12 @@ farm_overrides:
   faults:
     rate: 0.20
     states: [soiled, hotspot]
+  # ⚠ The empty list alone does not remove them: `resolve_turbines` checks
+  # `turbine_scatter.enabled` first and the scatter wins. Until this was added the
+  # demo tour was rendering scattered turbines it claimed not to have.
   turbines: []
+  turbine_scatter:
+    enabled: false
 
 mission_overrides:
   kinematics:
