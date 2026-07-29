@@ -81,6 +81,37 @@ neighbours are excluded — and until that lands, `SC-11`/`SC-12` (all-healthy s
 where no neighbour can be faulted) are the only KPI-03 points free of this confound.
 That is also a reason their 0.00 stands.
 
+#### The crop: mechanism built, geometry validated, KPI effect NOT yet measured
+
+`perception.cosmos_reason.centre_crop` + `crop_fraction` (config: `perception_opts.
+crop_fraction`, recorded in `provenance()`). **Default 1.0 = no crop**, because every
+KPI on record was measured on the full frame.
+
+The risk with any crop is that it deletes the defect instead of the confound — that
+is exactly how prompt `v2`/`v3` failed. Tested on captured frames with
+`tools/inspect_frame.py --crop 0.5`, which needs Isaac but **not** the VLM:
+
+| panel | injected | confirm glass% | crop 0.5 | non-glass residue |
+|---|---|---|---|---|
+| `R254-C014` | healthy (false-alarmed) | 64.0 | **87.1** | warm → **cool** |
+| `R258-C028` | healthy (false-alarmed) | 59.6 | **84.8** | warm → **cool** |
+| `R258-C000` | healthy (control) | 57.8 | **87.0** | warm → **cool** |
+| `R254-C000` | healthy (control) | 59.9 | **85.6** | warm → **cool** |
+| `R243-C098` | **soiled** | 37.6 | 54.7 | warm → **warm** |
+| `R253-C042` | **soiled** | 34.5 | 41.0 | warm → **warm** |
+
+The crop is **differential**, which is what it needs to be: on healthy panels it
+strips the warm/sandy content and the residue turns cool (85–87% glass), while on
+genuinely soiled panels the warm content survives. Soiling is central because the
+waypoint is over the target; the contaminating ground and neighbour are peripheral.
+The false-alarm panels and the clean controls also converge, which is what excluding
+the neighbour should look like.
+
+⚠ **This is geometry, not a KPI.** Whether it moves `KPI-01`/`KPI-03` is unmeasured —
+the vLLM server went down before a `--repeat 3` comparison could run. Do not describe
+it as a fix or enable it by default until that comparison exists, and quote
+`crop_fraction` with any number produced under it.
+
 ## Scenario suite
 
 Each scenario is a `configs/scenarios/<name>.yaml` per `04-interfaces-and-data.md`

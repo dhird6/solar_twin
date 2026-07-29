@@ -48,6 +48,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="", help="directory for the captured PNGs")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
+    ap.add_argument(
+        "--crop",
+        type=float,
+        default=0.0,
+        help="also report the central fraction of each frame "
+        "(`perception.cosmos_reason.centre_crop`). Use this to check whether a crop "
+        "excludes the NEIGHBOURING module: run a panel with a soiled neighbour and "
+        "one with a clean neighbourhood, and see whether their warm-pixel shares "
+        "converge once cropped. That tests the framing fix without needing the VLM.",
+    )
     args = ap.parse_args(argv)
 
     import numpy as np
@@ -95,23 +105,32 @@ def main(argv: list[str] | None = None) -> int:
             if fr is None:
                 print(f"{pid:>12} {tag:>8}  NO FRAME")
                 continue
-            rgb = np.asarray(fr)[..., :3].astype(np.float32)
-            glass = rgb[..., 2] > (GLASS_BLUE_OVER_RED * np.maximum(rgb[..., 0], 1.0))
-            share = float(glass.mean())
-            nonglass = ~glass
-            if nonglass.sum():
-                mean_rgb = rgb[nonglass].mean(axis=0)
-                desc = f"({mean_rgb[0]:5.1f},{mean_rgb[1]:5.1f},{mean_rgb[2]:5.1f})"
-                # Sandy = warm (red >= blue). That is the desert, and it is the
-                # colour the model called soiling.
-                sandy = mean_rgb[0] >= mean_rgb[2]
-                verdict = "warm/sandy" if sandy else "cool"
-            else:
-                desc, verdict = "-", "all glass"
-            print(
-                f"{pid:>12} {tag:>8} {share * 100:7.2f} {float(nonglass.mean()) * 100:10.2f} "
-                f"{desc:>20} {verdict}"
-            )
+            views = [("", np.asarray(fr))]
+            if args.crop:
+                from solar_twin.perception.cosmos_reason import centre_crop
+
+                views.append((f"crop{args.crop:g}", np.asarray(centre_crop(fr, args.crop))))
+
+            for suffix, view in views:
+                rgb = view[..., :3].astype(np.float32)
+                glass = rgb[..., 2] > (
+                    GLASS_BLUE_OVER_RED * np.maximum(rgb[..., 0], 1.0)
+                )
+                share = float(glass.mean())
+                nonglass = ~glass
+                if nonglass.sum():
+                    mean_rgb = rgb[nonglass].mean(axis=0)
+                    desc = f"({mean_rgb[0]:5.1f},{mean_rgb[1]:5.1f},{mean_rgb[2]:5.1f})"
+                    # Warm (red >= blue) is sand OR soiling — the two are the same
+                    # colour, which is exactly why the model conflates them.
+                    verdict = "warm/sandy" if mean_rgb[0] >= mean_rgb[2] else "cool"
+                else:
+                    desc, verdict = "-", "all glass"
+                label = f"{tag}{'/' + suffix if suffix else ''}"
+                print(
+                    f"{pid:>12} {label:>14} {share * 100:7.2f} "
+                    f"{float(nonglass.mean()) * 100:10.2f} {desc:>20} {verdict}"
+                )
             if out:
                 try:
                     import imageio.v3 as iio

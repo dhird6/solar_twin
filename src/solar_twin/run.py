@@ -135,6 +135,11 @@ def _perception(name: str, opts: dict | None = None):
             # Decoding is pinned greedy by default; `sampling:` in
             # perception_opts merges onto those defaults (never replaces them).
             sampling=dict(opts.get("sampling") or {}),
+            # 1.0 = show the whole frame, which is what every recorded KPI used.
+            # Lowering it excludes the neighbouring module from the confirm frame
+            # (`kpi/confound.py`) — ⚠ not yet validated against a KPI, so the
+            # default must stay 1.0 until a --repeat comparison says otherwise.
+            crop_fraction=float(opts.get("crop_fraction", 1.0)),
         )
     raise NotImplementedError(
         f"perception {name!r} not wired yet (Slice 0 uses ground_truth)."
