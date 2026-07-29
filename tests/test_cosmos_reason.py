@@ -256,3 +256,60 @@ def test_parser_still_fails_closed_on_genuine_garbage():
         _perception("no json at all")[0].diagnose(None, CONTEXT).fault_type
         == PanelState.UNKNOWN.value
     )
+
+
+# --------------------------------------------------------------- prompt version
+# A KPI is produced by the prompt as much as by the decoding config. `sampling` was
+# already recorded; the prompt was not, so changing a taxonomy definition made
+# every earlier number non-comparable with no trace of why.
+
+
+def test_provenance_records_the_prompt_version():
+    perception = CosmosReasonPerception(client=FakeChatClient("{}"))
+    prov = perception.provenance()
+    assert prov["prompt_version"]
+    from solar_twin.perception.cosmos_reason import PROMPT_VERSION
+
+    assert prov["prompt_version"] == PROMPT_VERSION
+
+
+# ------------------------------------------- the module-boundary fix (measured)
+# Measured on SC-01 with prompt v1: the model called 3 of 33 healthy panels
+# `soiled`, and its own notes echoed the taxonomy's own wording back nearly
+# verbatim ("opaque tan or brown patch ... along the lower edge") on panels with
+# nothing on them. In a desert plant the sand below and beside a module is in
+# frame at exactly that edge, so a true-in-general prior was manufacturing false
+# positives out of the ground.
+
+
+def test_the_soiled_definition_keeps_its_load_bearing_location_cue():
+    """Counter-intuitive, and measured. The "lower edge" cue *looks* like the
+    culprit — the model echoed it back on healthy panels — so prompt v2 removed it.
+    That cost the whole class: four panels injected `soiled` and detected
+    `soiled/soiled/soiled` under v1 came back `hotspot/hotspot/hotspot` under v2
+    (`SC-01`, 40 panels, N=3). The cue costs ~2 false alarms and buys ~5 correct
+    soiled calls, so it stays until something measurably better replaces it.
+    """
+    from solar_twin.perception.cosmos_reason import _STATE_DEFINITIONS
+
+    assert "lower edge" in _STATE_DEFINITIONS[PanelState.SOILED].lower()
+
+
+def test_the_prompt_does_not_tell_the_model_to_ignore_ground():
+    """The instruction that looked obviously right and measurably was not.
+
+    Telling the model "bare ground/sand around the module is never a fault"
+    suppressed the `soiled` class — sandy discoloration at the panel edge IS what
+    soiling looks like — and four correctly-detected soiled panels came back
+    `hotspot` (`SC-01`, N=3; detection_rate 0.900 -> 0.800-0.850). Re-adding it
+    only makes sense once capture is cropped to the module's bounding box, so this
+    guards against someone reintroducing the reasonable-sounding version.
+    """
+    client = FakeChatClient(
+        json.dumps({"fault_type": "healthy", "confidence": 1.0, "note": "n"})
+    )
+    perception = CosmosReasonPerception(client=client)
+    perception.diagnose(None, CONTEXT)
+    sent = json.dumps(client.last_messages).lower()
+    assert "never a fault" not in sent
+    assert "module's own boundary" not in sent

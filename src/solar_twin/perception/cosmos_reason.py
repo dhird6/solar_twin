@@ -270,9 +270,57 @@ def _assess_prompt(context: PanelContext) -> str:
 #: patch to "hotspot" because any localized anomaly matches its hotspot prior. Given
 #: these definitions and the identical frame, it answered "soiled" correctly.
 #: Every class is defined — defining only the one we want would bias the classifier.
+#: Bump on ANY change to the taxonomy text or `_diagnose_prompt`. It goes into
+#: `provenance()`, so a KPI recorded under one prompt is never silently compared
+#: with a KPI recorded under another. `DEFAULT_SAMPLING` already pins decoding;
+#: the prompt is just as much a part of what produced a number, and it was the
+#: one input the run record did not name.
+#:
+#: **v1 is current. Two attempts to beat it were measured and both lost** — kept
+#: here because the negative result is the useful part, and because it says the next
+#: person should not reach for the prompt.
+#:
+#: The problem being attacked: on `SC-01` the model called healthy panels `soiled`,
+#: and its notes echoed the taxonomy's own "opaque tan or brown patch ... along the
+#: lower edge" back on panels with nothing on them. This is a desert plant, so bare
+#: sand sits in frame at exactly that edge.
+#:
+#: Measured on `SC-01`, 40 panels, N=3, majority vote per panel:
+#:
+#:     prompt                            det_rate (median, range)  agreement  wrong
+#:                                                                            type
+#:     v1  (as-is)                       0.900  (0.875-0.900)      0.875      0
+#:     v2  cue removed + boundary rule   0.850  (identical)        0.875      4
+#:     v3  cue restored + boundary rule  0.825  (0.800-0.850)      0.950      4
+#:
+#: ⚠ Note v3's per-panel agreement is the BEST of the three (0.950, 2/40 flipped vs
+#: v1's 5/40) while its accuracy is the worst. Stability and accuracy are separate
+#: axes, and `RISK-25` is framed around stability — so it is possible to "fix" the
+#: flipping by making the model confidently wrong in the same way every time. Quote
+#: both, or the improvement is an artefact.
+#:
+#: v2 changed two things at once — a design error, it made the result
+#: unattributable — so v3 isolated the descriptor. v3 falsified the obvious reading:
+#: with the cue restored **verbatim**, the same four `soiled` panels still came back
+#: `hotspot`. So the descriptor was never the cause; the **boundary instruction**
+#: was. Telling the model that tan, sandy discoloration near the module edge "is
+#: never a fault" suppresses the `soiled` class, because that is what soiling looks
+#: like — and it then reaches for `hotspot` to explain the anomaly it still sees.
+#:
+#: **The conclusion is that this is not a prompt problem.** The false alarms and the
+#: true soiled detections rest on the *same visual evidence*: sand-coloured pixels
+#: at the panel's lower edge, where the frame also contains real ground. No wording
+#: can separate them, which is why both attempts traded one error class for another
+#: rather than reducing error. The next move is the **frame**, not the prompt — crop
+#: or mask capture to the module's own bounding box so ground is not in the image at
+#: all — and it should be measured the same way. See `RISK-25`.
+PROMPT_VERSION = "v1"
+
 _STATE_DEFINITIONS: dict[PanelState, str] = {
     PanelState.HEALTHY: "no visible defect; uniform cells, clean glass",
     PanelState.SOILED: (
+        # ⚠ Do not remove the lower-edge cue without re-measuring: it is load-bearing
+        # for the soiled/hotspot distinction (see PROMPT_VERSION's v2 result).
         "dust/dirt/sand deposited ON the glass surface — an opaque tan or brown "
         "patch lying over the cells, often heaviest at the panel's lower edge"
     ),
@@ -305,6 +353,12 @@ def _diagnose_prompt(context: PanelContext) -> str:
     taxonomy = ", ".join(s.value for s in PanelState)
     return (
         "Diagnose the exact fault on this solar panel image.\n"
+        # ⚠ A module-boundary instruction was tried here ("bare ground/sand around
+        # the module is never a fault") and MEASURABLY made things worse: it
+        # suppressed the `soiled` class, because sandy discoloration at the panel
+        # edge is what soiling looks like, and four correctly-detected soiled panels
+        # became `hotspot`. See PROMPT_VERSION for the numbers. Do not re-add it
+        # without cropping the frame to the module first.
         f"Fault definitions:\n{_taxonomy_block()}\n"
         f"Choose exactly one of: {taxonomy}.\n"
         f"Panel: {context.get('panel_id')}\n"
@@ -344,6 +398,10 @@ class CosmosReasonPerception(Perception):
             "model": self.model,
             "timeout_s": self.timeout,
             "sampling": dict(self.sampling),
+            # The prompt is as much a part of what produced a verdict as the
+            # decoding config is. Without this, changing a taxonomy definition
+            # silently makes every earlier KPI non-comparable with no trace.
+            "prompt_version": PROMPT_VERSION,
             # Honesty, not decoration: serial requests were measured repeatable
             # on this build, concurrent ones were not (see DEFAULT_SAMPLING).
             "determinism": "serial-only; continuous batching is not reproducible",

@@ -14,7 +14,7 @@ is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c
 
 **State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
 and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **393 Isaac-free
+so there is ONE trunk again rather than divergent worktrees. **396 Isaac-free
 tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
 `tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
 time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
@@ -96,7 +96,31 @@ with N and a gate from here on, not from a single run.
    invisible at picture level — so this is **fragility, not nondeterminism**, and
    it is not a sim bug to fix (a real camera has sensor noise too). It is a
    soiled↔hotspot discrimination problem that `_STATE_DEFINITIONS` reduced but did
-   not remove. Prompt/model/ensembling work, measured with `--repeat`.
+   not remove.
+
+   ⚠ **Prompt engineering has been tried twice and measured out — do not start
+   there.** On `SC-01`: removing the `soiled` "lower edge" cue + adding a
+   module-boundary instruction (`v2`), then restoring the cue and keeping only the
+   boundary rule (`v3`). Both LOST — `detection_rate` **0.900 → 0.850 → 0.825** —
+   and both broke a class v1 got right: **4 panels injected `soiled` and detected
+   `soiled/soiled/soiled` under v1 came back `hotspot/hotspot/hotspot`.** `v3`
+   falsified the obvious diagnosis, since the cue was restored verbatim and the same
+   four still failed: the **boundary instruction** was the culprit, not the
+   descriptor. Telling the model that sandy discoloration near the module edge "is
+   never a fault" suppresses `soiled`, because that is what soiling looks like.
+
+   **Root cause: the false alarms and the true soiled detections rest on the same
+   pixels** — sand-coloured discoloration at the panel's lower edge, in a frame that
+   also contains real desert ground. No wording can separate them, which is why both
+   attempts traded error classes instead of reducing error.
+
+   **Do the FRAME next, not the prompt:** crop/mask capture to the module's own
+   bounding box so ground is not in the image at all, then re-measure on `SC-01` with
+   `--repeat 3`. ⚠ And quote agreement alongside accuracy — `v3` had the *best*
+   per-panel agreement of the three (0.950 vs v1's 0.875) and the worst accuracy, so
+   it is possible to "fix" the flipping by making the model confidently wrong the
+   same way every time. The prompt is now pinned in the run record as
+   `perception.prompt_version`, so a future comparison cannot be silently invalid.
 
    ⚠ **The number to drive changed on 2026-07-29, and so did its provenance.**
    `KPI-01 = 0.875` came from `demo_video.yaml` — a file whose own header says in
