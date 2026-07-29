@@ -19,6 +19,19 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ## 2026-07-29 — Session 11c: the KPIs get honest — measured determinism, spreads, and gates that actually gate
 
+**Integrated and pushed.** Three commits (`a02d912` perception, `eca6a25` scenario +
+verifier, `052ea9a` harness + docs), rebased onto 11b's tip — the remote had moved 8
+commits ahead while this work was in flight. Only the two narrative docs conflicted;
+`run.py` merged cleanly, including 11b's `build_keepouts(farm_cfg, layout)` fix,
+which was the cross-branch trap 11b warned about. **294 Isaac-free tests pass, and
+at each of the three commits individually**, not just at the tip. `docs/TASKS.md`'s
+own stale-entry warning caught one of mine: my "the full-plant video path is too
+expensive" item was already resolved in 10e *with my diagnosis shown to be wrong*,
+so it is dropped rather than carried forward.
+
+**PR #9 opened into `main`** — the whole 31-commit branch, which TASKS has listed as
+the largest outstanding structural item for several sessions (74 → 294 tests).
+
 **This closes the first two items on Session 11b's `Next` list** — "quantify VLM run-to-run variance before quoting any KPI as a constant" and the low-sun (01:30Z) KPI-03 point. Developed in parallel with 11b, so it touches `perception/`, `orchestrator/`, `kpi/` and the specs while 11b worked in `world/`; `run.py` was the only code file both touched and it merged cleanly.
 
 **The pending item at the top of `TASKS.md` was "quantify VLM run-to-run variance
