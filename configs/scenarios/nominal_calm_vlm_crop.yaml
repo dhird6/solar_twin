@@ -1,0 +1,71 @@
+# nominal_calm_vlm_crop — SC-01 with the frame cropped to the target module.
+#
+# The measurement that decides whether the framing fix works. Byte-for-byte
+# `nominal_calm_vlm.yaml` — same seed, same sun, same fault set, same stride, same
+# gates, and it runs against the SAME stage (`assets/nominal_calm.usd`) — with ONE
+# difference: `perception_opts.crop_fraction`.
+#
+# Why it is a separate file rather than an edit: the uncropped run is the comparison
+# point, and a scenario that changed under it would make the comparison worthless.
+# `nominal_calm_vlm.yaml` stays exactly as measured.
+#
+# What it is testing (measured 2026-07-29, `kpi/confound.py`): at the confirm
+# standoff the module is foreshortened and the **neighbouring** module is in shot, so
+# `KPI-03`'s false alarms were the panel next door — 16 of 16 across three prompt
+# versions sat beside a faulted panel, and none of 180 clean-neighbourhood
+# observations produced one. Two prompt interventions failed because the model was
+# right about the image.
+#
+# The trap this must avoid is the one that killed prompt v2/v3: a change that
+# suppresses the false alarms by suppressing the `soiled` class. Frame geometry says
+# it should not — a 0.5 crop takes healthy panels from ~60% to ~86% glass with the
+# residue turning cool, while on genuinely soiled panels the warm soiling SURVIVES
+# (`tools/inspect_frame.py --crop 0.5`). This run is what turns that into a KPI.
+#
+#   # no rebuild needed — same stage as nominal_calm_vlm
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/nominal_calm_vlm_crop.yaml --subset 5 \
+#       --farm-usd assets/nominal_calm.usd --repeat 3
+#
+# Baseline to beat (`runs/20260729T130956`, prompt v1, crop 1.0):
+#   detection_rate    0.900 median (0.875-0.900)
+#   false_fault_rate  0.091 median (0.030-0.091)
+#   agreement         0.875
+#   confound attributable_share 1.00
+#
+# ⚠ Judge accuracy AND agreement together. Prompt v3 had the best agreement of the
+#   three and the worst accuracy — a change can "fix" the flipping by making the
+#   model confidently wrong the same way every time.
+
+name: nominal_calm_vlm_crop
+seed: 20260729          # identical to nominal_calm_vlm — the world must not move
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml
+
+farm_overrides:
+  sun:
+    timestamp: "2026-06-21T04:00:00Z"
+    tracker_max_rotation_deg: 60.0
+  faults:
+    rate: 0.20
+    states: [soiled, hotspot]
+  turbines: []
+  turbine_scatter:
+    enabled: false
+
+mission_overrides:
+  panel_stride: 14
+  perception_opts:
+    # THE only intended difference from nominal_calm_vlm.yaml. 0.5 keeps the central
+    # half of each axis (a quarter of the area), which measurement showed lifts the
+    # glass share on healthy panels from ~60% to ~86% while leaving on-panel soiling
+    # in frame. Recorded in the run record's `perception.crop_fraction`.
+    crop_fraction: 0.5
+
+kpi_gates:
+  # Same bounds as the uncropped run, deliberately: the target does not get relaxed
+  # because the framing changed. A breach here is the finding.
+  detection_rate_min: 0.80
+  abstention_rate_max: 0.0

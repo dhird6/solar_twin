@@ -81,7 +81,7 @@ neighbours are excluded — and until that lands, `SC-11`/`SC-12` (all-healthy s
 where no neighbour can be faulted) are the only KPI-03 points free of this confound.
 That is also a reason their 0.00 stands.
 
-#### The crop: mechanism built, geometry validated, KPI effect NOT yet measured
+#### The crop: MEASURED — it removes the confound, and it costs hotspot recall
 
 `perception.cosmos_reason.centre_crop` + `crop_fraction` (config: `perception_opts.
 crop_fraction`, recorded in `provenance()`). **Default 1.0 = no crop**, because every
@@ -107,10 +107,42 @@ waypoint is over the target; the contaminating ground and neighbour are peripher
 The false-alarm panels and the clean controls also converge, which is what excluding
 the neighbour should look like.
 
-⚠ **This is geometry, not a KPI.** Whether it moves `KPI-01`/`KPI-03` is unmeasured —
-the vLLM server went down before a `--repeat 3` comparison could run. Do not describe
-it as a fix or enable it by default until that comparison exists, and quote
-`crop_fraction` with any number produced under it.
+##### The KPI measurement (`runs/20260729T180626`, `nominal_calm_vlm_crop`)
+
+Same stage, same seed, same gates, same prompt (`v1`) — `crop_fraction` is the only
+variable. N=3.
+
+| | uncropped (`…T130956`) | crop 0.5 (`…T180626`) |
+|---|---|---|
+| `detection_rate` | 0.900 median (0.875–0.900) ⚠ varies | **0.925, identical across repeats** |
+| `false_fault_rate` | 0.091 median (0.030–0.091) ⚠ varies | **0.000, identical** |
+| per-panel agreement | 0.875 (5/40 flipped) | **1.000 (0/40 flipped)** |
+| `confound.attributable_share` | 1.00 | **0.00** |
+| `soiled` panels all-3-correct | 4/4 | **4/4** |
+| `hotspot` panels caught | ~3 of 9 observations (flaky) | **0 of 9** |
+
+**The confound is gone, definitively**: 13 healthy panels sat beside a faulted one
+and *none* was misread, where before every single false alarm came from that group.
+KPI-03 falls to 0.000 and stops varying, KPI-01 rises, and stability goes to perfect
+— the first change measured all day that improved accuracy *and* stability *and* the
+confound together. And the trap that killed prompt `v2`/`v3` is avoided: the `soiled`
+class is fully preserved, 4/4 both ways.
+
+⚠ **But it costs hotspot recall, and the headline hides that.** All three `hotspot`
+panels are now missed in every repeat; uncropped, two of them were caught in some
+repeats. `detection_rate` still rises only because removing 4 false alarms outweighs
+losing ~3 hotspot detections. The likely mechanism is geometric: a hotspot is a small
+bright spot on a *single cell*, so a 0.5 crop can cut it out of frame entirely,
+whereas soiling is a large patch that survives.
+
+**So `crop_fraction` stays default 1.0.** The finding is not "enable 0.5" — it is
+"the confound is real, cropping removes it, and 0.5 is too aggressive for hotspot."
+Next step is to tune the fraction (or crop to the projected module bbox rather than a
+fixed centre fraction) and re-measure, judging `soiled` and `hotspot` recall
+*separately* — the aggregate `detection_rate` conceals this trade.
+
+⚠ Quote `crop_fraction` with any number produced under it: a KPI measured on a
+cropped frame is not comparable with one measured on a full frame.
 
 ## Scenario suite
 
