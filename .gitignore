@@ -53,3 +53,7 @@ solar_plant_layout/
 # Diagnostics, not artifacts — they appear as untracked noise after every viewer run.
 NvStreamer-*.etli
 *.etli
+
+# Claude Code: machine-local settings and git worktrees, never shared
+.claude/settings.local.json
+.claude/worktrees/
