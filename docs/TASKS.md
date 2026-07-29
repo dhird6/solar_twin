@@ -7,10 +7,10 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 11e)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 12)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11e.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-12.
 
 **State:** ✅ **`main` IS the trunk again — PR #9 merged 2026-07-29 as `71625a8`.**
 That was the largest outstanding structural item for four sessions ("no PR to
@@ -165,27 +165,26 @@ with N and a gate from here on, not from a single run.
    ⚠ The headline stays conservative on purpose — an abstention still counts
    against `KPI-03`, so the metric can never flatter the system. And a `KPI-03` of
    0.00 on a run with **no healthy panels** is vacuous; check `KPI-03b`.
-2. **Pegasus / PX4 flight dynamics (`FR-06`) — investigated 2026-07-29; the work
-   left is a bounded port, not an unknown.** ✅ **PX4 SITL runs natively on this
-   box**: `px4io/px4-sitl` publishes an arm64 container (119 MB), it boots to
-   `Waiting for simulator to accept connection on TCP port 4560`, and the host can
-   reach it — `python3 tools/px4_sitl_smoke.py` (exit 0 = seam open). No apt, no
-   source build, nothing in Isaac's Python. `RISK-02`(a) closed.
-   ⚠ **Do not read that as "we have flight dynamics."** The Isaac-side bridge is
-   missing and Pegasus does not support Isaac 6.x. Measured port size: of 26
-   `omni.*`/`isaacsim.*` imports, 21 resolve on 6.0.1; three of the failures are
-   just extensions that were not *enabled*; only `omni.isaac.dynamic_control`
-   (load-bearing) and `omni.isaac.sensor` (peripheral) are truly gone. That is
-   **17 call sites in 2 files** (`vehicle.py`, `multirotor.py`) behind one
-   accessor, all mapping onto `isaacsim.core.prims`/`omni.physics.tensors` —
-   verified present. Recommended next step: a **time-boxed fork-and-patch spike**,
-   because what Pegasus really gives us is the multirotor dynamics + HIL sensor
-   models PX4's EKF needs; writing those from scratch is the expensive path. Also
-   watch `RISK-26`: that backend was written for PX4 v1.14.3 and the container
-   ships ~v1.18-beta, so verify the HIL handshake before trusting any hover.
-   Two golden-rule conflicts to plan around, not discover: Pegasus installs via
-   `ISAACSIM_PYTHON -m pip install --editable` (needs an `ENVIRONMENT.md` note) and
-   its docs add the extension **via the GUI** (use `--ext-folder` instead).
+2. **Finish `FR-06`: make it HOVER (`RISK-28`).** ✅ The Isaac-6 port is **done and
+   verified** — `bash tools/install_pegasus_isaac6.sh` (pinned v5.1.0 clone + one
+   patch) makes `Vehicle`/`Multirotor`/`PX4MavlinkBackend` import on 6.0.1, and the
+   shim's reads tracked a falling Iris exactly. PX4 SITL itself was already proven
+   on aarch64 (`tools/px4_sitl_smoke.py`). **Nothing has flown yet.** Do it in this
+   order, because it fails loudest that way:
+   (a) pin the callback-ordering condition — Pegasus registers 4 physics callbacks
+   and the vehicle state froze at spawn in one bootstrap while advancing in another
+   run of the same script; construct the vehicle *after* `world.reset()`/`play()`
+   and compare, since prim views only bind once the physics view exists;
+   (b) attach `PX4MavlinkBackend` to `tools/px4_sitl_smoke.py --keep` and watch PX4
+   leave `Waiting for simulator` — that single log line also settles `RISK-26`'s
+   protocol drift (backend written for v1.14.3, container ships ~v1.18-beta);
+   (c) arm, hover, judge against `KPI-05`.
+   ⚠ **Do not wrap this in `RobotControl` until a hover holds** — an unstable
+   `control/px4.py` behind the ABC would present as an orchestration bug.
+   ⚠ **The trap that cost Session 12:** a prim view built before PhysX has a
+   simulation view silently returns the **static USD pose forever** (measured:
+   Pegasus read z=4.9998 while the body was at z=3.80). No exception. And without
+   `world.play()` there is no physics view at all.
 3. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
    anything not in the drawing must be tagged `INFERRED` like the rest. The

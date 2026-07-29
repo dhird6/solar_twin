@@ -1,0 +1,304 @@
+diff --git a/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/dc_compat.py b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/dc_compat.py
+new file mode 100644
+index 0000000..c4505c0
+--- /dev/null
++++ b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/dc_compat.py
+@@ -0,0 +1,258 @@
++"""
++| File: dc_compat.py
++| License: BSD-3-Clause. Upstream Pegasus Simulator is
++|   Copyright (c) 2023-2024, Marcelo Fialho Jacinto. All rights reserved.
++|   This compatibility layer is an addition by the solar-twin project, released
++|   under the same license so it can be upstreamed unchanged.
++| Description: The `omni.isaac.dynamic_control` surface Pegasus uses, reimplemented
++|   on `isaacsim.core.prims` so Pegasus runs on Isaac Sim 6.x.
++
++WHY THIS EXISTS
++---------------
++`omni.isaac.dynamic_control` was retired in Isaac Sim's 4.5/5.0 API migration and
++is **absent from the 6.0.1 build** (measured: the whole legacy `omni.isaac.*`
++namespace is gone except `omni.isaac.core_archive`). Pegasus v5.1.0 — and `main`
++as of commit e13dc65 — still imports it, so `Vehicle`/`Multirotor` cannot even be
++constructed on 6.x.
++
++Every one of those legacy calls funnels through a single accessor,
++`Vehicle.get_dc_interface()`. So rather than rewriting the ~17 call sites (and
++diverging from upstream, making future merges painful), this provides an object
++with the same ten methods, implemented on the supported API. Upstream call sites
++stay byte-identical; only the imports and that one accessor change.
++
++VERIFIED MAPPING (checked against the installed 6.0.1-rc.7 build, not recalled)
++------------------------------------------------------------------------------
++    dc.get_rigid_body(path)                 -> SingleRigidPrim(path)
++    dc.get_rigid_body_pose(rb).p            -> SingleRigidPrim.get_world_pose()[0]
++    dc.get_rigid_body_linear_velocity(rb)   -> SingleRigidPrim.get_linear_velocity()
++    dc.get_rigid_body_angular_velocity(rb)  -> SingleRigidPrim.get_angular_velocity()
++    dc.apply_body_force(rb, f, pos, glob)   -> RigidPrim.apply_forces_and_torques_at_pos(
++                                                   forces=, positions=, is_global=)
++    dc.apply_body_torque(rb, t, glob)       -> same call, torques=
++    dc.get_articulation(path)               -> SingleArticulation(path)
++    dc.find_articulation_dof(art, name)     -> SingleArticulation.get_dof_index(name)
++    dc.set_dof_velocity(dof, v)             -> SingleArticulation.set_joint_velocities(
++                                                   [v], joint_indices=[idx])
++    dc.get_relative_body_poses(rb, others)  -> computed from world poses (no equivalent)
++
++Two API facts that shape the code, both measured:
++
++* **`SingleRigidPrim` has no force/torque methods at all.** Only the *batched*
++  `RigidPrim` exposes `apply_forces_and_torques_at_pos`. So each body keeps both
++  views: the single one for reads, the batched one for writes.
++* **`carb._carb.Float3` is not iterable** (it has `.x`/`.y`/`.z`), and upstream
++  passes it directly into `apply_body_force`. `_vec3` therefore reads attributes
++  first and falls back to sequence indexing.
++
++Handles are cached per prim path: `get_rigid_body` is called from
++`update_state`, i.e. on **every physics step**, and constructing a prim view per
++step would be a per-frame allocation in the hot loop.
++"""
++
++import numpy as np
++
++from isaacsim.core.prims import RigidPrim, SingleArticulation, SingleRigidPrim
++
++
++def _vec3(v) -> np.ndarray:
++    """Coerce carb Float3 / tuple / list / ndarray to a float64 3-vector."""
++    if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
++        return np.array([v.x, v.y, v.z], dtype=np.float64)
++    return np.asarray(v, dtype=np.float64).reshape(3)
++
++
++class _Pose:
++    """Stands in for a dc pose. Upstream reads only `.p` (position); rotation is
++    taken from the USD xform separately in `Vehicle.update_state`, so `.r` is
++    provided for completeness rather than because anything consumes it."""
++
++    __slots__ = ("p", "r")
++
++    def __init__(self, position, orientation=None):
++        self.p = np.asarray(position, dtype=np.float64).reshape(3)
++        self.r = None if orientation is None else np.asarray(orientation, dtype=np.float64)
++
++    def __repr__(self) -> str:
++        return f"_Pose(p={self.p}, r={self.r})"
++
++
++class _Body:
++    """A rigid-body handle: the single view for reads, the batched one for writes.
++
++    ⚠ **The views are REBUILT until the physics view exists, and this is the whole
++    reason the port needed debugging.** A prim view constructed before PhysX has a
++    simulation view binds to nothing and then reports the **static USD pose
++    forever** — it does not raise, and it does not recover on its own.
++
++    That failure is quietly severe here: upstream acquires the dc interface lazily
++    from inside the first physics callback, which is exactly too early. Measured on
++    the Iris quadrotor — Pegasus read a constant `z = 4.9998` while the body had
++    actually fallen to `z = 3.80`. A stale pose feeds PX4's EKF a drone that never
++    moves, so it would look like a control-tuning problem rather than a read bug.
++
++    Constructing the view *after* the simulation view exists works (verified
++    against a plain `SingleRigidPrim` in the same session), so each call retries
++    construction until `_physics_view` is populated, then stops.
++    """
++
++    __slots__ = ("path", "single", "batch")
++
++    def __init__(self, path: str):
++        self.path = path
++        self.single = SingleRigidPrim(path)
++        # Batched view over exactly this one prim — the only place forces live.
++        self.batch = RigidPrim(path)
++
++    @staticmethod
++    def _has_physics_view(view) -> bool:
++        return getattr(view, "_physics_view", None) is not None
++
++    def ensure_initialized(self) -> None:
++        """Rebuild any view that is not bound to a live physics view.
++
++        ⚠ **Deliberately does not latch.** An earlier version cached "already
++        bound" after the first success and the drone froze at its spawn pose: the
++        first call arrives from inside Pegasus's first physics callback, the view
++        binds to something that is not yet simulating, the flag latches, and every
++        later read returns that first value. Measured — Pegasus reported a
++        constant `z = 4.9998` while the body had fallen to `z = 3.80`.
++
++        Rebuilding whenever the binding is missing was verified to read correctly
++        (it tracked the fall exactly). The cost is one object construction per
++        unbound call, and once physics is genuinely up the binding sticks and no
++        rebuild happens — so the hot loop pays nothing in the steady state.
++        """
++        for name in ("single", "batch"):
++            view = getattr(self, name)
++            if self._has_physics_view(view):
++                continue
++            try:
++                view.initialize()
++            except Exception:  # noqa: BLE001 — no sim view yet; rebuild below
++                pass
++            if not self._has_physics_view(view):
++                # A view that missed the sim view at construction stays bound to
++                # nothing even after initialize() — replace it outright.
++                fresh = SingleRigidPrim(self.path) if name == "single" else RigidPrim(self.path)
++                try:
++                    fresh.initialize()
++                except Exception:  # noqa: BLE001 — physics still down; retry next step
++                    pass
++                setattr(self, name, fresh)
++
++    def __repr__(self) -> str:
++        return f"_Body({self.path})"
++
++
++class _Dof:
++    """A joint handle: the articulation plus the DOF index within it."""
++
++    __slots__ = ("articulation", "index", "name")
++
++    def __init__(self, articulation, index: int, name: str):
++        self.articulation = articulation
++        self.index = index
++        self.name = name
++
++    def __repr__(self) -> str:
++        return f"_Dof({self.name}@{self.index})"
++
++
++class DynamicControlCompat:
++    """Drop-in for `_dynamic_control.acquire_dynamic_control_interface()`.
++
++    Only the methods Pegasus actually calls are implemented. Anything else that
++    upstream might add later will raise `AttributeError` loudly rather than
++    silently returning None — a wrong pose or a dropped force would surface as
++    "the drone flies badly", which is far harder to debug than an import error.
++    """
++
++    def __init__(self):
++        self._bodies: dict[str, _Body] = {}
++        self._articulations: dict[str, SingleArticulation] = {}
++
++    # ---------------------------------------------------------------- bodies --
++    def get_rigid_body(self, path: str):
++        body = self._bodies.get(path)
++        if body is None:
++            body = _Body(path)
++            self._bodies[path] = body
++        body.ensure_initialized()
++        return body
++
++    def get_rigid_body_pose(self, body: _Body) -> _Pose:
++        position, orientation = body.single.get_world_pose()
++        return _Pose(position, orientation)
++
++    def get_rigid_body_linear_velocity(self, body: _Body) -> np.ndarray:
++        return np.asarray(body.single.get_linear_velocity(), dtype=np.float64)
++
++    def get_rigid_body_angular_velocity(self, body: _Body) -> np.ndarray:
++        return np.asarray(body.single.get_angular_velocity(), dtype=np.float64)
++
++    def apply_body_force(self, body: _Body, force, position, is_global: bool = False) -> None:
++        body.batch.apply_forces_and_torques_at_pos(
++            forces=_vec3(force).reshape(1, 3),
++            positions=_vec3(position).reshape(1, 3),
++            is_global=bool(is_global),
++        )
++
++    def apply_body_torque(self, body: _Body, torque, is_global: bool = False) -> None:
++        body.batch.apply_forces_and_torques_at_pos(
++            torques=_vec3(torque).reshape(1, 3),
++            is_global=bool(is_global),
++        )
++
++    def get_relative_body_poses(self, body: _Body, others: list) -> list:
++        """Poses of `others` in `body`'s frame.
++
++        Upstream uses this for one thing: the rotor torque arms in the thrust
++        allocation matrix, reading `.p[0]` and `.p[1]` only. Its own comment says
++        the orientation is ignored, and the rotors are rigidly mounted, so the
++        offset is rotated into the body frame and the relative orientation is
++        left as None rather than invented.
++        """
++        base_pos, base_quat = body.single.get_world_pose()
++        base_pos = np.asarray(base_pos, dtype=np.float64)
++        # get_world_pose returns (w, x, y, z); scipy wants (x, y, z, w).
++        q = np.asarray(base_quat, dtype=np.float64)
++        from scipy.spatial.transform import Rotation
++
++        rot = Rotation.from_quat([q[1], q[2], q[3], q[0]])
++        out = []
++        for other in others:
++            other_pos, _ = other.single.get_world_pose()
++            delta = np.asarray(other_pos, dtype=np.float64) - base_pos
++            out.append(_Pose(rot.inv().apply(delta)))
++        return out
++
++    # --------------------------------------------------------- articulations --
++    def get_articulation(self, path: str) -> SingleArticulation:
++        art = self._articulations.get(path)
++        if art is None:
++            art = SingleArticulation(path)
++            self._articulations[path] = art
++        try:
++            if not art.handles_initialized:
++                art.initialize()
++        except Exception:  # noqa: BLE001 — no sim view yet; caller is pre-play
++            pass
++        return art
++
++    def find_articulation_dof(self, articulation: SingleArticulation, name: str):
++        try:
++            index = articulation.get_dof_index(name)
++        except Exception:  # noqa: BLE001 — joint absent on this asset
++            return None
++        return None if index is None else _Dof(articulation, int(index), name)
++
++    def set_dof_velocity(self, dof, velocity: float) -> None:
++        """Visual only: upstream spins the rotor meshes for animation, the lift
++        comes from `apply_body_force`. A missing joint therefore must NOT raise —
++        it would take down the physics callback over a cosmetic detail."""
++        if dof is None:
++            return
++        dof.articulation.set_joint_velocities(
++            np.array([float(velocity)]), joint_indices=np.array([dof.index])
++        )
+diff --git a/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotor.py b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotor.py
+index 8f65c87..e2e8fb5 100644
+--- a/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotor.py
++++ b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotor.py
+@@ -7,7 +7,8 @@
+ 
+ import numpy as np
+ 
+-from omni.isaac.dynamic_control import _dynamic_control
++# PORT (Isaac 6.x): dead import removed — this file only ever reached
++# dynamic_control through Vehicle.get_dc_interface(). See dc_compat.py.
+ 
+ # The vehicle interface
+ from pegasus.simulator.logic.vehicles.vehicle import Vehicle
+diff --git a/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/vehicle.py b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/vehicle.py
+index 1d9a9cc..e8e3102 100644
+--- a/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/vehicle.py
++++ b/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/vehicle.py
+@@ -18,7 +18,11 @@ import omni.usd
+ from isaacsim.core.utils.prims import define_prim, get_prim_at_path
+ from omni.usd import get_stage_next_free_path
+ from isaacsim.core.api.robots.robot import Robot
+-from omni.isaac.dynamic_control import _dynamic_control
++# PORT (Isaac 6.x): `omni.isaac.dynamic_control` was retired in the 4.5/5.0 API
++# migration and is absent from the 6.0.1 build. `dc_compat` reimplements the
++# exact surface this file uses on `isaacsim.core.prims`, so every call site
++# below stays byte-identical to upstream.
++from pegasus.simulator.logic.vehicles.dc_compat import DynamicControlCompat
+ 
+ # Extension APIs
+ from pegasus.simulator.logic.state import State
+@@ -408,6 +412,6 @@ class Vehicle(Robot):
+     def get_dc_interface(self):
+ 
+         if self._vehicle_dc_interface is None:
+-            self._vehicle_dc_interface = _dynamic_control.acquire_dynamic_control_interface()
++            self._vehicle_dc_interface = DynamicControlCompat()  # PORT (Isaac 6.x)
+ 
+         return self._vehicle_dc_interface
+\ No newline at end of file

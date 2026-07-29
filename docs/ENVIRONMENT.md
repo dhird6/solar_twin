@@ -289,6 +289,47 @@ about it is downstream of "can PX4 run on this box at all".
   container's much newer PX4 (`RISK-26`). Do not read "PX4 runs" as "we have
   flight dynamics".
 
+## Pegasus Simulator — ported to Isaac 6.0.1 (2026-07-29)
+
+Installed with `bash tools/install_pegasus_isaac6.sh` (idempotent). Layout mirrors
+Isaac itself: an external pinned clone at `/home/simulationhub/PegasusSimulator`
+(v5.1.0, commit `644da37`), plus one reviewable patch in-repo at
+`tools/patches/pegasus-v5.1.0-isaac6.patch`. Pegasus is ~240 MB of BSD-3-Clause
+third-party code, so it is deliberately NOT vendored.
+
+- **⚠ One package added to Isaac's bundled Python** (this is the note
+  `CLAUDE.md` requires): `pymavlink 2.4.49`, aarch64 wheel, installed
+  `--no-deps`. It is the only Pegasus dependency missing — numpy 2.5.1, scipy
+  1.17.0 and pyyaml are already in the 6.0.1 bundle. `--no-deps` is deliberate:
+  a transitive numpy upgrade already broke scipy on this box once (Session 10d).
+  **Verified after install: numpy and scipy were unchanged.**
+- **⚠ Do NOT run `ISAACSIM_PYTHON -m pip install --editable pegasus.simulator`**,
+  which is what Pegasus's own install guide tells you to do. Its `setup.py`
+  carries a `PatchIsaacSimKitApp` hook that **rewrites Isaac's `.kit` app files**
+  to inject a replicator extension — i.e. it mutates our source-built Isaac
+  install as a side effect of a pip command. Use PYTHONPATH / `--ext-folder`
+  instead; the installer never pip-installs Pegasus itself.
+- **What the patch changes:** `omni.isaac.dynamic_control` was retired in the
+  4.5/5.0 API migration and is absent from this build, so Pegasus's
+  `Vehicle`/`Multirotor` could not even be constructed. All of its legacy calls
+  funnel through one accessor, so the patch adds `dc_compat.py` (the same ten
+  methods on `isaacsim.core.prims`) and touches only two imports plus that
+  accessor — upstream call sites stay byte-identical so future merges stay clean.
+
+**Two bootstrap traps, both measured, both silent:**
+
+1. A standalone app must give Pegasus's singleton the World **before**
+   constructing any vehicle, or `Vehicle.__init__` dies on `self._world.stage`:
+   `pg = PegasusInterface(); pg._world = World(**pg._world_settings)`.
+2. **`world.play()` before stepping.** Without it there is no physics simulation
+   view, and every prim read returns the **static USD pose** — no exception, no
+   warning that matters. It looks exactly like working code with a frozen drone.
+
+**Status — what is and is not proven.** Imports: ✅ all vehicle/backend modules.
+Physics through the shim: ✅ reads tracked a falling Iris exactly (matched a
+direct `SingleRigidPrim` read to 4 dp), and `update_state` writes correct state
+when invoked. **A PX4-governed hover is NOT yet demonstrated** — see `RISK-28`.
+
 ## ROS 2 status (updated 2026-07-21)
 - **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).
   Installed via `tools/install_ros2_jazzy.sh` → `/opt/ros/jazzy`, 201 pkgs.

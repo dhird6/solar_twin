@@ -17,6 +17,75 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 12: Pegasus ported to Isaac 6.0.1 — the shim works; the hover is the next session
+
+Picked `FR-06` off the front of the backlog, deliberately **not** perception
+robustness: a parallel session is already inside `cosmos_reason.py`'s prompt, and
+two of us re-measuring the same KPI would have collided.
+
+**⭐ The port is done and it is smaller than I estimated — because the estimate was
+the wrong shape.** Session 11d sized this as "17 call sites in 2 files". Reading
+the code properly showed `Vehicle` **already extends** the modern
+`isaacsim.core.api.robots.Robot`; the `_dynamic_control` calls are a legacy
+leftover *alongside* it, and every one funnels through a single accessor,
+`Vehicle.get_dc_interface()`. So the right fix is a **compatibility shim**, not a
+rewrite: `dc_compat.py` reimplements the ten methods on `isaacsim.core.prims`, and
+the patch touches **two imports plus that one accessor**. Upstream call sites stay
+byte-identical, so future upstream merges stay clean.
+
+Shipped as a pinned clone + a reviewable patch, never a vendored copy (240 MB of
+BSD-3-Clause third-party code): `tools/install_pegasus_isaac6.sh` (idempotent,
+verified from a pristine clone) and `tools/patches/pegasus-v5.1.0-isaac6.patch`.
+
+**Verified, not assumed.** The mapping was derived by introspecting the installed
+6.0.1 build, which caught two things a remembered API would have got wrong:
+- **`SingleRigidPrim` has no force methods at all** — force/torque live only on the
+  batched `RigidPrim`. So each body holds both views: single for reads, batched
+  for writes.
+- **`carb._carb.Float3` is not iterable** (`.x/.y/.z` only), and upstream passes it
+  straight into `apply_body_force`.
+
+Result: all of `Vehicle`, `Multirotor` and `PX4MavlinkBackend` import on 6.0.1,
+and the shim's reads **tracked a falling Iris exactly** — matching a direct
+`SingleRigidPrim` read to 4 dp.
+
+**⚠⚠ The debugging lesson, which cost most of the session and is the useful part:
+a prim view constructed before PhysX has a simulation view silently returns the
+STATIC USD POSE forever.** No exception. Pegasus reported a constant `z = 4.9998`
+while the body had genuinely fallen to `z = 3.80`. Left undiagnosed, that would
+have fed PX4's EKF a drone that never moves — presenting as a control-tuning
+problem, which is a very expensive place to look for a read bug. The related trap:
+**without `world.play()` there is no physics view at all**, so every read is static
+and the code looks like it works.
+
+**Three of my own diagnostics were wrong before they were right — worth recording,
+because each one nearly produced a false conclusion:**
+1. I "proved" Pegasus's callbacks never fire by monkeypatching `drone.update_state`
+   — but `add_physics_callback` had already captured the *original* bound method,
+   so my counter could never increment. `calls=0` measured my patch, not the system.
+2. I then clobbered `world._physics_callback_functions`, which Isaac does not
+   consult at dispatch time; again inert.
+3. Only calling `update_state(dt)` **by hand** settled it: state moved
+   4.9998 → 4.6935, proving the shim and the callback body both work.
+
+**What is NOT done, stated plainly: nothing has flown.** No PX4 connection, no
+arm, no station-keep. Logged as **`RISK-28`** with the ordering trap written down:
+Pegasus's four physics callbacks proved order-sensitive in a standalone app — the
+state froze for 120 steps in one bootstrap and advanced correctly in another run of
+the same script. A plain `World.add_physics_callback` fires reliably (22/20 steps,
+measured) and `update_state` is correct when invoked, so the port is not the cause.
+Next session: pin the ordering, attach `PX4MavlinkBackend` to
+`tools/px4_sitl_smoke.py --keep`, watch PX4 leave `Waiting for simulator` (that one
+line also settles `RISK-26`), and only wrap it in `RobotControl` **after** a hover
+holds — an unstable `control/px4.py` behind the ABC would read as an orchestration
+bug.
+
+**One package entered Isaac's bundled Python** — `pymavlink 2.4.49`, `--no-deps`,
+numpy/scipy verified unchanged — and `docs/ENVIRONMENT.md` now carries the note the
+golden rule requires. Also avoided: Pegasus's own install guide says to
+`pip install --editable` it, whose `setup.py` **rewrites Isaac's `.kit` app files**
+as a side effect. The installer never does that.
+
 ## 2026-07-29 — Session 11e: PR #9 merged — `main` is finally the trunk again
 
 **`main` had been 31+ commits behind for weeks.** `docs/TASKS.md` listed "no PR to
