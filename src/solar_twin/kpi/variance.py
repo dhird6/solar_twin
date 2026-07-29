@@ -86,6 +86,8 @@ THUMB_TOLERANCE = 3.0
 #: Metrics summarised by default — the ones `run.py` records per run.
 DEFAULT_METRICS = (
     "false_fault_rate",  # KPI-03
+    "false_alarm_rate",  # KPI-03's genuine-false-alarm half
+    "abstention_rate",  # KPI-03's lost-answer half (over all panels)
     "detection_rate",  # KPI-01
     "faults_detected",
     "panels_inspected",

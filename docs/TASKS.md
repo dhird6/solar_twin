@@ -14,7 +14,7 @@ is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c
 
 **State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
 and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **300 Isaac-free
+so there is ONE trunk again rather than divergent worktrees. **310 Isaac-free
 tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
 `tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
 time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
@@ -98,14 +98,25 @@ with N and a gate from here on, not from a single run.
    drive is `KPI-01 = 0.875` with **2 of 3 misses stable across repeats** — a
    soiled↔hotspot discrimination problem that `_STATE_DEFINITIONS` reduced but did
    not remove. Prompt/model/ensembling work, measured with `--repeat`.
-1. **Decide how `unknown` should score in KPI-03.** It currently counts as a false
-   fault, so "called a fault that isn't there" and "we lost the model's answer"
-   are the same number with opposite fixes. Measured 2026-07-29: a VLM response
-   that omitted its closing brace was scored as a false fault (0.00 → 0.053) even
-   though the model had said `healthy` with confidence 1.0. The parser bug is
-   fixed and KPI-03 returned to 0.000 across 3 repeats, but the conflation stands.
-   Recommendation: report an abstention rate alongside rather than redefine the
-   metric — it is a locked contract (§6.5 / `FR-03`), so it is an owner call.
+1. ~~**Decide how `unknown` should score in KPI-03.**~~ ✅ **decided and shipped
+   2026-07-29 — report the split, do not redefine the metric.** `KPI-03` keeps its
+   formula (locked contract, §6.5 / `FR-03`; redefining it would make every
+   recorded number non-comparable, including both verified-stimulus 0.00 points),
+   and two new metrics decompose it *exactly*:
+   `KPI-03 == false_alarm_rate + (healthy abstentions / healthy)`.
+   - `false_alarm_rate` (`KPI-03a`) — healthy panels given a specific wrong
+     diagnosis. The number the project is actually driving down.
+   - `abstention_rate` (`KPI-03b`) — panels with no usable verdict, over **all**
+     panels, because losing the answer for a faulted panel is equally a plumbing
+     failure (it just surfaces as a missed detection in `KPI-01`).
+   Both are in `variance.py`'s `DEFAULT_METRICS` so neither can be quoted from a
+   single run, and all five KPI-03 scenarios now gate them —
+   `abstention_rate_max: 0.0`, deliberately zero, because a lost verdict is a bug
+   rather than a budget. Verified end-to-end (`--repeat 2`, fake backend): gates
+   report `abstention_rate_max: PASS (0 <= 0)` on worst-of-N.
+   ⚠ The headline stays conservative on purpose — an abstention still counts
+   against `KPI-03`, so the metric can never flatter the system. And a `KPI-03` of
+   0.00 on a run with **no healthy panels** is vacuous; check `KPI-03b`.
 2. **Pegasus / PX4 flight dynamics (`FR-06`) — investigated 2026-07-29; the work
    left is a bounded port, not an unknown.** ✅ **PX4 SITL runs natively on this
    box**: `px4io/px4-sitl` publishes an arm64 container (119 MB), it boots to

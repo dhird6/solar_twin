@@ -384,6 +384,12 @@ def run(
                 "faults_detected": result.faults_detected,
                 "detection_rate": result.detection_rate,
                 "false_fault_rate": result.false_fault_rate,  # KPI-03
+                # KPI-03's two halves, reported so "called a fault that isn't
+                # there" and "we lost the answer" stop being one number with
+                # opposite fixes. false_fault_rate is unchanged (locked, §6.5).
+                "false_alarm_rate": result.false_alarm_rate,
+                "abstention_rate": result.abstention_rate,
+                "abstentions": result.abstentions,
                 "sim_steps": result.steps,
                 "wall_seconds": round(wall_s, 4),
             },
@@ -413,6 +419,11 @@ def run(
             f"panels={m['panels_inspected']} faults={m['faults_detected']} "
             f"detection_rate={m['detection_rate']:.2f} "
             f"false_fault_rate={m['false_fault_rate']:.3f} "
+            # Printed next to KPI-03 on purpose: a false_fault_rate that is
+            # really abstentions in disguise should be obvious at the console,
+            # not something you find by reading results.json afterwards.
+            f"(false_alarm={m['false_alarm_rate']:.3f} "
+            f"abstained={m['abstentions']}) "
             f"injected={len(record['injected_faults'])}",
             flush=True,
         )

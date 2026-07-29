@@ -15,6 +15,8 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 | `KPI-06` | Battery/time-window adherence | fraction of missions completed without breaching the declared battery reserve floor or daylight/time window | `SLICE-7` | New — requires `IF-01` (`EnergyAware`) |
 | `KPI-07` | Terrain traversal pass/fail | ground bot completes the ramp testbed at the declared max grade without loss of contact/stall | `SLICE-2`/`SLICE-6` | New — pass/fail per grade angle |
 | `KPI-08` | Generated-frame validity rate | fraction of Cosmos Transfer/Predict output frames that pass the Evaluator filter | `SLICE-4` | New — from the Data Factory Blueprint's Evaluator stage (`NFR-08`) |
+| `KPI-03a` | False-alarm rate | fraction of **healthy** panels given a *specific wrong diagnosis* — `detected_state` is neither `healthy` nor `unknown` | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.false_alarm_rate` |
+| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count) |
 
 **Note on `KPI-01` vs `KPI-03`:** these are deliberately distinct. `KPI-01` is
 overall accuracy across all injected states (including real faults); `KPI-03`
@@ -22,6 +24,32 @@ isolates the specific "swept blade shadow → false hotspot" failure mode this
 project exists to prevent. A system can have decent `KPI-01` and still be
 unsafe to deploy if `KPI-03` is high on adversarial scenarios — report both,
 always.
+
+**`KPI-03`'s two halves (`KPI-03a`/`KPI-03b`), decided 2026-07-29.** `unknown` is
+`!= healthy`, so a panel the model *failed to answer for* scored identically in
+`KPI-03` to one it wrongly called faulty — two failures needing opposite fixes
+(plumbing/prompt versus model robustness) reported as one number. Measured: a VLM
+reply missing its closing brace moved `KPI-03` from 0.00 to 0.053 while the model
+had actually said `healthy` with confidence 1.0.
+
+`KPI-03`'s formula is **unchanged** — it is a locked contract (`FR-03`, §6.5), and
+redefining it would make every number already recorded non-comparable, including
+the two verified-stimulus 0.00 points (`SC-11`, `SC-12`). The split is *reported
+alongside* instead, and it is exact:
+
+```
+KPI-03  ==  KPI-03a  +  (healthy panels that abstained / healthy panels)
+```
+
+So `KPI-03` remains the conservative headline (an abstention still counts against
+you — it can never flatter the system), `KPI-03a` is the number the project is
+actually driving down, and `KPI-03b` answers "did the pipeline work at all?"
+across every panel, not just healthy ones — losing the answer for a *faulted*
+panel is equally a plumbing failure, it just surfaces as a missed detection in
+`KPI-01`. Both are gateable like any other metric and both are tracked in
+`variance.py`'s `DEFAULT_METRICS`, so neither can be quoted from a single run.
+⚠ A vacuous `KPI-03` of 0.00 on a run with no healthy panels is exactly the case
+where quoting it alone misleads — check `KPI-03b`.
 
 ## Scenario suite
 

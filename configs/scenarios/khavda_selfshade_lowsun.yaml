@@ -66,3 +66,12 @@ kpi_gates:
   # relaxed because the stimulus got harder. Gates are now ENFORCED (FR-17), and
   # with --repeat they are judged on the WORST repeat, not the mean.
   false_fault_rate_max: 0.05
+  # KPI-03's two halves, gated separately (decided 2026-07-29). The headline above
+  # stays conservative — an abstention still counts against it — but these say
+  # WHICH failure occurred if it breaches.
+  false_alarm_rate_max: 0.05
+  # Deliberately zero, not a tolerance: `unknown` means the pipeline lost the
+  # answer, and a KPI-03 computed over dropped verdicts is not a measurement of
+  # the model. Measured 0 abstentions across the 3 repeats in
+  # runs/20260728T200755, so this bites only on a regression.
+  abstention_rate_max: 0.0

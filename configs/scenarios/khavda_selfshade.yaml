@@ -55,3 +55,8 @@ farm_overrides:
 
 kpi_gates:
   false_fault_rate_max: 0.05
+  # KPI-03's two halves (decided 2026-07-29) — see the KPI table in
+  # docs/specs/06-scenario-suite-and-kpis.md. `abstention_rate_max` is zero on
+  # purpose: a lost verdict is a plumbing bug, not a budget to spend.
+  false_alarm_rate_max: 0.05
+  abstention_rate_max: 0.0
