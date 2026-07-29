@@ -30,6 +30,7 @@ from solar_twin.world.layout import (
     fault_cells,
     soiling_field,
     soiling_mask,
+    terrain_feature_step,
     terrain_height,
 )
 from solar_twin.world.siting import rpm_to_deg_per_s
@@ -59,8 +60,20 @@ _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
     "equipment": ((0.55, 0.57, 0.58), (0.0, 0.0, 0.0), 0.45, 0.2),      # inverter cabinet
 }
 
-# How finely to tessellate the heightfield ground mesh (verts per axis).
+# How finely to tessellate the heightfield ground mesh (verts per axis). Now a
+# FLOOR on the graded grid rather than the whole story — see `_graded_axis`.
 _TERRAIN_RES = 48
+
+#: Hard cap on ground-mesh vertices per axis, so the graded grid cannot blow the
+#: render budget. 220 x 220 = 48.4k verts, and in practice the real site comes out
+#: far below it (measured: 3.5k verts for BLOCK-02, against 25.6k for the old
+#: uniform sheet — the graded mesh is both finer where it matters and cheaper).
+_GROUND_MAX_AXIS = 220
+
+#: How fast ground-mesh spacing may grow per step once outside the site. 1.35
+#: reaches a 5 km horizon in ~14 verts while keeping adjacent quads similar enough
+#: that the expansion does not read as visible banding on a raking shot.
+_GROUND_GRADE_GROWTH = 1.35
 
 # Dust-film sub-grid (tiles across width x along length). Deliberately NOT a
 # multiple of the PV cell counts (6 x 10) so the film can never align to the cell
@@ -397,41 +410,103 @@ def _build_shading_occluder(stage, farm_cfg, layout, material) -> bool:
     return True
 
 
+def _graded_axis(
+    lo: float,
+    hi: float,
+    fine_step: float,
+    far_lo: float,
+    far_hi: float,
+    growth: float = _GROUND_GRADE_GROWTH,
+    max_n: int = _GROUND_MAX_AXIS,
+) -> list[float]:
+    """Vertex coordinates along one ground axis: uniform `fine_step` across the
+    near field `[lo, hi]`, then geometrically expanding steps out to the horizon.
+
+    This is the "high-res visual mesh near the hardware, decimated far field"
+    split, done as ONE tensor-product grid rather than two meshes — two meshes
+    would need their shared edge stitched, and any mismatch there is a visible
+    crack in the desert.
+
+    Why it replaced a uniform sheet: the ground has to reach the sky dome (several
+    km) while resolving terrain the panels are mounted from (tens of metres). A
+    single uniform grid cannot do both inside a sane vertex count, and the old
+    compromise resolved neither — 40-65 m spacing, which undersampled every
+    terrain source in the project. Grading spends the vertices where geometry
+    stands and coarsens where there is nothing to occlude.
+    """
+    span = max(fine_step, hi - lo)
+    # Reserve part of the budget for the two skirts, or a big fine region leaves no
+    # vertices to reach the horizon with and the ground stops short of the sky.
+    n_fine = min(int(math.ceil(span / fine_step)) + 1, max(4, int(max_n * 0.65)))
+    step = span / (n_fine - 1)
+    vals = [lo + step * i for i in range(n_fine)]
+
+    for sign, limit in ((-1.0, far_lo), (1.0, far_hi)):
+        edge = vals[0] if sign < 0 else vals[-1]
+        s, out = step, []
+        while (edge - limit) * sign < 0 and len(out) < max_n:
+            s *= growth
+            edge += sign * s
+            out.append(edge)
+        if out:
+            # Land the outermost vertex exactly on the horizon so terrain meets sky.
+            out[-1] = limit
+            vals = list(reversed(out)) + vals if sign < 0 else vals + out
+    return vals
+
+
 def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: float = 30.0) -> None:
     """A tessellated ground mesh sampling the SAME terrain_height() the panels and
     waypoints use, so the visible ground matches where things are mounted. Flat
-    terrain degenerates to a flat mesh (still fine)."""
+    terrain degenerates to a flat mesh (still fine).
+
+    The tessellation is GRADED (`_graded_axis`): fine enough near the hardware to
+    reproduce the terrain source exactly, coarsening outward to the sky dome. A
+    uniform sheet at these extents aliased the terrain badly enough to bury panels
+    in the drawn ground — see `layout.terrain_feature_step`.
+    """
     # Size the ground from the ACTUAL panel bounding box, not rows x pitch. An
     # imported CAD site is irregular (varying table lengths, aisles, gaps) and has
     # no meaningful row/col rectangle — deriving the span from the grid left the
     # terrain far too small to cover the farm.
     min_x, min_y, max_x, max_y = layout.bounds()
+    extent = max(max_x - min_x, max_y - min_y)
+    # The near field: the hardware plus enough room that the grading transition is
+    # not right against the fence, where a raking shot would read it as a ridge.
+    pad = max(60.0, 0.12 * extent)
     # Reach to the HORIZON, not just past the last panel. A 30 m margin is fine
     # standing in an aisle and wrong from 300 m up: the ground ran out and the
     # camera saw the sky dome's underside as a grey floor beyond the plant, which
     # made a 320 x 647 m site look like a model on a table. `horizon_m` is the
     # sky dome's base radius, so terrain now meets sky wherever you look.
-    margin = max(30.0, horizon_m - max(max_x - min_x, max_y - min_y) / 2.0)
-    span_x = max(6.0, (max_x - min_x) + 2 * margin)
-    span_y = max(6.0, (max_y - min_y) + 2 * margin)
-    x0 = min_x - margin
-    y0 = min_y - margin
-    # Keep roughly the original tessellation density near the site rather than
-    # stretching 48 verts over 2 km, which would visibly facet any heightfield.
-    n = max(_TERRAIN_RES, min(160, int(max(span_x, span_y) / 40.0)))
+    reach = max(horizon_m, extent / 2.0 + pad + 30.0)
+    cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+
+    # The spacing the terrain source actually justifies. `flat` returns 0 (no
+    # detail at any spacing), so fall back to the historic density there.
+    fine = terrain_feature_step(farm_cfg)
+    if fine <= 0.0:
+        fine = max(20.0, 2.0 * reach / _TERRAIN_RES)
+
+    xs = _graded_axis(min_x - pad, max_x + pad, fine, cx - reach, cx + reach)
+    ys = _graded_axis(min_y - pad, max_y + pad, fine, cy - reach, cy + reach)
+    nx, ny = len(xs), len(ys)
     pts, uvs = [], []
-    for j in range(n):
-        for i in range(n):
-            x = x0 + span_x * i / (n - 1)
-            y = y0 + span_y * j / (n - 1)
+    for y in ys:
+        for x in xs:
             pts.append(Gf.Vec3f(x, y, terrain_height(x, y, farm_cfg) - 0.02))
     counts, idx = [], []
-    for j in range(n - 1):
-        for i in range(n - 1):
-            a, b = j * n + i, j * n + i + 1
-            c, d = (j + 1) * n + i + 1, (j + 1) * n + i
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            a, b = j * nx + i, j * nx + i + 1
+            c, d = (j + 1) * nx + i + 1, (j + 1) * nx + i
             counts.append(4)
             idx.extend([a, b, c, d])
+    print(
+        f"  ground: {nx} x {ny} = {len(pts):,} verts, {fine:.1f} m spacing over the "
+        f"site, reaching {reach:,.0f} m",
+        flush=True,
+    )
     mesh = UsdGeom.Mesh.Define(stage, "/World/Ground")
     mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexCountsAttr(counts)
@@ -1124,10 +1199,11 @@ def main(argv: list[str] | None = None) -> int:
         "--subset",
         type=int,
         default=0,
-        help="layout.kind=file only: author just the first N tracker tables as a "
-        "contiguous southern band (0 = all). Use this to prove the pipeline "
-        "before the full block, which is ~2.2M prims. ⚠ pass the SAME --subset "
-        "to solar_twin.run, or the mission will target panels the stage lacks.",
+        help="layout.kind=file only: author just N tracker tables, as a COMPACT "
+        "patch around the site's south-west corner (0 = all). Use this to prove "
+        "the pipeline before the full block, which is ~2.2M prims. ⚠ pass the "
+        "SAME --subset to solar_twin.run, or the mission will target panels the "
+        "stage lacks.",
     )
     args = ap.parse_args(argv)
     if args.scenario:

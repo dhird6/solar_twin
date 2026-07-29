@@ -8,10 +8,14 @@ maths shows up as a wrong *real* site, not a wrong toy.
 import math
 from pathlib import Path
 
+import pytest
+
 from solar_twin.world.layout import FarmLayout, PanelSite
 from solar_twin.world.layout_import import (
+    load_site,
     module_positions,
     parse_site,
+    subset_site,
     to_wgs84,
 )
 
@@ -193,3 +197,72 @@ def test_subset_bounds_are_smaller_and_origin_anchored():
     min_x, min_y, max_x, max_y = sub.bounds()
     assert min_x >= 0.0 and min_y >= 0.0
     assert max_x < 40.0 and max_y < 140.0  # 5 tables ~ one short band
+
+
+# --------------------------------------------------------------------------- #
+# Subset compactness.
+#
+# `subset_site` used to take the N southernmost tables — a full-width BAND, which
+# is only compact on a single DC block. On the 24-block S05b plot `--subset 20`
+# returned tables from several different blocks spread over 1739 x 161 m at **1.8%
+# occupancy**: a bounding box almost entirely made of holes. A camera path sized
+# off that box frames mostly empty desert, which is what "the panels are not
+# rendering" turned out to be. The bbox alone cannot show this — a sparse box and
+# a full one measure the same — so the guard is on OCCUPANCY.
+# --------------------------------------------------------------------------- #
+
+#: Floor on (table area / bounding-box area) for a subset. A fully built field
+#: tops out near 47% because the aisles between tracker rows are real empty
+#: ground, so this is not a packing target — it is a smear detector. Measured
+#: after the fix: 23.7-46.9% across both plots at every subset size; the broken
+#: band scored 1.8%.
+MIN_SUBSET_OCCUPANCY = 0.15
+
+
+def _occupancy(site) -> tuple[float, float, float]:
+    """(bbox width, bbox height, occupied fraction) for a site's tables."""
+    es = [t.easting for t in site.tables]
+    ns = [t.northing for t in site.tables]
+    w = max(es) + max(t.width_m for t in site.tables) - min(es)
+    h = max(ns) + max(t.length_m for t in site.tables) - min(ns)
+    area = sum(t.width_m * t.length_m for t in site.tables)
+    return w, h, area / (w * h)
+
+
+@pytest.mark.parametrize("layout", ["khavda_a10b_block02", "khavda_s05b_digest"])
+@pytest.mark.parametrize("n", [5, 20, 50, 200])
+def test_subset_is_a_compact_patch_not_a_smear(layout, n):
+    """A subset must be a real neighbourhood of farm, on a single block or across
+    two dozen of them."""
+    site_path = Path(__file__).resolve().parents[1] / f"configs/layouts/{layout}.yaml"
+    if not site_path.exists():  # pragma: no cover
+        pytest.skip(f"{layout} not present")
+    site = load_site(str(site_path))
+    if n >= len(site.tables):  # pragma: no cover
+        pytest.skip("subset larger than the site")
+    sub = subset_site(site, n)
+    assert len(sub.tables) == n
+
+    w, h, occ = _occupancy(sub)
+    assert occ >= MIN_SUBSET_OCCUPANCY, (
+        f"{layout} --subset {n} occupies {occ * 100:.1f}% of its {w:.0f} x {h:.0f} m "
+        "bounding box — that is a smear of distant tables, not a patch of farm"
+    )
+    # And it must not be wildly elongated: the camera path is sized from this box,
+    # and a 13.6:1 strip is what made the standoff meaningless.
+    assert max(w, h) / min(w, h) <= 6.0, (
+        f"{layout} --subset {n} footprint is {w:.0f} x {h:.0f} m "
+        f"({max(w, h) / min(w, h):.1f}:1) — too elongated to frame"
+    )
+
+
+def test_subset_is_deterministic():
+    """Same site + same N must give the same tables every time, or a subset render
+    is not reproducible from (config + seed + build)."""
+    site_path = Path(__file__).resolve().parents[1] / "configs/layouts/khavda_s05b_digest.yaml"
+    if not site_path.exists():  # pragma: no cover
+        pytest.skip("S05b layout not present")
+    site = load_site(str(site_path))
+    first = [t.table_id for t in subset_site(site, 20).tables]
+    for _ in range(3):
+        assert [t.table_id for t in subset_site(site, 20).tables] == first

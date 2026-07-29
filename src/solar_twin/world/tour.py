@@ -481,14 +481,23 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
     Camera moves are fractions of the site for the same reason `flythrough.py`'s
     are: this has to frame a 10-panel test row and a 273-table block.
     """
-    from solar_twin.world.flythrough import Key
+    from solar_twin.world.flythrough import Key, footprint_frame
 
     min_x, min_y, max_x, max_y = bounds
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
     span_x = max_x - min_x
     span_y = max_y - min_y
-    high = max(150.0, 0.72 * max(span_x, span_y))
+    # Shots are placed in the footprint's own long/short frame, not in x/y — see
+    # `flythrough.footprint_frame` for the measurement that forced this. `high` is
+    # capped against the SHORT span for the same reason: scaling standoff off the
+    # long axis alone put the camera 1,251 m above a 127 m-wide strip here.
+    place, fwd, span_along, span_across = footprint_frame(bounds)
+    high = max(150.0, min(0.72 * span_along, 2.9 * span_across))
+
+    def key(along, across, z, pitch, dh, focal, secs, label="") -> Key:
+        x, y = place(along, across)
+        return Key(x, y, z, pitch, (fwd + dh) % 360.0, focal, secs, label)
 
     n_panels = facts.get("panels", 0)
     n_tables = facts.get("tables", 0)
@@ -537,9 +546,13 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
                 Item("Second block / full 30 GW site", TODO, "one DC block ingested; the plot has many"),
             ],
             keys=[
-                Key(cx, min_y - span_y * 0.55, high, 56.0, 0.0, 24.0, 0.0, ""),
-                Key(cx, min_y - span_y * 0.30, high * 0.80, 54.0, 0.0, 24.0, 6.0, ""),
-                Key(cx * 0.80, min_y - span_y * 0.18, high * 0.62, 58.0, 12.0, 22.0, 5.0, ""),
+                key(-0.55, 0.0, high, 56.0, 0.0, 24.0, 0.0),
+                key(-0.30, 0.0, high * 0.80, 54.0, 0.0, 24.0, 6.0),
+                # The lateral step is measured from the footprint CENTRE. It was
+                # `cx * 0.80`, which scales a world coordinate: identical to this
+                # for BLOCK-02 (cx 160 -> 128, i.e. -0.10 of the span) and wrong
+                # for any site not straddling the origin.
+                key(-0.18, -0.10, high * 0.62, 58.0, 12.0, 22.0, 5.0),
             ],
         ),
         # 2. Terrain. Shot from low and raking so relief is legible; a nadir view
@@ -575,9 +588,9 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
                 # Pitched DOWN harder than feels natural: at 89 deg most of the
                 # frame was sky and horizon haze, and 2.2 m of relief over 1.4 km
                 # only reads when the rows themselves fill the picture.
-                Key(min_x - span_x * 0.10, min_y + span_y * 0.10, 14.0, 80.0, 22.0, 28.0, 0.0, ""),
-                Key(min_x + span_x * 0.18, min_y + span_y * 0.34, 8.0, 83.0, 20.0, 28.0, 5.0, ""),
-                Key(min_x + span_x * 0.30, min_y + span_y * 0.52, 20.0, 74.0, 8.0, 24.0, 5.0, ""),
+                key(0.10, -0.60, 14.0, 80.0, 22.0, 28.0, 0.0),
+                key(0.34, -0.32, 8.0, 83.0, 20.0, 28.0, 5.0),
+                key(0.52, -0.20, 20.0, 74.0, 8.0, 24.0, 5.0),
             ],
         ),
         # 3. Balance of plant, at road level where the furniture is.
@@ -610,9 +623,9 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
                 Item("Tracker backtracking", TODO, "not modelled, so self-shading is worst-case"),
             ],
             keys=[
-                Key(min_x + span_x * 0.42, cy - span_y * 0.16, 4.0, 84.0, 0.0, 35.0, 0.0, ""),
-                Key(min_x + span_x * 0.46, cy + span_y * 0.02, 3.2, 86.0, 8.0, 35.0, 5.0, ""),
-                Key(min_x + span_x * 0.52, cy + span_y * 0.14, 9.0, 78.0, 20.0, 28.0, 5.0, ""),
+                key(0.34, -0.08, 4.0, 84.0, 0.0, 35.0, 0.0),
+                key(0.52, -0.04, 3.2, 86.0, 8.0, 35.0, 5.0),
+                key(0.64, 0.02, 9.0, 78.0, 20.0, 28.0, 5.0),
             ],
         ),
         # 5. Turbines. Framed from inside the site looking out, because the point

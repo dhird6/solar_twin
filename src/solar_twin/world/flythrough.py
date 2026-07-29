@@ -73,33 +73,99 @@ def interpolate(keys: list[Key], fps: int) -> list[Key]:
     return out
 
 
+def footprint_frame(bounds: tuple[float, float, float, float]):
+    """Resolve a footprint into the frame the choreography is written in:
+    ``(place, forward_heading, span_along, span_across)``.
+
+    `place(along_frac, across_frac) -> (x, y)` maps a shot expressed as fractions
+    of the footprint's own LONG and SHORT axes into world x/y, where `along_frac`
+    runs from 0 at the near end of the long axis to 1 at the far end (and may go
+    outside that to stand off the site), and `across_frac` is signed about the
+    centre of the short axis.
+
+    ⚠ **This exists because the tour used to assume the long axis runs
+    north-south.** Standoff altitude was `0.55 * max(span_x, span_y)` while every
+    travel move stepped along `span_y` and looked north. On a wide-and-shallow
+    footprint those are different axes, so the camera pulled back for the long
+    span and then traversed the short one. Measured on the S05b subset (1738 x 161
+    m, 13.6:1 east-west): the establishing aerial sat **956 m above a 161 m-wide
+    strip** — a 2.278 m module is 1.8 px there — and the road-level shots stood at
+    the south edge looking north, straight out into open desert, with the plant
+    strung out to the east. That is the other half of "the panels are not
+    rendering": from the north-facing shots they genuinely were not in frame, and
+    from the final look-back the only panel faces visible were the trackers'
+    **backs**, which are the pale `frame` material, not glass.
+
+    A footprint whose long axis IS north-south maps through this identically to
+    the old code, so BLOCK-02's tuned choreography is unchanged.
+    """
+    min_x, min_y, max_x, max_y = bounds
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if span_y >= span_x:
+        # Long axis is north-south: forward = north (+Y), across = east (+X).
+        # This branch reproduces the original hand-tuned shots exactly.
+        def place(along_frac: float, across_frac: float) -> tuple[float, float]:
+            return (
+                (min_x + max_x) / 2.0 + span_x * across_frac,
+                min_y + span_y * along_frac,
+            )
+
+        return place, 0.0, span_y, span_x
+
+    # Long axis is east-west: forward = east (+X), across = north (+Y).
+    def place(along_frac: float, across_frac: float) -> tuple[float, float]:
+        return (
+            min_x + span_x * along_frac,
+            (min_y + max_y) / 2.0 + span_y * across_frac,
+        )
+
+    return place, 90.0, span_x, span_y
+
+
 def default_shots(bounds: tuple[float, float, float, float]) -> list[Key]:
     """A three-move tour sized from the stage's own bounds, so it frames a
-    10-panel test row and a 273-table block equally well."""
-    min_x, min_y, max_x, max_y = bounds
-    cx = (min_x + max_x) / 2.0
-    span_y = max_y - min_y
-    span_x = max_x - min_x
-    high = max(120.0, 0.55 * max(span_x, span_y))
+    10-panel test row and a 273-table block equally well.
+
+    Shots are written as fractions of the footprint's OWN long/short axes (see
+    `footprint_frame`) rather than of x/y, so a site that runs east-west is toured
+    along its length instead of across its width.
+    """
+    place, fwd, span_along, span_across = footprint_frame(bounds)
+    # Altitude stays a FRACTION of the site: an absolute climb that frames a 647 m
+    # block would be 150 m over a 22 m test row, looking down at nothing.
+    #
+    # ⚠ Capped against the SHORT span too. Scaling standoff off the long axis
+    # alone is what put the camera 956 m over a 161 m-wide strip; past ~2.2x the
+    # short span the site is a thread across the middle of the frame however long
+    # it is. The cap is inert for a compact footprint (BLOCK-02: 704 m cap vs a
+    # 356 m standoff) and only bites on an elongated one.
+    high = max(120.0, min(0.55 * span_along, 2.2 * span_across))
+
+    def key(along, across, z, pitch, dh, focal, secs, label) -> Key:
+        x, y = place(along, across)
+        return Key(x, y, z, pitch, (fwd + dh) % 360.0, focal, secs, label)
 
     return [
-        # 1. Establishing aerial from the south, whole block in frame.
-        Key(cx, min_y - span_y * 0.50, high, 58.0, 0.0, 24.0, 0.0, "the block"),
-        Key(cx, min_y - span_y * 0.28, high * 0.78, 56.0, 0.0, 24.0, 5.0, "the block"),
-        # 2. Descend and swing onto the site.
-        Key(cx * 0.75, min_y - span_y * 0.12, high * 0.35, 72.0, 14.0, 20.0, 5.0, "descending"),
-        # 3. Onto the internal road, travelling north past the inverters.
-        Key(cx, min_y + span_y * 0.06, 7.0, 88.0, 0.0, 22.0, 4.0, "access road"),
-        Key(cx, min_y + span_y * 0.55, 6.0, 89.0, 0.0, 22.0, 7.0, "access road"),
-        # 4. Rise off the road, then climb out to the north and turn to look back
-        #    south over the whole block. Aiming outward here (an earlier version
+        # 1. Establishing aerial from behind the near end, whole block in frame.
+        key(-0.50, 0.0, high, 58.0, 0.0, 24.0, 0.0, "the block"),
+        key(-0.28, 0.0, high * 0.78, 56.0, 0.0, 24.0, 5.0, "the block"),
+        # 2. Descend and swing onto the site. The lateral step is measured from the
+        #    footprint CENTRE. It used to be `cx * 0.75`, which scales a world
+        #    coordinate — fine for a site straddling the origin (BLOCK-02: cx 160
+        #    -> 120, i.e. -0.125 of the span, reproduced exactly below) and wrong
+        #    for one that does not. On the S05b subset, sitting at x 1123-2861, it
+        #    threw the camera 498 m west of the plant it was descending onto.
+        key(-0.12, -0.125, high * 0.35, 72.0, 14.0, 20.0, 5.0, "descending"),
+        # 3. Onto the internal road, travelling the length of the site past the
+        #    inverters.
+        key(0.06, 0.0, 7.0, 88.0, 0.0, 22.0, 4.0, "access road"),
+        key(0.55, 0.0, 6.0, 89.0, 0.0, 22.0, 7.0, "access road"),
+        # 4. Rise off the road, then climb out past the far end and turn to look
+        #    back over the whole block. Aiming outward here (an earlier version
         #    banked north-west from the western edge) framed empty desert with the
         #    rows in one corner — the last frame should be the plant, not the sand.
-        Key(cx, min_y + span_y * 0.70, 26.0, 80.0, 0.0, 20.0, 5.0, "tracker rows"),
-        # Altitude stays a FRACTION of the site, like every other move here: an
-        # absolute climb that frames a 647 m block would be 150 m over a 22 m
-        # test row, looking down at nothing.
-        Key(cx, min_y + span_y * 1.05, high * 0.42, 60.0, 180.0, 22.0, 6.0, "the block"),
+        key(0.70, 0.0, 26.0, 80.0, 0.0, 20.0, 5.0, "tracker rows"),
+        key(1.05, 0.0, high * 0.42, 60.0, 180.0, 22.0, 6.0, "the block"),
     ]
 
 

@@ -140,6 +140,42 @@ def terrain_height(x: float, y: float, cfg: dict) -> float:
     return amp * 0.5 * (math.sin(k * x) + math.cos(k * y * 0.75))
 
 
+def terrain_feature_step(cfg: dict) -> float:
+    """The finest horizontal detail `terrain_height` actually carries, in metres.
+
+    This is the spacing a ground MESH has to be tessellated at to represent the
+    terrain it is drawing. Sampling coarser than this aliases: the drawn surface
+    then disagrees with the `terrain_height` that panels and waypoints were
+    mounted from, so a panel can clear the terrain function and still be buried by
+    the triangle rendered beneath it.
+
+    ⚠ That is not hypothetical. The ground mesh used to be a fixed 48-160 verts
+    stretched across a horizon-sized sheet — 40 m spacing over a 14 m-wavelength
+    heightfield on the procedural farm (a 3x undersample, measured: panel bottom
+    z=0.254 against a drawn ground of 0.412, i.e. **buried by 158 mm**), and 65 m
+    over Khavda's 20 m DEM posts. `world/farm_builder` now grades its ground mesh
+    off this value.
+
+    A `dem` returns its own post spacing: the mesh interpolates bilinearly between
+    posts and so does `DemTerrain.height`, so vertices AT the posts reproduce the
+    real surface exactly and anything finer buys nothing.
+    """
+    spec = cfg.get("terrain", {}) or {}
+    kind = spec.get("kind", "flat")
+    if kind == "dem":
+        dem = _dem_for(cfg)
+        if dem is None:
+            return 0.0
+        # A graded pad is a plane plus a blended residual; the residual is sampled
+        # from the DEM, so the DEM's step still bounds the detail.
+        return float(dem.step_m)
+    if kind == "heightfield":
+        # Four samples per hump — enough to carry a sine's peak and trough. Two
+        # would alias a hump into a straight line at the wrong height.
+        return float(spec.get("wavelength", 12.0) or 12.0) / 4.0
+    return 0.0  # flat: no detail to lose at any spacing
+
+
 def fault_cells(
     state: PanelState, cell_rows: int, cell_cols: int, rng: random.Random
 ) -> set[tuple[int, int]]:

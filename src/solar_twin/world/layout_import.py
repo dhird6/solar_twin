@@ -140,7 +140,8 @@ def parse_site(cfg: dict) -> SiteSpec:
 
 
 def subset_site(site: SiteSpec, max_tables: int) -> SiteSpec:
-    """Keep only the first `max_tables` tables, as a CONTIGUOUS southern band.
+    """Keep `max_tables` tables as a COMPACT patch around the site's south-west
+    corner.
 
     Rendering all 273 Khavda tables means ~2.2M USD prims, which is impractical
     until the instancing/LOD path exists (`IF-09`). A subset makes the pipeline
@@ -148,17 +149,39 @@ def subset_site(site: SiteSpec, max_tables: int) -> SiteSpec:
 
     Two properties matter and neither is incidental:
 
-    * **Contiguity.** Tables are ordered south-to-north, then west-to-east, so a
-      subset is a real patch of farm a drone can fly down — not a scatter of
-      unrelated tables with impossible gaps.
+    * **Compactness.** A subset must be a real patch of farm a drone can fly
+      down — not a scatter of unrelated tables with impossible gaps.
     * **Coordinate stability.** The `origin` anchor is NOT recomputed, so a panel
       keeps the exact stage coordinates it has in the full build. A subset render
       is therefore a crop of the real site, not a different site — and a mission
       flown against it matches the full-site geometry.
+
+    ⚠ **This used to sort by `(northing, easting)` and take the first N, i.e. a
+    full-width southern BAND, and that only looks compact on a single DC block.**
+    Measured on plot S05b (24 blocks, 4.84 x 1.97 km): `--subset 20` returned the
+    20 southernmost tables of *several different blocks*, spread over **1738 x 161
+    m in clumps with a completely empty centre** — 0.04% of the ground mesh's
+    area. A nadir render from 400 m over the middle of that band contains no
+    panels at all, only inverter pads. That is what "the panels are not
+    rendering" turned out to be: the panels were fine, the patch was a 1.7 km
+    smear. Selecting by distance from an anchor keeps a band on a single block
+    (where the two agree) and gives a real neighbourhood on a multi-block plot.
     """
     if max_tables <= 0 or max_tables >= len(site.tables):
         return site
-    ordered = sorted(site.tables, key=lambda t: (t.northing, t.easting))
+    # Anchor on the southernmost (then westernmost) table so the patch is
+    # reproducible and lands in the same corner the band used to start from.
+    anchor = min(site.tables, key=lambda t: (t.northing, t.easting))
+    # Tie-break on (northing, easting) so equidistant tables order deterministically
+    # — a set of tables on a regular grid has many exact distance ties.
+    ordered = sorted(
+        site.tables,
+        key=lambda t: (
+            (t.easting - anchor.easting) ** 2 + (t.northing - anchor.northing) ** 2,
+            t.northing,
+            t.easting,
+        ),
+    )
     return replace(site, tables=ordered[:max_tables])
 
 
