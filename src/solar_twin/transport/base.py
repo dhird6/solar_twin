@@ -2,7 +2,8 @@
 
 How the orchestrator gets sensor data + panel state and writes verdicts back.
 `sim_native.py` (default) reads render products / the USD stage in-process;
-`ros2_bridge.py` (later, validated Day 1) carries the same data over topics.
+`ros2_bridge.py` carries the same data over topics (built, and smoke-tested
+against real ROS 2 Jazzy; sim-native stays the Slice 0 default).
 Nothing downstream knows which is behind it.
 
 Pure-python: no Isaac import here (golden rule / Do-NOT list). The USD stage is

@@ -11,7 +11,7 @@ BLOCK-02 is ingested from the vendor CAD — 273 tracker tables, 30,016 modules 
 exact survey coordinates (EPSG:32642) — built in Isaac and inspected end-to-end
 (560-panel subset: detection_rate 1.00 on 11/11 seeded faults, 105 s). Panels are
 sun-tracking HSAT; the fleet is real quadcopter + rover geometry with heading,
-rotor spin and rolling wheels. 310 Isaac-free tests.
+rotor spin and rolling wheels. 345 Isaac-free tests.
 
 **KPI-03 (false-fault rate) = 0.00 on 560 healthy panels**, measured against a
 *verified* stimulus: at low sun the HSAT trackers pin at their 60° stop and shade

@@ -1,12 +1,19 @@
 # ROS2_CONTRACT — the sim↔real Transport seam (bible §6.3)
 
-> **Status: draft, written on the normal machine (Track N), not yet
-> implemented.** This defines exactly what `transport/ros2_bridge.py` must
-> satisfy so implementation doesn't have to guess message shapes or QoS. **Do
-> not build `ros2_bridge.py` against this until Track S's WS0 Day-1 camera
-> check has passed** (`docs/ENVIRONMENT.md`) — Slice 0 stays sim-native
-> either way; this seam is validated once ROS 2 is proven, not depended on
-> before then (`plan.md` Workstream E, `CLAUDE.md` golden rule #5).
+> **Status: IMPLEMENTED and smoke-tested against real ROS 2 (2026-07-29).**
+> `transport/ros2_bridge.py` exists and satisfies this contract; `FR-23`'s
+> conformance tests are `tests/test_ros2_bridge.py` (35 tests, and they run with
+> **no ROS 2 installed** — see §9). Verified end-to-end on this box against ROS 2
+> **Jazzy** with `tools/ros2_bridge_smoke.py`: 13/13 legs, real `rclpy`, real
+> `sensor_msgs/Image`, real QoS profiles, real DDS round-trip.
+>
+> ⚠ **Still not proven: Isaac as the publisher.** Both ends of the smoke test are
+> ours, which isolates the bridge from Isaac's camera helper on purpose. Driving
+> it from a playing sim (§6) is the next step up. **Slice 0 remains sim-native**
+> (`CLAUDE.md` golden rule #5) — this seam is now available, not yet the default.
+>
+> The two questions this doc left open (§7 `capture` semantics, §8 `read_panel`)
+> are decided below.
 
 ## 1. Why this exists
 
@@ -94,13 +101,36 @@ this is a Track S concern in `world/sim_runtime.py`, noted here because a
 
 Same `Transport` interface as `sim_native.py` (`transport/base.py`):
 
-| `Transport` method | ROS 2 realization |
-|---|---|
-| `capture(robot_id)` | subscribe `/<robot_id>/camera/image_raw`, return the latest frame (block or return last-seen — decide once building; document the choice here) |
-| `pose(robot_id)` | subscribe `/<robot_id>/pose`, return the latest `Pose` |
-| `read_panel(panel_id)` | ⚠ open question — see §8 |
-| `write_panel(...)` | publish a `FaultReport` (§3) on `/mission/fault`; USD write-back still happens on the sim side (bible §2.3, USD stays the source of truth) |
-| `step(dt)` | no-op or a `/clock`-driven wait — the sim process owns real time here, unlike sim-native's single-process step |
+| `Transport` method | ROS 2 realization | Status |
+|---|---|---|
+| `capture(robot_id)` | subscribe `/<robot_id>/camera/image_raw`; **block for a *fresh* frame, raise `FrameTimeout` on timeout** — decided, see below | ✅ |
+| `pose(robot_id)` | subscribe `/<robot_id>/pose`, return the latest `Pose`; **last-seen is fine here** | ✅ |
+| `read_panel(panel_id)` | **direct `PanelStore`, not a topic** (§8 option 2 — decided) | ✅ |
+| `write_panel(...)` | publish a `FaultReport` (§3) on `/mission/fault` **and** write through to the store, so USD stays the source of truth (bible §2.3) | ✅ |
+| `step(dt)` | spin callbacks once; advances **nothing** — the sim process owns real time here, unlike sim-native's single-process step | ✅ |
+
+### `capture` is fresh-or-fail, not last-seen (decision)
+
+Returning the last-seen frame would silently attribute one panel's pixels to the
+next panel's verdict, and this project measures its headline KPIs off exactly
+those pixels — a mis-attributed diagnosis is invisible in the numbers, whereas a
+hang is debuggable. So `capture` returns only a frame it has not already served
+(tracked by an internal receipt counter, not header stamps — Isaac's camera helper
+does not guarantee those are monotonic across a Stop/Play), waits up to
+`capture_timeout_s`, and then raises `FrameTimeout`. The error message names the
+two usual causes (§5 QoS and §6 Play) because a bridge that "sees nothing" is
+almost always one of them rather than a bug in the bridge.
+
+`pose` is deliberately the opposite: a pose is a continuously-changing quantity,
+so a slightly old one approximates the same thing, while a stale *frame* is a
+different panel entirely.
+
+### Subscribe eagerly
+
+Pass the fleet's robot ids to `Ros2Transport(..., robot_ids=(...))`. Subscriptions
+are otherwise created on first `capture`/`pose`, which races the publishers coming
+up and can time out on frames already in flight. Eager subscription lets the
+subscriptions exist **before Play** (§6), which is when publishing starts.
 
 ## 8. Open question (flag before implementing)
 
@@ -116,3 +146,47 @@ building `ros2_bridge.py`:
 Default recommendation (Track N, non-binding): **option 2** — it's simpler and
 doesn't invent a new topic for something that isn't really sensor/actuator
 data. Record the actual decision here once made.
+
+### Decision (2026-07-29): option 2, via a named `PanelStore` protocol
+
+`read_panel` reads a `PanelStore` directly. Panel state is a **query**, not sensor
+or actuator data, and a request-reply topic would have added a wire format with no
+second implementation to justify it. `write_panel` is deliberately asymmetric: the
+verdict is an **event**, which is what a topic is for, so it publishes on
+`/mission/fault` *and* writes through to the store. Publishing only would let the
+twin's own source of truth drift from what it told the rest of the fleet.
+
+The store is a `typing.Protocol` (`ros2_bridge.PanelStore`: `read_panel` +
+`write_panel`), so it is structural — `SimNativeTransport` already satisfies it
+without inheriting anything, and on real hardware it would be backed by whatever
+owns panel state there (a service, a database, SCADA). The bridge does not care
+which, which is the point of naming it rather than hard-coding the sim.
+
+## 9. Why the conformance tests need no ROS 2
+
+`tests/test_ros2_bridge.py` runs on a machine with **no ROS 2 installed**, which is
+most machines and all of CI. Two things make that possible, and both are
+deliberate design constraints on `ros2_bridge.py`:
+
+1. **Every `rclpy`/`sensor_msgs` import is inside the function that needs it.**
+   Importing the module must never require ROS 2 — otherwise the Isaac-free suite
+   breaks and the transport could not be offered as a config flip.
+2. **`Ros2Transport` accepts an injected `node`.** All message-shape logic lives in
+   module-level pure functions taking duck-typed objects, so a node-shaped double
+   drives the whole class. A node double also supplies its own `spin_once`, since
+   pumping is the node's concern.
+
+That covers the details which are easy to get silently wrong — QoS selection, the
+`Image` row stride (`step` may exceed `width*channels`; ignoring it shears the
+image diagonally into something that still looks like a plausible photo),
+quaternion→yaw, and the fault payload. `tools/ros2_bridge_smoke.py` covers the
+wiring those tests cannot: real DDS, real QoS profiles, real message types.
+
+⚠ Two traps found while proving it, worth not rediscovering:
+- `PYTHONPATH=src python3 ...` after sourcing ROS 2 **replaces** the `PYTHONPATH`
+  that `setup.bash` just populated, so `rclpy` vanishes. Use
+  `PYTHONPATH="src:$PYTHONPATH"`.
+- `rclpy` coerces `Image.data` to `array.array('B')` on assignment, so
+  `msg.data == original_bytes` is False by *type* even when the content matches.
+  `frame_from_image_msg` calls `bytes(msg.data)` rather than assuming numpy gets a
+  buffer it likes.

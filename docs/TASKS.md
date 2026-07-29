@@ -14,7 +14,7 @@ is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c
 
 **State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
 and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **310 Isaac-free
+so there is ONE trunk again rather than divergent worktrees. **345 Isaac-free
 tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
 `tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
 time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
@@ -143,9 +143,23 @@ with N and a gate from here on, not from a single run.
    anything not in the drawing must be tagged `INFERRED` like the rest. The
    **graded civil surface** belongs here too: GLO-30 is a pre-grading DSM, so the
    twin's ground is the desert's shape, not the engineered pad's.
-4. **`transport/ros2_bridge.py`** — does not exist. camera→ROS 2 is proven on this
-   box (Session 2), the contract is written (`docs/ROS2_CONTRACT.md`), the file
-   is not.
+4. ~~**`transport/ros2_bridge.py`** — does not exist.~~ ✅ **built 2026-07-29
+   (`FR-23`, ROS 2 half).** Full `Transport` ABC over the §2 topic table, **35
+   conformance tests that run with no ROS 2 installed**, and **13/13 legs green
+   against real ROS 2 Jazzy** (`tools/ros2_bridge_smoke.py`: real `rclpy`, real
+   `sensor_msgs/Image`, real QoS, real DDS round-trip). Both open contract
+   questions are now decided and recorded: `capture` is **fresh-or-fail** (a
+   last-seen frame would attribute one panel's pixels to another panel's verdict,
+   and the KPIs are measured off those pixels), and `read_panel` uses a
+   `PanelStore` protocol rather than inventing a request-reply topic (§8 option 2),
+   while `write_panel` publishes the event *and* writes through so USD stays
+   authoritative.
+   ⚠ **Left to do:** Isaac has never been the publisher — both ends of the smoke
+   test are ours, deliberately, to isolate the bridge from Isaac's camera helper.
+   Driving it from a playing sim (§6) and adding a `--backend ros2` flip to
+   `run.py` (it needs a `PanelStore`, which in the twin is the Isaac-side
+   transport) are the next steps. **VDA5050 / Mission Dispatch is untouched** —
+   that is the other half of `FR-23`, so it stays Partial, not Locked.
 
 **⚠ The renderer is stochastic — do not design around bit-equality.** Measured
 (`tools/probe_render_determinism.py`): 4 captures from a camera that never moved

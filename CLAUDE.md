@@ -27,7 +27,7 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 - `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel
   contract) + `FaultReport` (the run-record/ROS 2 payload, §6.3)
 - `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound, built)
-- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, built), `ros2_bridge.py` (not yet built, see `docs/ROS2_CONTRACT.md`)
+- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, built), `ros2_bridge.py` (built + smoke-tested on real ROS 2 Jazzy; imports without `rclpy`, so it stays Isaac-free-testable — see `docs/ROS2_CONTRACT.md`)
 - `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub, Slice 0
   default), `cosmos_reason.py` (Cosmos Reason VLM skeleton, HTTP behind a fake-able client — wired into `run.py`, needs a NIM)
 - `src/solar_twin/control/` — `base.py`, `kinematic_math.py` (pure interp
