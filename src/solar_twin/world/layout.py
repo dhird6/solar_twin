@@ -65,6 +65,46 @@ def _dem_for(cfg: dict):
     return _DEM_CACHE[key]
 
 
+def _pad_for(cfg: dict, dem):
+    """The `GradedPad` for this config, or None when grading is off.
+
+    Cached like the DEM: fitting samples the terrain on a grid, and
+    `terrain_height` is called per module, per waypoint and per ground-mesh
+    vertex — refitting there would be a quadratic cost in the hot path.
+
+    ⚠ The footprint comes from `terrain.pad_bounds` when given, else the DEM
+    patch's own extent. It deliberately does NOT come from the panel positions:
+    those are derived from terrain, so asking terrain to depend on them is
+    circular — the same trap `_dem_for` calls out for the datum.
+    """
+    spec = cfg.get("terrain", {}) or {}
+    if not spec.get("graded"):
+        return None
+    b = spec.get("pad_bounds")
+    if b:
+        min_x, max_x, min_y, max_y = (float(v) for v in b)
+    else:
+        # The baked patch is the site plus a margin; shrink it so the pad covers
+        # the hardware rather than the margin, and the blend has somewhere to go.
+        span_x = (dem.grid.shape[1] - 1) * dem.step_m
+        span_y = (dem.grid.shape[0] - 1) * dem.step_m
+        off_e = dem.origin_e - dem.site_origin_e
+        off_n = dem.origin_n - dem.site_origin_n
+        margin = float(spec.get("pad_margin_m", 60.0))
+        min_x, max_x = off_e + margin, off_e + span_x - margin
+        min_y, max_y = off_n + margin, off_n + span_y - margin
+    key = ("pad", id(dem), min_x, max_x, min_y, max_y,
+           spec.get("pad_tolerance_m"), spec.get("pad_blend_m"))
+    if key not in _DEM_CACHE:
+        from solar_twin.world.grading import fit_pad
+
+        pad = fit_pad(dem, min_x, max_x, min_y, max_y,
+                      blend_m=float(spec.get("pad_blend_m", 40.0)))
+        pad.tolerance_m = float(spec.get("pad_tolerance_m", 0.025))
+        _DEM_CACHE[key] = pad
+    return _DEM_CACHE[key]
+
+
 def terrain_height(x: float, y: float, cfg: dict) -> float:
     """Ground elevation (meters) at stage-local (x, y). Pure + deterministic so
     the farm builder (mesh), the panel mounts, and the drone waypoints all agree
@@ -77,12 +117,21 @@ def terrain_height(x: float, y: float, cfg: dict) -> float:
     - `dem` samples a real Copernicus GLO-30 patch baked by `tools/dem_fetch.py`
       (see `world/dem.py`). Heights are relative to a datum so the plant still
       straddles z=0 rather than sitting at its true 4 m above sea level.
+
+    On top of `dem`, `terrain.graded: true` returns the **engineered civil pad**
+    (`world/grading.py`) instead of raw satellite ground. GLO-30 is a pre-grading
+    DSM, and building on it makes the worst Khavda row need 0.53 m of pile-height
+    variation — a real plant graded that away. Off by default so every previously
+    recorded number stays reproducible.
     """
     spec = cfg.get("terrain", {}) or {}
     kind = spec.get("kind", "flat")
     if kind == "dem":
         dem = _dem_for(cfg)
-        return dem.height(x, y) if dem else 0.0
+        if dem is None:
+            return 0.0
+        pad = _pad_for(cfg, dem)
+        return pad.height(x, y) if pad is not None else dem.height(x, y)
     if kind != "heightfield":
         return 0.0
     amp = float(spec.get("amplitude", 0.0))

@@ -51,6 +51,16 @@ terrain:
   kind: dem
   path: assets/dem/khavda_block02.yaml
   datum: hardware_mean
+  # The engineered civil pad (`world/grading.py`). GLO-30 is a PRE-GRADING DSM:
+  # on raw satellite ground the worst tracker row needs 0.532 m of pile-height
+  # variation, which a real plant graded away (measured: 0.013 m with the pad).
+  # ⚠ INFERRED — we hold the DC hardware drawing, not the civil grading plan.
+  # Off by default so every previously recorded KPI stays reproducible; turn it
+  # on per scenario. `pad_tolerance_m` is the as-built spec: 0.0 would claim a
+  # mathematically perfect surface needing zero pile adjustment (`NFR-07`).
+  graded: false
+  pad_tolerance_m: 0.025
+  pad_blend_m: 40.0
 
 # Georef is carried by the site file's `crs` (EPSG:32642) and converted with
 # pyproj, so these are a fallback only, used if pyproj is unavailable.
