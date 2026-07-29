@@ -216,7 +216,22 @@ def render(
 
     from solar_twin.world.recorder import Caption, RunRecorder
 
-    rec = RunRecorder(fps=fps, max_frames=len(frames) + 8)
+    # STREAM to the encoder instead of buffering. A 769-frame 720p tour is ~2.1 GB
+    # of held frames, on a box already carrying a 56k-prim stage (and often a vLLM
+    # server) in the same unified memory — `recorder.py`'s own docstring says a few
+    # thousand buffered frames is not fine, and `plant_tour.py` already streams for
+    # exactly this reason. Measured: buffered, this run captured **0 of 769 frames**
+    # and still reported success; the same stage streams fine.
+    rec = RunRecorder(fps=fps, stream_path=out_path)
+
+    # RTX needs a few frames to build its pipeline, during which the orchestrator
+    # reports "renderer failed to advance to the scheduled frame" and the capture
+    # comes back None. Absorb that up front rather than losing real frames to it.
+    for _ in range(8):
+        rt.step(1)
+        rt.capture_overview()
+
+    misses = 0
     for i, k in enumerate(frames):
         api.SetTranslate(Gf.Vec3d(float(k.x), float(k.y), float(k.z)))
         api.SetRotate(
@@ -227,6 +242,11 @@ def render(
         rt.step(1)
         fr = rt.capture_overview()
         if fr is None:
+            # A dropped frame used to be skipped in silence, so a render that
+            # captured NOTHING still printed a cheerful "wrote flythrough" line and
+            # left the previous video in place — 15 minutes spent on an mp4 that was
+            # never rewritten. Count them, and say so.
+            misses += 1
             continue
         rec.caption = Caption(panel_id=k.label, subtitle=caption or "")
         rec.add(fr)
@@ -234,7 +254,20 @@ def render(
             print(f"    frame {i}/{len(frames)}", flush=True)
 
     path = rec.write(out_path)
-    print(f"wrote flythrough ({len(rec.frames)} frames): {path}", flush=True)
+    n = len(rec)
+    if misses:
+        print(
+            f"  [warn] renderer returned no frame {misses}/{len(frames)} times "
+            f"({100 * misses / len(frames):.0f}%)",
+            flush=True,
+        )
+    if not n:
+        raise RuntimeError(
+            f"captured 0 of {len(frames)} frames — nothing was written and "
+            f"{out_path} is unchanged. The renderer never advanced; check GPU "
+            "memory pressure and other processes holding the device."
+        )
+    print(f"wrote flythrough ({n} frames): {path}", flush=True)
     rt.close()
     return path or ""
 

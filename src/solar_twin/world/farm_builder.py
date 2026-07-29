@@ -90,6 +90,12 @@ _DUST_RGB = (0.26, 0.21, 0.14)
 #: Density above which a sub-tile carries dust at all.
 _DUST_THRESHOLD = 0.5
 
+#: `power=*` values that are ground AREAS, not conductors — drawn as outlines.
+#: OSM around Khavda maps two real substations (`PSS 3`, `KPS 2`) and a generator
+#: area alongside the plant boundaries, and treating every non-`line` power way as
+#: a line authored them as 14 m overhead cables complete with towers.
+_OSM_POWER_AREAS = frozenset({"plant", "substation", "generator", "generator_area"})
+
 # Rotor keep-out margin (m) — MUST match keepout.build_keepouts' rotor_margin so
 # the translucent no-fly sphere we author here shows the SAME volume the planner
 # enforces (world/keepout.py). Keep the two in sync.
@@ -822,14 +828,20 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
 
     for i, way in enumerate(feats.power):
         pts = resample(way.points, drape_m)
-        if way.kind == "plant":
-            # A mapped plant boundary is context, not hardware, and filling it
-            # would paint over the ground we actually build on. Drawn as a
-            # ground-following BasisCurve outline instead, and made guide-purpose:
-            # this is an annotation, so it must never occlude or shadow a sensor
-            # frame (the exact bug the keep-out spheres caused — see
-            # `tests/test_farm_builder_usd.py`).
-            curve = UsdGeom.BasisCurves.Define(stage, f"/World/OSM/Boundaries/plant_{i:02d}")
+        if way.kind in _OSM_POWER_AREAS:
+            # A mapped plant/substation boundary is an AREA on the ground, not a
+            # conductor. Treating anything non-`line` as a line is a bug this
+            # already had: OSM here maps two real substations (`PSS 3`, `KPS 2`)
+            # and a generator area, and they were being authored as 14 m overhead
+            # cables complete with towers.
+            #
+            # Filling the area would paint over the ground we actually build on, so
+            # it is a ground-following outline, and guide-purpose: an annotation
+            # must never occlude or shadow a sensor frame (the exact bug the
+            # keep-out spheres caused — see `tests/test_farm_builder_usd.py`).
+            curve = UsdGeom.BasisCurves.Define(
+                stage, f"/World/OSM/Boundaries/{way.kind}_{i:02d}"
+            )
             curve.CreatePointsAttr([Gf.Vec3f(x, y, ground(x, y) + 0.10) for x, y in pts])
             curve.CreateCurveVertexCountsAttr([len(pts)])
             curve.CreateTypeAttr(UsdGeom.Tokens.linear)
@@ -838,6 +850,13 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
             curve.CreatePurposeAttr(UsdGeom.Tokens.guide)
             _tag(curve.GetPrim(), way, name=way.name, operator=way.operator)
             tally["boundaries"] = tally.get("boundaries", 0) + 1
+            continue
+        if way.kind != "line":
+            # Some other `power=*` value (pole, portal, ...). Skipping is the honest
+            # choice: authoring it as a guessed shape would put invented hardware on
+            # the stage under a `mapped` provenance tag, which is the one thing this
+            # layer must never do.
+            tally["skipped"] = tally.get("skipped", 0) + 1
             continue
 
         # A transmission line: the conductor at its voltage-class height. Real
