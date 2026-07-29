@@ -28,6 +28,11 @@ text-only prompt rather than crashing the mission, and all heavy imports
 them nor Isaac. Slice 0 tests exercise both paths (`frame=None` → text-only;
 a small ndarray → image part).
 
+Decoding is pinned for reproducibility (`DEFAULT_SAMPLING`) and reported through
+`provenance()` so every KPI in a run record names the decoding config that
+produced it. Measured on this box: serial requests are byte-repeatable, batched
+ones are not — read that note before quoting a number as a constant.
+
 Pure-python: no Isaac import.
 """
 
@@ -53,6 +58,32 @@ DEFAULT_BASE_URL = "http://localhost:8000"  # ⚠ real Cosmos Reason NIM endpoin
 DEFAULT_MODEL = "nvidia/cosmos-reason1-7b"  # ⚠ verify served-model-name on the NIM
 DEFAULT_TIMEOUT_S = 30.0
 
+#: Sampling parameters, chosen for REPRODUCIBILITY rather than variety, and
+#: **measured on this box** (2026-07-28, vLLM serving `nvidia/cosmos-reason1-7b`)
+#: rather than assumed:
+#:
+#: * `temperature: 0.0` alone was already repeatable **when requests are issued
+#:   serially** — 15/15 byte-identical responses to one real camera frame. vLLM
+#:   clamps 0.0 to 0.01 and logs the substitution, so the temperature field is
+#:   not what makes it repeatable; greedy selection is.
+#: * `top_k: 1` makes that argmax choice explicit (and `top_p: 1.0` a no-op), so
+#:   a future server default cannot quietly reintroduce sampling. Both fields are
+#:   accepted by this vLLM build; `top_k` is a vLLM extension to the OpenAI body.
+#: * `seed` pins the per-request RNG. It is *not* sufficient on its own: with 4
+#:   identical requests in flight CONCURRENTLY, the same frame returned 2×
+#:   `soiled` and 2× `healthy`. Continuous batching changes the arithmetic, and
+#:   no request-level parameter fixes that.
+#:
+#: So: the mission's serial screen→confirm loop is reproducible; a parallelised
+#: fleet would not be. Do not quote a KPI from a batched run as a constant —
+#: use `--repeat` and report the spread (`kpi/variance.py`).
+DEFAULT_SAMPLING: dict[str, Any] = {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 1,
+    "seed": 0,
+}
+
 #: A screen verdict is fail-safe: an unparseable/uncertain response escalates
 #: (status="suspect") rather than silently waving the panel through.
 _FAILSAFE_STATUS = "suspect"
@@ -63,8 +94,18 @@ class ChatClient(Protocol):
     """What CosmosReasonPerception needs from an OpenAI-compatible client.
     Swap in a fake for tests; `_HttpChatClient` is the real Spark-only impl."""
 
-    def complete(self, *, model: str, messages: list[dict], timeout: float) -> str:
-        """Return the assistant's raw text response for one chat completion."""
+    def complete(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        timeout: float,
+        sampling: dict[str, Any] | None = None,
+    ) -> str:
+        """Return the assistant's raw text response for one chat completion.
+
+        `sampling` is merged into the request body verbatim (temperature, seed,
+        top_k, ...) so the caller — not this client — owns reproducibility."""
         ...
 
 
@@ -76,11 +117,25 @@ class _HttpChatClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL):
         self.base_url = base_url.rstrip("/")
 
-    def complete(self, *, model: str, messages: list[dict], timeout: float) -> str:
+    def complete(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        timeout: float,
+        sampling: dict[str, Any] | None = None,
+    ) -> str:
         import urllib.request  # noqa: PLC0415 — lazy: no network on import
 
+        # Sampling comes from the caller (DEFAULT_SAMPLING unless mission.yaml
+        # overrides it) and is stamped into the run record, so a number can
+        # always be traced back to the decoding config that produced it.
         payload = json.dumps(
-            {"model": model, "messages": messages, "temperature": 0.0}
+            {
+                "model": model,
+                "messages": messages,
+                **(DEFAULT_SAMPLING if sampling is None else sampling),
+            }
         ).encode()
         req = urllib.request.Request(
             f"{self.base_url}/v1/chat/completions",
@@ -134,19 +189,68 @@ def _frame_to_data_url(frame: Frame) -> str | None:
 
 
 def _parse_json_response(raw: str) -> dict[str, Any]:
-    """VLMs often wrap JSON in prose or a code fence; extract the first
-    ``{...}`` block. Falls back to ``{}`` (callers apply fail-safe defaults)
-    rather than raising — a flaky VLM response must not crash the mission."""
+    """Extract the JSON object from a VLM response, tolerating how models
+    actually write it. Falls back to ``{}`` (callers apply fail-safe defaults)
+    rather than raising — a flaky VLM response must not crash the mission.
+
+    Handled, in order: clean JSON; JSON wrapped in prose or a ``` fence; and an
+    object whose **closing brace is missing entirely**.
+
+    That last case is not hypothetical. Measured 2026-07-29
+    (`runs/20260729T112424`, `R258-C004`): the model returned
+
+        ```json
+        {"fault_type": "healthy", "confidence": 1.0, "note": "...good condition
+        without any immediate issues."
+        ```
+
+    — fence closed, brace never closed. The old parser found no ``}``, returned
+    ``{}``, the fail-safe mapped it to ``unknown``, and because ``unknown !=
+    healthy`` that scored as a **false fault**: one missing character moved
+    KPI-03 from 0.00 to 0.053 on a 19-healthy-panel denominator. A parse failure
+    must not be able to manufacture a fault verdict, so a truncated-looking
+    object is repaired by closing it rather than discarded.
+    """
+    if not isinstance(raw, str):
+        return {}
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         pass
-    start, end = raw.find("{"), raw.rfind("}")
-    if start != -1 and end > start:
+
+    # Strip a code fence if present, so the brace scan below sees only content.
+    text = raw.strip()
+    if "```" in text:
+        parts = text.split("```")
+        # Prefer the longest fenced section that contains an object.
+        candidates = [p for p in parts[1::2] if "{" in p] or parts
+        text = max(candidates, key=len)
+        if text.lstrip().lower().startswith("json"):
+            text = text.lstrip()[4:]
+
+    start = text.find("{")
+    if start == -1:
+        return {}
+    end = text.rfind("}")
+    if end > start:
         try:
-            return json.loads(raw[start : end + 1])
+            return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
             pass
+
+    # No usable closing brace: repair rather than throw the answer away. Trim any
+    # trailing partial token, close an unterminated string, then balance braces.
+    body = text[start:].rstrip().rstrip(",")
+    for attempt in (body, body + '"', body):
+        if attempt.count('"') % 2:
+            continue  # unbalanced quotes; the next attempt closes the string
+        missing = attempt.count("{") - attempt.count("}")
+        if missing <= 0:
+            continue
+        try:
+            return json.loads(attempt + "}" * missing)
+        except json.JSONDecodeError:
+            continue
     return {}
 
 
@@ -220,10 +324,30 @@ class CosmosReasonPerception(Perception):
     model: str = DEFAULT_MODEL
     timeout: float = DEFAULT_TIMEOUT_S
     client: ChatClient = field(default=None)  # type: ignore[assignment]
+    #: Decoding config. Overrides merge ONTO `DEFAULT_SAMPLING` rather than
+    #: replacing it, so a config that sets one knob cannot silently drop the
+    #: greedy-decoding guarantee the other three provide.
+    sampling: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.client is None:
             self.client = _HttpChatClient(self.base_url)
+        self.sampling = {**DEFAULT_SAMPLING, **(self.sampling or {})}
+
+    def provenance(self) -> dict[str, Any]:
+        """What produced a verdict, for the run record: endpoint, served model
+        and the exact decoding config. Deliberately not the frame — that is
+        per-panel (`PanelResult.screen_frame_sha`)."""
+        return {
+            "kind": "cosmos_reason",
+            "base_url": self.base_url,
+            "model": self.model,
+            "timeout_s": self.timeout,
+            "sampling": dict(self.sampling),
+            # Honesty, not decoration: serial requests were measured repeatable
+            # on this build, concurrent ones were not (see DEFAULT_SAMPLING).
+            "determinism": "serial-only; continuous batching is not reproducible",
+        }
 
     def _messages(self, prompt: str, frame: Frame) -> list[dict]:
         data_url = _frame_to_data_url(frame)
@@ -246,6 +370,7 @@ class CosmosReasonPerception(Perception):
                 model=self.model,
                 messages=self._messages(prompt, frame),
                 timeout=self.timeout,
+                sampling=dict(self.sampling),
             )
         except Exception:
             return "{}"  # fail safe below applies fail-safe defaults to `{}`
