@@ -7,10 +7,10 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 12)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 12b)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-12.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-12b.
 
 **State:** ✅ **`main` IS the trunk again — PR #9 merged 2026-07-29 as `71625a8`.**
 That was the largest outstanding structural item for four sessions ("no PR to
@@ -165,26 +165,24 @@ with N and a gate from here on, not from a single run.
    ⚠ The headline stays conservative on purpose — an abstention still counts
    against `KPI-03`, so the metric can never flatter the system. And a `KPI-03` of
    0.00 on a run with **no healthy panels** is vacuous; check `KPI-03b`.
-2. **Finish `FR-06`: make it HOVER (`RISK-28`).** ✅ The Isaac-6 port is **done and
-   verified** — `bash tools/install_pegasus_isaac6.sh` (pinned v5.1.0 clone + one
-   patch) makes `Vehicle`/`Multirotor`/`PX4MavlinkBackend` import on 6.0.1, and the
-   shim's reads tracked a falling Iris exactly. PX4 SITL itself was already proven
-   on aarch64 (`tools/px4_sitl_smoke.py`). **Nothing has flown yet.** Do it in this
-   order, because it fails loudest that way:
-   (a) pin the callback-ordering condition — Pegasus registers 4 physics callbacks
-   and the vehicle state froze at spawn in one bootstrap while advancing in another
-   run of the same script; construct the vehicle *after* `world.reset()`/`play()`
-   and compare, since prim views only bind once the physics view exists;
-   (b) attach `PX4MavlinkBackend` to `tools/px4_sitl_smoke.py --keep` and watch PX4
-   leave `Waiting for simulator` — that single log line also settles `RISK-26`'s
-   protocol drift (backend written for v1.14.3, container ships ~v1.18-beta);
-   (c) arm, hover, judge against `KPI-05`.
-   ⚠ **Do not wrap this in `RobotControl` until a hover holds** — an unstable
-   `control/px4.py` behind the ABC would present as an orchestration bug.
-   ⚠ **The trap that cost Session 12:** a prim view built before PhysX has a
-   simulation view silently returns the **static USD pose forever** (measured:
-   Pegasus read z=4.9998 while the body was at z=3.80). No exception. And without
-   `world.play()` there is no physics view at all.
+2. **`FR-06` FLIES ✅ — wrap it behind `RobotControl` next.** PX4 SITL governs a
+   Pegasus Iris in Isaac 6.0.1 and holds a hover: **2.562 m within 43 mm over 35 s**,
+   worst |vz| 0.023 m/s (`tools/px4_hover.py`; start PX4 first with
+   `python3 tools/px4_sitl_smoke.py`). `RISK-26` resolved — the v1.14.3-era MAVLink
+   backend interoperates with ~v1.18-beta PX4 unchanged. Remaining:
+   (a) implement `control/px4.py` behind the existing `RobotControl` ABC — deferred
+   until now on purpose, because an unproven controller behind the ABC makes every
+   failure look like an orchestration bug; `FR-07` keeps `kinematic.py` as fallback;
+   (b) re-measure `KPI-05` under a real wind field (`FR-12`, blocked on `RISK-27`) —
+   the 43 mm figure is a **calm-air baseline**, not the KPI.
+   ⚠ **Operational facts that will waste an hour if forgotten:** PX4 SITL never
+   recovers from a simulator disconnect (restart the container per flight); PX4 is
+   the TCP *client* so the simulator must bind 4560 — publishing the port makes
+   docker-proxy steal it and Pegasus dies with `EADDRINUSE`; and Pegasus's own
+   physics callbacks do not reliably fire on 6.0.1, so its four update methods are
+   driven explicitly from our loop (`RISK-28` residual — the freeze is SILENT).
+   ⚠ **Compute `KPI-05` from Isaac ground truth, never PX4's estimate** — they
+   differ by ~0.23 m and the autopilot is what is under test (`RISK-29`).
 3. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
    anything not in the drawing must be tagged `INFERRED` like the rest. The

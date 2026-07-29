@@ -17,6 +17,70 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 12b: ⭐ IT FLIES — PX4 governs an Iris in Isaac 6.0.1, hovering 2.562 m ± 43 mm
+
+`FR-06` is achieved end to end. PX4 SITL owns the attitude/position loops, Isaac
+owns the physics, they meet over MAVLink HIL, and the drone **arms, takes off and
+holds a hover**:
+
+| | value |
+|---|---|
+| hover altitude | **2.562 m** |
+| altitude held within | **43 mm over 35 s** (8 samples) |
+| worst \|vz\| while settled | **0.023 m/s** |
+| roll / pitch | settle to ±0.5 deg |
+| rotor speed | steady −955 rpm |
+| reproducible | `tools/px4_sitl_smoke.py` then `PYTHONPATH=src $ISAAC tools/px4_hover.py` |
+
+Both sides agree it is airborne: PX4's own EKF (`vehicle_local_position`, fresh to
+one 4 ms physics step) and Isaac's ground-truth prim read.
+
+**Three real bugs stood between the port and the hover, and each was mine to find:**
+
+1. **`OSError: [Errno 98] Address already in use`, and it exposed a false PASS I had
+   shipped.** Pegasus uses `mavtcpin` — the *simulator* listens on 4560 and PX4
+   dials out to it. My earlier smoke test ran the container with `-p 4560:4560`, so
+   **docker-proxy** held the port: the "TCP 4560 reachable" check I reported last
+   session was connecting to the proxy, **not to PX4**, and it then blocked the real
+   simulator from binding. Fixed both ways — the container now runs `--network host`,
+   and the smoke test asserts the port is **free** (PX4 dials out) instead of
+   connecting to it and calling that proof.
+2. **PX4 SITL never recovers from a simulator disconnect.** Once Isaac exits, PX4
+   spins on `poll timeout` forever and every later run looks broken for the wrong
+   reason. The container must be restarted per flight; both tools now say so.
+3. **The state freeze from Session 12 was Pegasus's own callback dispatch.** Its
+   `Vehicle` registers four physics callbacks; on 6.0.1 they do not reliably fire,
+   so `update_state` ran once and the vehicle froze at its spawn pose while the body
+   fell. Driving those four methods explicitly from the loop we own — same methods,
+   same order — fixed it instantly. Not the port's fault: each method is correct
+   when invoked, and a plain `World.add_physics_callback` fires 22/20 steps in the
+   same session.
+
+**⚠ I also mis-reported my own metric once, and it is worth recording.** The first
+verdict printed a **1180 mm** altitude spread. That was not hover quality — the
+window included a mid-climb sample at 1.818 m. Measuring only the *settled* window
+(takeoff + 12 s, and \|vz\| < 0.05) gives **43 mm**. A 27x error, purely from
+choosing the window loosely, on exactly the kind of number that ends up in a
+slide.
+
+**Two findings logged rather than smoothed over:**
+- **`RISK-26` RESOLVED — the protocol did not drift.** Pegasus's v1.14.3-era MAVLink
+  backend interoperates with the container's ~v1.18-beta PX4 with no change and no
+  version pin. That was the risk I rated most likely to bite.
+- **`RISK-29` NEW — PX4's EKF altitude and ground truth disagree by ~0.23 m** in the
+  hover. Benign for a first flight, but `KPI-05` is an *error* metric, so it must be
+  computed from Isaac ground truth (`Transport.pose()`), never from the autopilot's
+  estimate — the autopilot is the thing under test.
+- **`RISK-28` residual:** *why* Pegasus's registrations do not fire is still
+  unexplained. The drive-loop is a workaround, not a diagnosis, and the failure is
+  silent — a frozen drone, not an error — so anyone reusing Pegasus outside
+  `tools/px4_hover.py` can hit it again.
+
+**Not done:** the hover is not yet behind the `RobotControl` ABC. That was deliberate
+— wrapping an unproven controller would have made every failure look like an
+orchestration bug. It is now proven, so the wrap is the next step, along with
+re-measuring `KPI-05` under a real wind field (`FR-12`, blocked on `RISK-27`).
+
 ## 2026-07-29 — Session 12: Pegasus ported to Isaac 6.0.1 — the shim works; the hover is the next session
 
 Picked `FR-06` off the front of the backlog, deliberately **not** perception
