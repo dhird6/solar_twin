@@ -25,6 +25,7 @@ from pathlib import Path
 import yaml
 
 from solar_twin.control.safe import SafeControl
+from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
 from solar_twin.orchestrator.mission import Fleet, Mission
@@ -396,6 +397,13 @@ def run(
             "panels": [asdict(r) for r in result.results],
             "fault_events": [e.to_dict() for e in result.fault_events],
         }
+        # Is a "false fault" actually the panel next door? Measured on SC-01: every
+        # false alarm across three prompt versions and nine repeats sat beside a
+        # faulted panel, and none of the clean-neighbourhood panels ever produced
+        # one. The confirm frame shows more than one module, so KPI-03 can be
+        # scoring a real defect against the wrong panel — recorded per run rather
+        # than left for someone to notice (`kpi/confound.py`).
+        record["confound"] = kpi_confound.analyse(record).to_dict()
         if isinstance(control, SafeControl):
             record["keepout"] = {
                 "turbines": len(keepouts),
@@ -427,6 +435,10 @@ def run(
             f"injected={len(record['injected_faults'])}",
             flush=True,
         )
+        # Same reasoning as the line above: if the false-fault rate is the panel
+        # next door, that has to be visible where the number is, not in a JSON file.
+        if record["confound"]["false_alarms"]:
+            print(f"  confound: {record['confound']['verdict']}", flush=True)
 
     # ---- variance across repeats ---------------------------------------- #
     var_report = None

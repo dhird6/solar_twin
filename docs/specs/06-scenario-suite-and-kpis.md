@@ -16,7 +16,8 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 | `KPI-07` | Terrain traversal pass/fail | ground bot completes the ramp testbed at the declared max grade without loss of contact/stall | `SLICE-2`/`SLICE-6` | New — pass/fail per grade angle |
 | `KPI-08` | Generated-frame validity rate | fraction of Cosmos Transfer/Predict output frames that pass the Evaluator filter | `SLICE-4` | New — from the Data Factory Blueprint's Evaluator stage (`NFR-08`) |
 | `KPI-03a` | False-alarm rate | fraction of **healthy** panels given a *specific wrong diagnosis* — `detected_state` is neither `healthy` nor `unknown` | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.false_alarm_rate` |
-| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count) |
+| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count). Earned its keep twice: it separated a VLM parse bug from a real false alarm, and it distinguished "vLLM server down" (10/10 abstentions, `false_fault_rate` 1.000) from a model collapse |
+| `KPI-03c` | False-alarm attributable share | fraction of a run's false alarms whose **neighbouring** panel was seeded faulty — an upper bound on how much of `KPI-03` is the panel next door | `SLICE-3`, alongside `KPI-03` | **Implemented**: `kpi/confound.py`, written to every run record's `confound` block. Measured 1.00 on `SC-01` — see the caveat below |
 
 **Note on `KPI-01` vs `KPI-03`:** these are deliberately distinct. `KPI-01` is
 overall accuracy across all injected states (including real faults); `KPI-03`
@@ -50,6 +51,35 @@ panel is equally a plumbing failure, it just surfaces as a missed detection in
 `variance.py`'s `DEFAULT_METRICS`, so neither can be quoted from a single run.
 ⚠ A vacuous `KPI-03` of 0.00 on a run with no healthy panels is exactly the case
 where quoting it alone misleads — check `KPI-03b`.
+
+### ⚠ `KPI-03`'s biggest caveat: the frame may show more than one panel
+
+**Measured 2026-07-29 and it is not marginal.** `KPI-03` assumes the frame the model
+judged shows the target panel. At the confirm standoff it does not: the module is
+tilted ~46 deg to the camera and foreshortened, so the **neighbouring module is in
+shot**. Across three prompt versions and nine repeats on `SC-01`:
+
+| run | prompt | false alarms | beside a faulted panel | clean neighbourhood |
+|---|---|---|---|---|
+| `runs/20260729T130956` | v1 | 7 | **7** | **0** |
+| `runs/20260729T133517` | v2 | 3 | **3** | **0** |
+| `runs/20260729T135700` | v3 | 6 | **6** | **0** |
+
+**All 16 false alarms sat beside a faulted panel; none of the 180
+clean-neighbourhood panel-observations produced one.** So on this scenario the
+false-fault rate is not a measure of the model at all — the model reports soiling
+that is genuinely in the image, and ground truth scores it against the wrong panel.
+Captured frames confirm it (`tools/inspect_frame.py`).
+
+This is why prompt work could not move it: there was nothing wrong with the reading.
+
+`kpi/confound.py` computes this and `run.py` writes it into every run record's
+`confound` block, printing it beside the KPI when non-zero. **Quote `KPI-03` with its
+`attributable_share`.** A share of 1.00 means the whole number may be the panel next
+door. The fix is the **frame** — crop capture to the target module's own extent so
+neighbours are excluded — and until that lands, `SC-11`/`SC-12` (all-healthy stages,
+where no neighbour can be faulted) are the only KPI-03 points free of this confound.
+That is also a reason their 0.00 stands.
 
 ## Scenario suite
 
