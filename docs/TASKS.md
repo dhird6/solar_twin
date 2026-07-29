@@ -94,10 +94,31 @@ with N and a gate from here on, not from a single run.
    `R258-C014` `hotspot`→`healthy`/`soiled`). Given identical bytes it is
    repeatable, but the renderer never sends identical bytes and the difference is
    invisible at picture level — so this is **fragility, not nondeterminism**, and
-   it is not a sim bug to fix (a real camera has sensor noise too). The number to
-   drive is `KPI-01 = 0.875` with **2 of 3 misses stable across repeats** — a
+   it is not a sim bug to fix (a real camera has sensor noise too). It is a
    soiled↔hotspot discrimination problem that `_STATE_DEFINITIONS` reduced but did
    not remove. Prompt/model/ensembling work, measured with `--repeat`.
+
+   ⚠ **The number to drive changed on 2026-07-29, and so did its provenance.**
+   `KPI-01 = 0.875` came from `demo_video.yaml` — a file whose own header says in
+   capitals that it is a DEMO, not a measurement (`--video` swaps to interpolated
+   motion, `--max-panels` truncates to a 16-panel denominator). It was never
+   quotable. `SC-01` was in the spec's scenario table and on **no disk**, so it has
+   been built (`configs/scenarios/nominal_calm.yaml` + `_vlm.yaml`, one shared
+   stage so `perception` is the only variable). On that scenario, 40 panels, N=3:
+
+   | | `detection_rate` | `false_fault_rate` | abstention |
+   |---|---|---|---|
+   | stub baseline | **1.000** identical | 0.000 identical | 0.000 |
+   | Reason-1 live | **0.900** median (0.875–0.900) | 0.091 median (0.030–0.091) | 0.000 |
+
+   So the real gap is **−0.10**, the stub at exactly 1.000 is the control working,
+   and abstention 0.000 on both sides means the gap is **misdiagnosis, not lost
+   answers**. Per-panel agreement 0.875 (5/40 flipped, `model` 4 / `both` 1).
+   **And `KPI-03` is NOT stable on this stage** — 0.030–0.091 across repeats, where
+   `SC-11`/`SC-12` gave 0.000 *identical*. Those are all-healthy low-sun stages;
+   this one is fault-enriched at mid-morning, and 3 of the 5 flips are healthy
+   panels called `soiled`. The 0.00 headline is a property of those scenarios, as
+   they always said — not of the model. Drive KPI-01 against `SC-01` from here.
 1. ~~**Decide how `unknown` should score in KPI-03.**~~ ✅ **decided and shipped
    2026-07-29 — report the split, do not redefine the metric.** `KPI-03` keeps its
    formula (locked contract, §6.5 / `FR-03`; redefining it would make every
