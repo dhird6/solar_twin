@@ -69,7 +69,7 @@ panel:
 # Regenerate rather than editing; `kind: flat` remains available for a fast build.
 terrain:
   kind: dem
-  path: assets/dem/khavda_block02.yaml
+  path: assets/dem/khavda_s05b.yaml
   datum: hardware_mean
   # The engineered civil pad (`world/grading.py`). GLO-30 is a PRE-GRADING DSM:
   # on raw satellite ground the worst tracker row needs 0.532 m of pile-height
