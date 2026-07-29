@@ -47,6 +47,13 @@ def main() -> int:
     ap.add_argument("--ext-path", default=DEFAULT_EXT)
     ap.add_argument("--port", type=int, default=4560, help="PX4 simulator TCP port")
     ap.add_argument("--gui", action="store_true", help="open a window")
+    ap.add_argument("--wind-scenario", default=None,
+                    help="scenario YAML whose `wind:` block is applied to the drone "
+                         "body every physics step (see configs/scenarios/"
+                         "khavda_windy_hover.yaml). Omit for the calm-air baseline.")
+    ap.add_argument("--drag-area", type=float, default=0.12,
+                    help="drone frontal area (m2) for the drag law. Iris-class: a "
+                         "~0.5 m frame with exposed arms/props is ~0.1-0.15 m2.")
     ap.add_argument("--container", default="px4hover",
                     help="PX4 container name, used to arm + command takeoff")
     ap.add_argument("--takeoff-at", type=float, default=12.0,
@@ -115,6 +122,22 @@ def main() -> int:
     print("\npre-warmed handles:", ", ".join(f"{n}={'bound' if b else 'UNBOUND'}" for n, b in warmed))
     print(f"articulation dofs: {getattr(art, 'dof_names', None)}")
 
+    # -- optional wind: the whole reason a dynamic body was needed -----------
+    wind = None
+    if args.wind_scenario:
+        import yaml
+
+        from solar_twin.scenario import load_scenario
+        from solar_twin.world import windfield as wf
+
+        scn = load_scenario(args.wind_scenario)
+        wind = wf.from_cfg(scn.farm_cfg)
+        print(f"\nwind: {wind.mean_speed_ms:.1f} m/s from {wind.wind_dir_deg:.0f} deg, "
+              f"gust {wind.speed_variation * 100:.0f}% / {wind.gust_period_s:.1f}s, "
+              f"{len(wind.wakes)} wake source(s), seed {wind.seed}")
+        print("  ⚠ analytical wake + band-limited gusts, NOT CFD (FR-13/NFR-07)")
+        del yaml
+
     dt = float(world.get_physics_dt())
     steps = int(args.seconds / dt)
     print(f"\nflying {args.seconds:.0f} sim seconds ({steps} steps @ dt={dt:.4f}) ...")
@@ -156,6 +179,30 @@ def main() -> int:
         world.step(render=False)
         for fn in drive:
             fn(dt)
+
+        # ⚠ Wind is applied ONLY once airborne, and that is physical rather than a
+        # convenience. Measured: 12 m/s with 35% gusts is ~15 N on this frame,
+        # MORE than an Iris's own 14.7 N weight — applied to a PARKED drone it
+        # tumbled it inverted (roll -177 deg) and preflight then failed, so it
+        # never armed. A real aircraft is tied down or launched into wind; it does
+        # not sit loose on a pad in a gale. Gating on altitude starts the
+        # disturbance when the vehicle can actually fly against it.
+        airborne = float(drone.state.position[2]) > 0.5
+        if wind is not None and airborne:
+            # Applied to the BODY, in world axes, from the RELATIVE air speed —
+            # a drone drifting downwind at wind speed should feel nothing. Uses
+            # the same shim that made the port work, so this is also the first
+            # thing to exercise `apply_body_force` under real load.
+            st = drone.state
+            fx, fy, fz = wind.drag_force(
+                float(st.position[0]), float(st.position[1]), float(st.position[2]),
+                body_velocity=(float(st.linear_velocity[0]),
+                               float(st.linear_velocity[1]),
+                               float(st.linear_velocity[2])),
+                drag_area_m2=args.drag_area,
+                t=i * dt,
+            )
+            drone.apply_force([fx, fy, fz], body_part="/body")
 
         if takeoff_step > 0 and i == takeoff_step:
             # PX4 will not arm until its EKF has converged on the simulated sensor
@@ -217,8 +264,21 @@ def main() -> int:
                   f"({len(settled)} samples), worst |vz| {worst_vz:.3f} m/s")
             print(f"    settled window: t >= {args.takeoff_at + SETTLE_S:.0f} s "
                   f"(takeoff at {args.takeoff_at:.0f} s + {SETTLE_S:.0f} s settle)")
-            print("    ⚠ CALM AIR — no wind field applied. This is the KPI-05 baseline,")
-            print("      not a gust-rejection result (that needs FR-12's wind field).")
+            if wind is None:
+                print("    ⚠ CALM AIR — no wind field applied. This is the KPI-05 baseline,")
+                print("      not a gust-rejection result (that needs --wind-scenario).")
+            else:
+                # Lateral excursion matters as much as altitude under wind: a
+                # drone that holds height while being pushed off the panel has
+                # still failed the inspection.
+                xy = [
+                    (px, py) for (px, py) in
+                    [(float(p[0]), float(p[1])) for p in [drone.state.position]]
+                ]
+                print(f"    KPI-05 UNDER WIND: {wind.mean_speed_ms:.1f} m/s mean, "
+                      f"{wind.speed_variation * 100:.0f}% gusts")
+                print(f"    lateral position at t_end: x={xy[0][0]:+.2f} y={xy[0][1]:+.2f} m "
+                      f"(drift from the origin it was told to hold)")
         else:
             print(f"  OK AIRBORNE: z={zs[-1]:.3f} m at t_end, but the run was too short "
                   f"to measure a settled hover — increase --seconds.")

@@ -1,0 +1,78 @@
+# khavda_windy_hover — everything physical, in ONE scene, for the first honest KPI-05.
+#
+# Until now the physics pieces were individually built and individually tested but
+# had **never run together**: real DEM (SLICE-6 work), the graded civil pad, an
+# articulated turbine (`FR-11`), the wind field (`FR-12`), and PX4-governed flight
+# (`FR-06`). This composes them.
+#
+# ⚠ WHY THIS IS A HOVER SCENARIO AND NOT AN INSPECTION SCENARIO
+# Wind is a FORCE. The inspection mission drives its robots kinematically — a
+# commanded Xform pose — and a force applied to a kinematically-driven body does
+# **nothing at all**. Running `wind:` against the normal mission would produce a
+# scenario that looks like it models gusts and measurably does not, which is the
+# `NFR-07` failure mode. Wind only bites once the drone is a dynamic body under
+# PX4's control loops, so that is what this scenario configures:
+#
+#     python3 tools/px4_sitl_smoke.py            # PX4 SITL, arm64 container
+#     PYTHONPATH=src $ISAAC tools/px4_hover.py \
+#         --wind-scenario configs/scenarios/khavda_windy_hover.yaml
+#
+# `tools/px4_hover.py --wind-scenario` reads the `wind:` block below, builds the
+# `WindField`, and applies its drag to the drone body every physics step through
+# the Isaac-6 shim's `apply_body_force`. Compare against a no-wind run: the
+# difference in altitude hold IS `KPI-05`.
+
+name: khavda_windy_hover
+seed: 20260729
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission.yaml    # ground_truth: perception is not what this measures
+
+farm_overrides:
+  # ---- the ground the plant actually sits on -------------------------------
+  terrain:
+    kind: dem
+    path: assets/dem/khavda_block02.yaml
+    datum: hardware_mean
+    # The engineered pad, not raw satellite desert. Measured: worst-row pile
+    # variation 0.532 m raw -> 0.013 m graded. ⚠ INFERRED (no civil drawing).
+    graded: true
+    pad_tolerance_m: 0.025
+    pad_blend_m: 40.0
+
+  # ---- a turbine whose colliders actually fire (FR-11) ---------------------
+  # ⚠ Opt-in for a reason: every KPI recorded before this used the kinematic
+  # spun proxy, and enabling the articulation changes who owns the hub's
+  # transform (the solver, not our per-tick write).
+  turbines_articulated: true
+  turbines:
+    # Placed OUTSIDE the panel footprint (x < 0), which is both how a hybrid
+    # wind+solar park is laid out and the honest choice: a turbine standing
+    # inside the array would throw blade shadows on panels, and any KPI-03
+    # measured against it would be an artefact of where WE put it.
+    - { pos: [-180.0, 300.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.5 }
+
+  # ---- wind + wake (FR-12 / FR-13) ----------------------------------------
+  # Khavda is a monsoon-belt site with a strong, steady south-westerly; 12 m/s
+  # with 35% gusting is a windy-but-flyable day, not a storm. The drone's own
+  # spec is what decides whether this is survivable — that is the measurement.
+  # ⚠ NOT CFD. The wake is an analytical Jensen top-hat and the gusts are
+  # band-limited noise: a repeatable disturbance of about the right shape and
+  # magnitude, and explicitly not a loads analysis (`FR-13`, `NFR-07`).
+  wind:
+    mean_speed: 12.0
+    direction_deg: 225.0          # south-westerly, met convention (FROM)
+    speed_variation: 0.35         # gust magnitude as a fraction of the mean
+    direction_variation_deg: 15.0
+    gust_period_s: 4.0
+    # seed defaults to the scenario seed, so the gust is part of this
+    # scenario's identity — the same gust every run.
+
+kpi_gates:
+  # No threshold yet: this scenario EXISTS to establish the first KPI-05 number
+  # under wind. The calm-air baseline is 43 mm of altitude hold over 35 s
+  # (`tools/px4_hover.py`, 2026-07-29). Set a bound once there is a distribution
+  # rather than a single flight — a gate invented before the measurement would
+  # just encode today's luck.
+  {}
