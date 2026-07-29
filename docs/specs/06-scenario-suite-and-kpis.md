@@ -60,7 +60,7 @@ starting set, not the final one.
 
 | ID | Name | Composition | Hazards exercised | Primary KPIs | Introduced |
 |---|---|---|---|---|---|
-| `SC-01` | `nominal_calm` | Slice-0 farm, no wind/turbine/birds | none | `KPI-01`, `KPI-02` | `SLICE-0` |
+| `SC-01` | `nominal_calm` | real Khavda BLOCK-02, mid-morning (trackers off their stops, rows face-on, no self-shading), no wind/turbine/birds, faults enriched to 20% so the denominator holds both classes | none | `KPI-01`, `KPI-02` | `SLICE-0` — **built 2026-07-29**, `configs/scenarios/nominal_calm.yaml` (+ `nominal_calm_vlm.yaml`, same world, `perception` flipped) |
 | `SC-02` | `gust_only` | + wind force field, no turbine | `HAZ-03` | `KPI-05` | `SLICE-2` |
 | `SC-03` | `turbine_static_keepout` | + one articulated (non-spinning) turbine | `HAZ-01` | `KPI-04` | `SLICE-2` |
 | `SC-04` | `turbine_wake` | + spinning turbine, wake field active | `HAZ-01`, `HAZ-02` | `KPI-04`, `KPI-05` | `SLICE-2` |

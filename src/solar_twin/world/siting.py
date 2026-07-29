@@ -259,8 +259,17 @@ def resolve_turbines(farm_cfg: dict, layout, log=None) -> list[dict]:
 
     `turbine_scatter.enabled` replaces the hand-written positions, which were two
     columns at fixed eastings — a lattice, which is not how wind farms are sited
-    (see `world/siting.py`). An explicit list still wins when present, so existing
-    configs and any KPI run pinned to known turbine positions are unaffected.
+    (see `world/siting.py`).
+
+    ⚠ **Precedence, stated exactly, because the obvious reading is wrong:**
+    `turbine_scatter.enabled` is checked FIRST and wins. An explicit list does *not*
+    override it — it only takes effect when the scatter is off (or when there is no
+    site layout to scatter within). In particular **`turbines: []` does not mean
+    "no turbines"** while the scatter is enabled; it means "no explicit positions",
+    and the scatter then supplies its own. Measured 2026-07-29: a scenario setting
+    `farm_overrides.turbines: []` and documenting itself as turbine-free built four
+    of them. To get a genuinely turbine-free stage, set
+    `turbine_scatter.enabled: false`.
     """
     explicit = farm_cfg.get("turbines", []) or []
     cfg = (farm_cfg.get("turbine_scatter") or {}) if isinstance(farm_cfg, dict) else {}

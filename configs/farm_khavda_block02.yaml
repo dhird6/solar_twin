@@ -84,9 +84,15 @@ faults:
 # along the prevailing wind, 4 across) rather than a circle — see world/siting.py.
 # The explicit list below is what this used to be, and it was a lattice: two
 # columns at fixed eastings, evenly spaced, which is not how anyone sites
-# turbines. It is retained because an explicit list still WINS over the scatter,
-# so a KPI run that needs the old, known positions can restore them by setting
-# `turbine_scatter.enabled: false`.
+# turbines. It is retained so a KPI run that needs the old, known positions can
+# restore them by setting `turbine_scatter.enabled: false`.
+#
+# ⚠ **The scatter WINS over the explicit list, not the other way round** (an
+# earlier version of this comment said the opposite). `resolve_turbines` checks
+# `turbine_scatter.enabled` first. So **`turbines: []` in a scenario override does
+# NOT give you a turbine-free stage** — it removes the explicit positions and the
+# scatter then supplies its own. Measured 2026-07-29: a scenario documenting itself
+# as turbine-free built four. Set `turbine_scatter.enabled: false` to mean it.
 #
 # ⚠ Enabling the scatter MOVES the turbines, so it moves their shadows. Any number
 # measured against a turbine shadow (not the tracker self-shading KPI-03 stimulus,

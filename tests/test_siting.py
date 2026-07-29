@@ -245,3 +245,70 @@ def test_the_kinematic_spin_rate_still_matches_the_old_literal():
     stimulus depends on that rate."""
     for rpm in (5.0, 10.0, 12.0, 20.0):
         assert rpm_to_deg_per_s(rpm) / 30.0 == pytest.approx(rpm * 0.2)
+
+
+# ------------------------------------- precedence: scatter wins over the list
+# The obvious reading of these two config keys is the wrong one, and it cost a
+# scenario its stated intent: `nominal_calm.yaml` set `turbines: []`, documented
+# itself as turbine-free, and built FOUR (measured 2026-07-29). Both the docstring
+# and the farm config had claimed an explicit list wins. It does not.
+
+
+def test_scatter_wins_over_an_explicit_list():
+    from solar_twin.world.siting import resolve_turbines
+
+    class _T:
+        def __init__(self, e, n, ln):
+            self.easting, self.northing, self.length_m = e, n, ln
+
+    class _Site:
+        origin_easting = origin_northing = 0.0
+        module_length_m = 2.278
+        n_modules = 0
+        tables = [_T(0.0, 0.0, 128.0), _T(300.0, 0.0, 128.0)]
+
+    class _Layout:
+        site = _Site()
+
+    cfg = {
+        "seed": 1,
+        "turbines": [{"pos": [-95.0, 60.0], "hub_height": 120.0, "blade_len": 70.0}],
+        "turbine_scatter": {"enabled": True, "count": 2, "rotor_diameter": 140.0},
+    }
+    resolved = resolve_turbines(cfg, _Layout())
+    assert all(tuple(t["pos"]) != (-95.0, 60.0) for t in resolved)
+
+
+def test_an_empty_turbine_list_does_not_mean_no_turbines():
+    """The trap, pinned. `turbines: []` means "no explicit positions", NOT "no
+    turbines" — the scatter still supplies its own."""
+    from solar_twin.world.siting import resolve_turbines
+
+    class _T:
+        def __init__(self, e, n, ln):
+            self.easting, self.northing, self.length_m = e, n, ln
+
+    class _Site:
+        origin_easting = origin_northing = 0.0
+        module_length_m = 2.278
+        n_modules = 0
+        tables = [_T(0.0, 0.0, 128.0), _T(300.0, 0.0, 128.0)]
+
+    class _Layout:
+        site = _Site()
+
+    cfg = {
+        "seed": 1,
+        "turbines": [],
+        "turbine_scatter": {"enabled": True, "count": 2, "rotor_diameter": 140.0},
+    }
+    assert len(resolve_turbines(cfg, _Layout())) > 0
+
+
+def test_disabling_the_scatter_is_how_you_get_a_turbine_free_stage():
+    """What the KPI-03 and SC-01 scenarios actually need in order to isolate their
+    stressor from blade shadows."""
+    from solar_twin.world.siting import resolve_turbines
+
+    cfg = {"seed": 1, "turbines": [], "turbine_scatter": {"enabled": False}}
+    assert resolve_turbines(cfg, None) == []
