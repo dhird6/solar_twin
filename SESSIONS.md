@@ -17,6 +17,31 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 13b: the multi-block plant builds and flies — on real S05b terrain
+
+Closed the two build items Session 13 left. Both worked, and one exposed a stale
+command in my own handoff notes.
+
+**The multi-block plant builds.** 20 tables of plot S05b -> **1,904 panels, 3,535
+prims** on `assets/khavda_s05b.usd`, with `faults.rate 0.0` so nothing escapes
+instancing (a faulted panel is ~75 prims against ~1 healthy — the reason the full
+6,213-table plot is ~1.69M prims and needs a subset).
+
+**On the RE-BAKED DEM, and it shows.** Worst-row pile deviation **0.324 m** on
+T0009 — a real number from real ground. Before the re-bake this plot sat on
+BLOCK-02's clamped patch and would have reported terrain that did not exist.
+`site works` also resolved 6 roads / 330 fence posts / 1 inverter, split
+1 DERIVED + 6 INFERRED.
+
+**Video: `assets/khavda_s05b_tour.mp4`, 769 frames at 960x540.**
+
+⚠ **My own handoff command was wrong and the tool caught it.** I had written
+`flythrough.py --budget-minutes 8`; that flag belongs to `plant_tour.py`, not
+`flythrough.py` (whose flags are `--caption/--fps/--width/--height/--out`). It
+failed with `unrecognized arguments` rather than silently ignoring it, which is
+the right behaviour — but it is a reminder that a handoff command should be run
+once before it is written down as the instruction.
+
 ## 2026-07-29 — Session 13: reviewed the two reference repos, and took the real plant data out of them
 
 Asked to review `solar_plant_layout/reference/`. Findings, then what got integrated.

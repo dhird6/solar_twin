@@ -7,7 +7,7 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 13)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 13b)
 
 Everything below this block is the older two-track plan and is still valid; this
 is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-13.
@@ -94,12 +94,15 @@ with N and a gate from here on, not from a single run.
 -1. **Finish the reference-repo integration (Session 13).** Three ingredients landed
    — real surveyed turbines, `tools/digest_to_site.py`, and the whole 24-block S05b
    plot (6,213 tables / 679,616 panels). What remains, cheapest first:
-   (a) **re-bake the DEM for S05b's extent** — ⚠ the current patch is BLOCK-02's and
-   `dem._raw` CLAMPS outside its grid *by design*, so most of S05b sits at a flat
-   clamped elevation **while looking like real terrain** (`NFR-07`);
-   (b) **build a few-block subset at `faults.rate 0`** — the full plot is ~1.69M
-   prims, worse than the 2.25M that gated the plant before IF-09, because faulted
-   panels cannot be instanced;
+   (a) ~~re-bake the DEM for S05b's extent~~ ✅ **done**: `assets/dem/khavda_s05b.yaml`
+   (284x140 @ 20 m, relief 5.4 m). The bug it fixed is worth remembering — `dem._raw`
+   CLAMPS outside its grid *by design*, so a plot pointed at the wrong patch sits at
+   one flat elevation **while looking like real terrain** (`NFR-07`);
+   (b) ~~build a few-block subset~~ ✅ **done (Session 13b)**: 20 S05b tables ->
+   1,904 panels / 3,535 prims (`assets/khavda_s05b.usd`), flown as
+   `assets/khavda_s05b_tour.mp4` (769 frames). Worst pile deviation 0.324 m on the
+   re-baked DEM. ⚠ `faults.rate 0.0` is what keeps it sane — the full 6,213-table
+   plot is ~1.69M prims because faulted panels cannot be instanced;
    (c) **get a blob URL/SAS for `imagery_near.png`** — the ~1 m imagery is the single
    biggest remaining visual gap and is NOT in the archive (Azure blob only).
    ⚠ Do not inherit their `resolutionMeters: 1` claim: it is upsampled 30 m plus
