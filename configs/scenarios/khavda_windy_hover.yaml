@@ -46,12 +46,23 @@ farm_overrides:
   # spun proxy, and enabling the articulation changes who owns the hub's
   # transform (the solver, not our per-tick write).
   turbines_articulated: true
+  # ⭐ REAL, SURVEYED turbine positions — plot S05b of the GatiShakti digest
+  # (EPSG:32642, the same CRS as our site file), imported with
+  # `tools/plot_digest_import.py --radius 3000`. 7 of that plot's 8 WTGs fall
+  # within 3 km of our block; the nearest is 546 m off the footprint. This
+  # REPLACES the invented single turbine that stood here.
+  # ⚠ Positions are real but SECOND-HAND (vendor DWG -> their build_gis_digest.py,
+  #   which we do not hold -> JSON -> us), and hub height / blade length / rpm are
+  #   still INFERRED from the 5.2 MW rating: the digest carries no dimensions.
+  #   Real position, assumed size — see world/plot_digest.py.
   turbines:
-    # Placed OUTSIDE the panel footprint (x < 0), which is both how a hybrid
-    # wind+solar park is laid out and the honest choice: a turbine standing
-    # inside the array would throw blade shadows on panels, and any KPI-03
-    # measured against it would be an artefact of where WE put it.
-    - { pos: [-180.0, 300.0], hub_height: 120.0, blade_len: 70.0, rpm: 11.5 }
+    - { pos: [866.349, 440.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 546.2 m
+    - { pos: [676.349, 1426.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 858.1 m
+    - { pos: [1510.349, 1161.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 1297.1 m
+    - { pos: [1700.349, 175.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 1380.2 m
+    - { pos: [2351.349, 857.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 2042.2 m
+    - { pos: [2995.349, 1579.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 2833.5 m
+    - { pos: [3185.349, 592.959], hub_height: 120.0, blade_len: 70.0, rpm: 11.5, rating_mw: 5.2, provenance: digest, geometry_provenance: INFERRED }   # 2865.2 m
 
   # ---- wind + wake (FR-12 / FR-13) ----------------------------------------
   # Khavda is a monsoon-belt site with a strong, steady south-westerly; 12 m/s
