@@ -155,10 +155,12 @@ and it is superlinear, so no fault-rate trick helps. Prime suspect is
 
 ### The full-plant video: the complete BLOCK-02, all 273 tables
 
-`assets/khavda_full_plant.mp4` — **ALL 273 tracker tables / 30,016 modules / 75,777
-prims, built in 96.75 s**, on real GLO-30 terrain with real OSM geography. Not a subset:
-this is a whole DC block with its 600 seeded faults intact, which the 4.8 km plot cannot
-be at any sane cost.
+`assets/khavda_full_plant.mp4` — **769/769 frames at 1280x720, zero drops. ALL 273
+tracker tables / 30,016 modules / 75,777 prims, built in 96.75 s**, on real GLO-30
+terrain with real OSM geography. Not a subset: a whole DC block with its 600 seeded
+faults intact, which the 4.8 km plot cannot be at any sane cost. The establishing aerial
+holds the entire block inside the fence line in one frame; the road-level pass shows blue
+glass with legible cell grids, the inverter skids, and a mapped HV tower on the horizon.
 
 ⭐ **And it is where the substation fix finally bit.** BLOCK-02's own OSM bake contains
 the real substation **`PSS 3`**, which S05b's clip had excluded — so this stage is the
@@ -201,6 +203,14 @@ queryable tagged geometry on the stage, not scenery. Roads and HV lines DO rende
 forced to **42.2 m spacing against its own 20 m DEM** — a 2x undersample of the terrain
 the panels mount on. Raised to 560 (68.6k verts for the whole plot, trivial beside 680k
 panel prims), and the builder now WARNS when the cap coarsens the drape.
+
+**Three videos, all verified frame-by-frame:**
+
+| file | frames | what it answers |
+|---|---|---|
+| `khavda_full_plant.mp4` | 769 | the WHOLE block — 273 tables, 30,016 modules |
+| `khavda_s05b_tour.mp4` | 769 | what a multi-block S05b patch looks like (22,064 panels) |
+| `khavda_s05b_status_tour.mp4` | 1,119 | which parts are real, inferred, or missing |
 
 **Tests: 497 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
 material-bound, non-guide, above the *interpolated* ground mesh, instancing on and off),
