@@ -700,10 +700,26 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
             subtitle="the honest backlog, in the order it matters",
             seconds=13.0,
             items=[
-                Item("Flight dynamics: Pegasus Simulator / PX4", TODO, "v5.1.0 targets Isaac 5.1; this box runs 6.0.1"),
-                Item("ROS 2 bridge as a Transport", TODO, "camera->ROS 2 is proven on this box; the bridge is unwritten"),
-                Item("VLM run-to-run variance is unquantified", TODO, "two identical runs disagreed on one panel — no KPI is a constant yet"),
-                Item("Rest of the balance of plant + graded surface", TODO, "substation, control room, trenches, piles"),
+                # ⚠ This card is the one place the tour states its own backlog, so a
+                # stale entry here is an honesty defect, not a typo — it under-claims
+                # work that shipped and misdirects whoever watches it. Two entries
+                # were exactly that: PX4 now flies (Session 12b, hover 2.562 m
+                # +/- 43 mm) and the VLM variance IS quantified (Session 12: byte-
+                # repeatable served serially, flips come from continuous batching).
+                # Check this list against `SESSIONS.md` before rendering a tour.
+                Item(
+                    "Flight dynamics under the mission",
+                    TODO,
+                    "PX4 flies a hover (43 mm hold); the INSPECTION fleet is still kinematic",
+                ),
+                Item("ROS 2 bridge as a Transport", TODO, "bridge is built + smoke-tested; not the default Transport"),
+                Item(
+                    "VLM decoding is pinned, but batching is not",
+                    TODO,
+                    "byte-repeatable served serially; concurrent batching still flips a verdict (RISK-23)",
+                ),
+                Item("Rest of the balance of plant", TODO, "substation, control room, trenches, piles"),
+                Item("~1 m satellite imagery on the terrain", TODO, "the biggest remaining visual gap; GLO-30 is 30 m"),
                 Item("Closed maintenance loop", TODO, "verdicts are written; nothing is dispatched to act on them"),
             ],
         )

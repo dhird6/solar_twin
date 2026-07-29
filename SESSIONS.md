@@ -129,6 +129,43 @@ the stage before and after the fix is byte-identical; that is precisely why
 `OSM_POWER_AREAS` lives in the Isaac-free module and the test asserts against the
 **bake** rather than a built stage.
 
+### The two videos, and what rendering them exposed
+
+Asked for a proper status tour and a whole-plant video. Both delivered — and the
+tour caught four more things, every one of them **visible on screen**:
+
+⚠ **The overlay captioned "6213 tracker tables, 22,064 modules".** The table count
+came from the layout SIDECAR (the whole 24-block plot) while the modules were counted
+off the STAGE (the 200-table subset) — a **22x mismatch worn as a single fact**, burned
+into the frame. Tables now come from the stage's own `pv:grid_index` rows and the
+caption states the fraction: *"200 of 6,213 tracker tables (3% of the plot)"*.
+
+⚠ **The title card named the wrong plot** — hard-coded `Adani Khavda PLOT A10b
+BLOCK-02` and `configs/farm_khavda_block02.yaml` whatever was built, so an S05b tour
+announced a different plot's hardware. Now passed in (`--site-name/--site-desc/
+--config-name`), defaulting to a generic "Khavda" rather than a confident wrong answer.
+
+⚠ **The sky texture filename collided across stages.** It was `sky_<elev>_<azim>.png`,
+keyed on the sun alone, so any two stages sharing a timestamp shared one file — and a
+full-plot build running in parallel **overwrote the texture the live tour was reading**
+(`Failed to read texture file assets/sky_44_80.png or file is empty`). Now keyed on the
+output stage too. Self-inflicted by running both at once, and a real latent bug either way.
+
+⚠ **The closing backlog card under-claimed shipped work** — it still listed PX4 flight
+dynamics and VLM run-to-run variance as open, both closed in Session 12. A backlog that
+under-claims is as misleading as one that over-claims; it now reads "PX4 flies a hover;
+the INSPECTION fleet is still kinematic" and "decoding is pinned, batching is not".
+
+**On the mapped park boundaries: they are `guide` purpose, so they do NOT appear in
+either video.** Deliberate — a 40 km outline crossing the site would land in every
+drone camera frame perception scores, which is the keep-out-sphere bug again. They are
+queryable tagged geometry on the stage, not scenery. Roads and HV lines DO render.
+
+**The ground-mesh vertex cap had become a fidelity cap.** At 220/axis the whole plot was
+forced to **42.2 m spacing against its own 20 m DEM** — a 2x undersample of the terrain
+the panels mount on. Raised to 560 (68.6k verts for the whole plot, trivial beside 680k
+panel prims), and the builder now WARNS when the cap coarsens the drape.
+
 **Tests: 497 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
 material-bound, non-guide, above the *interpolated* ground mesh, instancing on and off),
 Isaac-free framing guards (travel follows the long axis, standoff proportionate to the
