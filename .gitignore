@@ -5,6 +5,7 @@ runs/
 *.webm
 
 # Large binaries — regenerate via farm_builder.py, never commit
+assets/
 *.usd
 *.usda
 *.usdc
@@ -40,3 +41,19 @@ htmlcov/
 # Local env / secrets (keep NVIDIA_API_KEY etc. out of the repo)
 .env
 *.local
+
+# Vendor CAD drawings (proprietary client data, and binary). The layout is
+# ingested into configs/layouts/*.yaml by tools/layout_from_dxf.py — commit the
+# derived site file, never the drawings.
+solar_plant_layout/
+*.dwg
+*.dxf
+
+# Isaac Sim / NvStreamer trace logs, dropped in the CWD by GUI and livestream runs.
+# Diagnostics, not artifacts — they appear as untracked noise after every viewer run.
+NvStreamer-*.etli
+*.etli
+
+# Claude Code: machine-local settings and git worktrees, never shared
+.claude/settings.local.json
+.claude/worktrees/

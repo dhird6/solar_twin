@@ -12,6 +12,15 @@ perception_opts:
   base_url: http://localhost:8000
   model: nvidia/cosmos-reason1-7b
   timeout: 120.0
+  # Decoding. Omit this block and you get cosmos_reason.DEFAULT_SAMPLING:
+  # greedy (temperature 0.0, top_p 1.0, top_k 1, seed 0). Anything set here
+  # MERGES onto those defaults, so re-seeding cannot silently turn sampling back
+  # on. Whatever is in force is stamped into the run record's `perception` block.
+  # ⚠ Greedy makes SERIAL inference byte-repeatable — measured on this box — but
+  # nothing here makes BATCHED inference reproducible (RISK-23). Quote KPIs from
+  # `--repeat N` spreads, not from one run.
+  # sampling:
+  #   seed: 0
 
 fleet:
   ground_bot: ground_bot

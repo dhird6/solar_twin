@@ -1,0 +1,90 @@
+# nominal_calm — SC-01, the KPI-01 (detection rate) MEASUREMENT scenario.
+#
+# This existed in the spec table (`docs/specs/06`, `SC-01`) and nowhere on disk,
+# which is why `KPI-01` has been quoted from `demo_video.yaml` — a file whose own
+# header says, in capitals, that it is a DEMO and not a measurement, because
+# `--video` swaps the controller to interpolated motion and `--max-panels`
+# truncates the sweep to a 16-panel denominator. That number was never quotable.
+# This scenario is the one that is.
+#
+# What makes it a measurement rather than a demo:
+#   * **A stated denominator.** `--subset 5` + `panel_stride: 14` -> ~40 panels,
+#     the same scale and sampling as the KPI-03 points (`SC-11`/`SC-12`), so
+#     KPI-01 and KPI-03 are read off comparable sweeps.
+#   * **Both classes present.** `faults.rate: 0.20` over ~40 inspected panels
+#     seeds roughly 8 faults, so the denominator contains healthy AND faulted
+#     panels. KPI-01 over an all-healthy stage is not a detection rate, and
+#     `khavda_selfshade.yaml` (rate 0.0) therefore cannot measure it.
+#   * **No shading confound.** Mid-morning, trackers off their stops and tracking
+#     truly, rows lit face-on. Self-shading is `SC-11`/`SC-12`'s stressor; here it
+#     would confound "missed the fault" with "could not see the panel".
+#   * **No turbines.** Blade shadows are a separate hazard (`HAZ-07`); isolating
+#     them keeps this a clean accuracy baseline.
+#   * **No `--video`.** Teleport kinematics, so motion never enters the frame.
+#
+# ⚠ The fault rate is 0.20, TEN TIMES the plant's real 2% (`farm_khavda_block02`).
+# That is deliberate and stated: at 2% a 40-panel sweep would usually contain zero
+# or one fault, and a detection rate over a denominator of one is noise. It does
+# mean the class balance is not the plant's, so KPI-01 here is "accuracy on a
+# fault-enriched sample", not "accuracy you would see on a Tuesday".
+#
+# Build, then run BOTH perception backends for the SLICE-1 exit criterion — the
+# comparison against the SLICE-0 ground-truth baseline is the point, not the
+# cosmos_reason number alone:
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/nominal_calm.yaml --subset 5 \
+#       --out assets/nominal_calm.usd
+#   # SLICE-0 baseline (stub perception, fast):
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/nominal_calm.yaml --subset 5 \
+#       --farm-usd assets/nominal_calm.usd --repeat 3
+#   # SLICE-1 (live VLM) — same stage, same seed, one config flip:
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/nominal_calm_vlm.yaml --subset 5 \
+#       --farm-usd assets/nominal_calm.usd --repeat 3
+#
+# ⚠ Pass the SAME --subset to both builder and run, or the mission targets panels
+#   the stage does not contain.
+# ⚠ Use --repeat: the VLM is only reproducible when served serially (`RISK-23`),
+#   so quote `variance.json`'s spread, never a single run.
+
+name: nominal_calm
+seed: 20260729
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  # Ground-truth stub = the SLICE-0 baseline this scenario exists to establish.
+  # `nominal_calm_vlm.yaml` is the same scenario with perception flipped.
+  mission: configs/mission.yaml
+
+farm_overrides:
+  sun:
+    # 04:00Z = 09:30 local, sun 43.7 deg, tracker +45.9 deg — off its 60 deg stop,
+    # so the rows track face-on and cast no self-shadow onto their neighbours.
+    timestamp: "2026-06-21T04:00:00Z"
+    tracker_max_rotation_deg: 60.0
+  faults:
+    rate: 0.20
+    states: [soiled, hotspot]   # the Slice-0 taxonomy subset (§6.5)
+  # ⚠ `turbines: []` alone does NOT remove them. `siting.resolve_turbines` checks
+  # `turbine_scatter.enabled` FIRST and scatters regardless of the explicit list
+  # being empty — measured: this scenario built 4 turbines until the line below was
+  # added. Both are set so the intent survives a reader skimming either one.
+  turbines: []                  # isolate accuracy from the blade-shadow hazard
+  turbine_scatter:
+    enabled: false
+
+mission_overrides:
+  # ~40 inspected panels out of the subset, matching SC-11/SC-12's sampling so the
+  # KPI-01 and KPI-03 denominators are comparable.
+  panel_stride: 14
+
+kpi_gates:
+  # SLICE-0's exit criterion is "KPI-01 measured and recorded as a baseline", so
+  # this bound is a floor to catch regression, not a target to celebrate. The
+  # stub backend should sit at 1.00; the VLM is the number being driven.
+  detection_rate_min: 0.80
+  # A run that loses verdicts is not a measurement of accuracy (see KPI-03b).
+  abstention_rate_max: 0.0

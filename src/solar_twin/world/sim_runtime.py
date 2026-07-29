@@ -17,6 +17,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+# Pure-python (no Isaac), so importing it at module scope is safe: one canonical
+# rotor-speed conversion shared with `farm_builder`'s angular drive.
+from solar_twin.world.siting import rpm_to_deg_per_s
+
 # Annotators can lag the render by a frame or two; pump this many app updates
 # before reading a freshly-moved camera so capture() returns the current view.
 _RENDER_SETTLE_UPDATES = 3
@@ -31,14 +35,46 @@ class SimRuntime:
         headless: bool = True,
         resolution: tuple[int, int] = (640, 480),
         overview_pose: Optional[tuple[float, float, float]] = None,
+        overview_capture: bool = True,
+        overview_resolution: Optional[tuple[int, int]] = None,
+        livestream: bool = False,
     ):
         from isaacsim import SimulationApp
 
-        self._app = SimulationApp({"renderer": "RaytracedLighting", "headless": headless})
+        # Watching the run and recording it are different modes. `headless=False`
+        # opens a window on THIS machine's display; `livestream=True` stays
+        # headless but streams the same UI over WebRTC, which is the only way to
+        # watch from another machine. Livestream must keep headless True and turn
+        # the UI back on — the pattern in this build's
+        # standalone_examples/api/isaacsim.simulation_app/livestream.py.
+        launch: dict = {"renderer": "RaytracedLighting", "headless": headless}
+        if livestream:
+            launch.update(
+                headless=True,
+                hide_ui=False,
+                width=1280,
+                height=720,
+                window_width=1920,
+                window_height=1080,
+            )
+        self._app = SimulationApp(launch)
+        #: True when a human is watching a viewport (window or stream), which is
+        #: what makes the chase camera and interpolated motion worth their cost.
+        self.interactive = bool(livestream or not headless)
 
         import isaacsim.core.experimental.utils.app as app_utils
         import omni.usd
         from pxr import Gf, Usd, UsdGeom
+
+        if livestream:
+            self._app.set_setting("/app/window/drawMouse", True)
+            app_utils.enable_extension("omni.kit.livestream.app")
+            self._app.update()
+            print(
+                "livestream: connect the Isaac Sim WebRTC Streaming Client to this "
+                "host (signal 49100 / stream 47998)",
+                flush=True,
+            )
 
         self._Usd = Usd
 
@@ -65,12 +101,21 @@ class SimRuntime:
 
         self._robot_paths: dict[str, str] = {}
         self._annots: dict[str, object] = {}
+        # Articulated parts + last pose, for visual-only motion (rotor spin, wheel
+        # roll, heading). Not dynamics — see robot_builder's NFR-07 note.
+        self._parts: dict[str, object] = {}
+        self._last_pos: dict[str, tuple[float, float, float]] = {}
+        self._rotor_phase = 0.0
+        self._wheel_phase: dict[str, float] = {}
+        self._last_yaw: dict[str, float] = {}
 
         # Robots that carry a camera (drones): Xform + downward Camera + annotator.
         for rid in camera_robots:
             path = f"/World/Robots/{rid}"
             UsdGeom.Xform.Define(self._stage, path)
-            self._add_marker(path, size=0.25)
+            from solar_twin.world.robot_builder import build_quadcopter
+
+            self._parts[rid] = build_quadcopter(self._stage, path)
             cam_path = f"{path}/Camera"
             cam = UsdGeom.Camera.Define(self._stage, cam_path)
             # Camera looks down its local -Z (drone hovers above the panel). Mount
@@ -93,24 +138,39 @@ class SimRuntime:
         for rid in marker_robots:
             path = f"/World/Robots/{rid}"
             UsdGeom.Xform.Define(self._stage, path)
-            self._add_marker(path, size=0.4)
+            from solar_twin.world.robot_builder import build_ugv
+
+            self._parts[rid] = build_ugv(self._stage, path)
             self._robot_paths[rid] = path
 
         # Discover turbine hubs authored by farm_builder so we can spin the
         # blades each update (moving shadows sweep the panels — the false-fault
         # test). Each hub carries an `st:rpm` attr; convert to deg/update
         # (assume ~30 updates/s — this is a visual proxy, not a physics rotor).
+        #
+        # ⚠ Hubs marked `st:articulated` (FR-11) are SKIPPED. Those are driven by a
+        # real angular drive, and writing their transform here as well would have
+        # the kinematic write fight the solver every frame — the rotor would judder
+        # or freeze, and it would look like a physics bug rather than two things
+        # both claiming ownership of one transform.
         self._turbines: list[tuple[object, float, list[float]]] = []
         turbines_root = self._stage.GetPrimAtPath("/World/Turbines")
         if turbines_root and turbines_root.IsValid():
             for prim in Usd.PrimRange(turbines_root):
                 if prim.GetName() != "Hub":
                     continue
+                art = prim.GetAttribute("st:articulated")
+                if art and art.IsValid() and bool(art.Get()):
+                    continue  # physics owns this rotor
                 rpm_attr = prim.GetAttribute("st:rpm")
                 rpm = float(rpm_attr.Get()) if rpm_attr and rpm_attr.IsValid() else 10.0
-                self._turbines.append([prim, rpm * 0.2, [0.0]])
+                self._turbines.append([prim, rpm_to_deg_per_s(rpm) / 30.0, [0.0]])
 
-        # Optional fixed bird's-eye camera for a run video.
+        # Optional bird's-eye / chase camera. It serves two unrelated jobs: the
+        # source camera for a run video, and the camera a live viewport looks
+        # through. Only the video needs a render product — attaching an annotator
+        # for a live view would render the scene an extra time per step for
+        # frames nobody reads.
         self._overview_annot = None
         if overview_pose is not None:
             ov = UsdGeom.Camera.Define(self._stage, "/World/Overview")
@@ -118,9 +178,16 @@ class SimRuntime:
             ov.CreateFocalLengthAttr(15.0)
             ov.CreateHorizontalApertureAttr(36.0)
             ov.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
-            ov_rp = rep.create.render_product("/World/Overview", (960, 540))
-            self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
-            self._overview_annot.attach([ov_rp])
+            if overview_capture:
+                # Deliberately NOT `resolution`: that one sizes the drone cameras,
+                # and a run that wants 640x480 inspection frames still wants a
+                # watchable external view. Defaulted rather than hardcoded because
+                # it used to be a literal (960, 540) — which silently ignored
+                # `flythrough.py --width/--height` and capped every tour at 540p.
+                ov_res = overview_resolution or (960, 540)
+                ov_rp = rep.create.render_product("/World/Overview", ov_res)
+                self._overview_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+                self._overview_annot.attach([ov_rp])
 
         # Warm up the renderer so the first capture is valid.
         self.step(_RENDER_SETTLE_UPDATES + 2)
@@ -136,7 +203,26 @@ class SimRuntime:
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             self._spin_turbines()
+            self._spin_rotors()
             self._app.update()
+
+    def _spin_rotors(self) -> None:
+        """Advance every drone rotor. Deliberately fast and NOT synced to thrust —
+        a real prop is a blur, and a visibly slow disc reads as broken hardware.
+        Purely cosmetic (`NFR-07`): nothing here produces lift."""
+        self._rotor_phase = (self._rotor_phase + 47.0) % 360.0
+        for rid, parts in self._parts.items():
+            rotors = getattr(parts, "rotors", None) or []
+            for i, rp in enumerate(rotors):
+                prim = self._stage.GetPrimAtPath(rp)
+                if not prim or not prim.IsValid():
+                    continue
+                # Alternate direction per rotor, as on a real quad (torque balance).
+                sign = 1.0 if i % 2 == 0 else -1.0
+                self._UsdGeom.XformCommonAPI(prim).SetRotate(
+                    (0.0, 0.0, sign * self._rotor_phase),
+                    self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+                )
 
     def _spin_turbines(self) -> None:
         """Advance each turbine hub's rotation (about local +Y) one update-tick,
@@ -152,15 +238,59 @@ class SimRuntime:
         return self._app.is_running()
 
     def set_pose(self, robot_id: str, x: float, y: float, z: float, yaw: float = 0.0) -> None:
+        import math
+
         prim = self._stage.GetPrimAtPath(self._robot_paths[robot_id])
         api = self._UsdGeom.XformCommonAPI(prim)
+        prev = self._last_pos.get(robot_id)
         api.SetTranslate(self._Gf.Vec3d(float(x), float(y), float(z)))
-        import math
+
+        # Face the direction of travel. The controller does not supply a heading
+        # (waypoints are positions only), so derive it from the motion delta —
+        # otherwise the vehicle crabs sideways down the row, which is the single
+        # most obvious tell that it is a sliding marker rather than a robot.
+        # An explicit non-zero yaw from the caller always wins.
+        if yaw == 0.0 and prev is not None:
+            dx, dy = float(x) - prev[0], float(y) - prev[1]
+            if (dx * dx + dy * dy) > 1e-6:
+                # +Y is the nose, so heading is measured from +Y toward +X.
+                yaw = math.atan2(dx, dy)
+                self._last_yaw[robot_id] = yaw
+            else:
+                yaw = self._last_yaw.get(robot_id, 0.0)
 
         api.SetRotate(
             (0.0, 0.0, math.degrees(yaw)),
             self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
         )
+        self._roll_wheels(robot_id, prev, (float(x), float(y), float(z)))
+        self._last_pos[robot_id] = (float(x), float(y), float(z))
+
+    def _roll_wheels(self, robot_id: str, prev, now) -> None:
+        """Rotate wheels by the GROUND distance travelled, so roll matches motion
+        instead of free-spinning. Visual only — no traction model."""
+        parts = self._parts.get(robot_id)
+        wheels = getattr(parts, "wheels", None) or []
+        if not wheels or prev is None:
+            return
+        import math
+
+        dist = math.hypot(now[0] - prev[0], now[1] - prev[1])
+        if dist <= 0.0:
+            return
+        radius = 0.17  # must match robot_builder.build_ugv's wheel_r
+        phase = self._wheel_phase.get(robot_id, 0.0)
+        phase = (phase + math.degrees(dist / radius)) % 360.0
+        self._wheel_phase[robot_id] = phase
+        for wp in wheels:
+            prim = self._stage.GetPrimAtPath(wp)
+            if not prim or not prim.IsValid():
+                continue
+            # Wheels are cylinders about local X, so roll is rotation about X.
+            self._UsdGeom.XformCommonAPI(prim).SetRotate(
+                (phase, 0.0, 0.0),
+                self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+            )
 
     def get_pose(self, robot_id: str) -> tuple[float, float, float, float]:
         import math
@@ -189,7 +319,7 @@ class SimRuntime:
         return data
 
     def capture_overview(self):
-        """RGB from the fixed bird's-eye camera (H x W x 4 uint8), or None."""
+        """RGB from the bird's-eye / chase camera (H x W x 4 uint8), or None."""
         import numpy as np
 
         if self._overview_annot is None:
@@ -199,6 +329,86 @@ class SimRuntime:
         )
         data = np.asarray(self._overview_annot.get_data())
         return None if data.size == 0 else data
+
+    def capture_pair(self, robot_id: str):
+        """(overview_frame, robot_camera_frame) from ONE render pass.
+
+        Calling `capture_overview()` and `capture()` back to back renders the
+        scene twice per video frame, which doubles the cost of the demo run for
+        no benefit — and worse, the two views would be a render apart, so a
+        moving drone would sit in slightly different places in the same frame.
+        """
+        import numpy as np
+
+        self._rep.orchestrator.step(
+            rt_subframes=self._rt_subframes, pause_timeline=False
+        )
+
+        def _read(annot):
+            if annot is None:
+                return None
+            data = np.asarray(annot.get_data())
+            return None if data.size == 0 else data
+
+        return _read(self._overview_annot), _read(self._annots.get(robot_id))
+
+    def chase(self, robot_id: str, back: float = 9.0, up: float = 5.5) -> None:
+        """Point the overview camera at `robot_id` from `back` metres south and
+        `up` metres above it.
+
+        A fixed bird's-eye works for a 10-panel row and fails completely on the
+        real block: a table is 128 m long, so a camera pinned at the row's south
+        end loses the drone within a few panels. This follows it instead.
+
+        Orientation, spelled out because a camera looking the wrong way renders a
+        plausible-looking picture of nothing: a USD camera looks along its local
+        -Z, and rotateX(90) swings that to +Y (north). Backing off by `d` below
+        the horizontal gives rotateX(90 - d), so the camera looks north and down
+        at whatever `back`/`up` imply.
+        """
+        import math
+
+        if robot_id not in self._robot_paths:
+            return
+        # Gate on the camera PRIM, not on the annotator: a live viewport chases
+        # the fleet through this same camera and has no render product attached.
+        cam = self._stage.GetPrimAtPath("/World/Overview")
+        if not cam or not cam.IsValid():
+            return
+        x, y, z, _ = self.get_pose(robot_id)
+        api = self._UsdGeom.XformCommonAPI(cam)
+        api.SetTranslate(self._Gf.Vec3d(float(x), float(y) - back, float(z) + up))
+        pitch = math.degrees(math.atan2(up, max(1e-3, back)))
+        api.SetRotate(
+            (90.0 - pitch, 0.0, 0.0),
+            self._UsdGeom.XformCommonAPI.RotationOrderXYZ,
+        )
+
+    def set_viewport_camera(self, prim_path: str = "/World/Overview") -> bool:
+        """Aim the interactive viewport through `prim_path`. Returns success.
+
+        Without this a GUI/livestream run shows the default perspective camera —
+        a static shot of a 320 x 647 m block in which the fleet is a few pixels.
+        Pointing the viewport at the chase camera means `chase()` drives what the
+        human sees, exactly as it already drives the recorded video.
+
+        API verified against this build: `omni.kit.viewport.utility 2.0.1`
+        exposes `get_active_viewport()`, and `camera_path` is a real setter on
+        `omni.kit.widget.viewport 109.2.0`'s ViewportAPI. Best-effort — a failure
+        here costs the view, never the mission.
+        """
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+
+            vp = get_active_viewport()
+            if vp is None:
+                return False
+            vp.camera_path = prim_path
+            self._app.update()
+            return True
+        except Exception as exc:  # noqa: BLE001 — viewing is never worth the run
+            print(f"  [warn] could not set viewport camera: {exc}", flush=True)
+            return False
 
     def export(self, path: str) -> None:
         """Save the current (post-run) stage — panels now hold verdicts."""

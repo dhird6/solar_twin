@@ -9,6 +9,8 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 - **Isaac-bound code runs only under Isaac Sim's Python** (`./python.sh`). Pure-python code (orchestrator, perception interfaces, transport/base, tests) must import WITHOUT Isaac — keep every `import omni`/`isaacsim`/`pxr` inside `world/`, `transport/sim_native.py`, `transport/ros2_bridge.py`.
 - **No GUI-only steps in the pipeline.** Everything reproducible is a Python entry point + a config in `configs/`. The Isaac Sim UI is for inspection, never construction.
 - **The USD stage is the source of truth for panel state.** Read/write panel fields via `src/solar_twin/schema/pv_module.py` — never a side store during sim.
+- **Never quote a VLM-derived KPI from a single run.** The world is seeded; the model is only byte-repeatable while served *serially* (measured — batched inference is not, `RISK-23`). Run `--repeat N` and quote `variance.json`'s spread, with the run record's `perception.sampling` naming the decoding config **and `perception.prompt_version` naming the prompt** — a taxonomy edit changes a KPI as surely as a decoding knob does.
+- **A KPI is only as quotable as its scenario.** `demo_video.yaml` says in its own header that it is a demo, not a measurement — yet `KPI-01` was quoted from it for weeks. Measurement scenarios: `nominal_calm`/`nominal_calm_vlm` (`SC-01`, KPI-01), `khavda_selfshade{,_lowsun}` (`SC-11`/`SC-12`, KPI-03). Check the scenario's own header before quoting its number, and note that a KPI-03 of 0.00 on an all-healthy stage does not transfer to a fault-enriched one (measured: 0.030–0.091 on `SC-01`).
 - **Version-specific Isaac APIs and asset paths drift between releases. Verify against the installed 6.0.1 build; do not trust remembered snippets** (including ones in the bible). If unsure, say so and check the docs.
 - **Default Transport is sim-native**, not ROS 2 — the Spark has reported ROS 2 sensor-rendering quirks. ROS 2 is behind an interface and optional until proven (see `docs/ENVIRONMENT.md`).
 
@@ -17,6 +19,7 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 - Run an Isaac-bound script: `./python.sh -m solar_twin.<module> <args>` (⚠ from the Isaac Sim build dir, or via the project's launch alias — see `docs/ENVIRONMENT.md`).
 - Build the farm: `./python.sh -m solar_twin.world.farm_builder configs/farm.yaml`
 - Run a full mission: `./python.sh -m solar_twin.run configs/farm.yaml configs/mission.yaml`
+- Measure a KPI: add `--scenario configs/scenarios/<name>.yaml --repeat N` → `runs/<ts>/{repeat_NN/,variance.json,gates.json}`; gates are enforced and a breach exits non-zero.
 - ROS 2: source ROS 2 before launching, or enable the bridge with `--enable isaacsim.ros2.bridge`. Images publish with **Sensor Data QoS** → in RViz2 set image Reliability to **Best Effort**. ROS 2 OmniGraph nodes only publish **after Play**.
 - Tests (no GPU, no Isaac): `pytest tests/`
 
@@ -25,12 +28,15 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 - `src/solar_twin/schema/pv_module.py` — PVModule USD read/write (the panel
   contract) + `FaultReport` (the run-record/ROS 2 payload, §6.3)
 - `src/solar_twin/world/` — `farm_builder.py`, `sim_runtime.py` (Isaac-bound, built)
-- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, built), `ros2_bridge.py` (not yet built, see `docs/ROS2_CONTRACT.md`)
+- `src/solar_twin/transport/` — `base.py`, `sim_native.py` (default, built), `ros2_bridge.py` (built + smoke-tested on real ROS 2 Jazzy; imports without `rclpy`, so it stays Isaac-free-testable — see `docs/ROS2_CONTRACT.md`)
 - `src/solar_twin/perception/` — `base.py`, `ground_truth.py` (stub, Slice 0
   default), `cosmos_reason.py` (Cosmos Reason VLM skeleton, HTTP behind a fake-able client — wired into `run.py`, needs a NIM)
 - `src/solar_twin/control/` — `base.py`, `kinematic_math.py` (pure interp
   math, Isaac-free), `kinematic.py` (Isaac-bound wrapper, built — teleport for Slice 0)
 - `src/solar_twin/orchestrator/` — `mission.py` (escalation FSM), `fake_backend.py` (for tests)
+- `src/solar_twin/kpi/` — `gates.py` (enforces a scenario's `kpi_gates`, FR-17),
+  `variance.py` (run-to-run spread + renderer-vs-model attribution). Pure-python,
+  works on live and archived run records; `tools/kpi_variance.py` is the CLI.
 - `src/solar_twin/run.py` — entry point → writes `runs/<ts>/`
 - `tests/` — pytest, Isaac-free · `docs/` — bible, TASKS, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
 

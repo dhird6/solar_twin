@@ -55,3 +55,38 @@ def test_stage_up_axis_helpers_available():
     UsdGeom.SetStageMetersPerUnit(st, 1.0)
     assert UsdGeom.GetStageUpAxis(st) == UsdGeom.Tokens.z
     assert UsdGeom.GetStageMetersPerUnit(st) == 1.0
+
+
+def test_restore_state_rewinds_state_stamp_and_log():
+    """`--repeat` correctness at the USD level: after a verdict is written, a
+    restore must put the prim back exactly as the builder left it. Anything less
+    and the next repeat reads the previous repeat's verdict as ground truth."""
+    st = _stage()
+    prim = pv.create_panel(st, "/World/P", "R01-C001", 1, 1)
+    prim.GetAttribute(pv.ATTR_STATE).Set(pv.PanelState.SOILED.value)  # injected fault
+    before = pv.read_panel(prim)
+
+    pv.write_state(prim, pv.PanelState.HOTSPOT, "misread as hot", "2026-07-28T00:00:00")
+    mid = pv.read_panel(prim)
+    assert mid.state is pv.PanelState.HOTSPOT
+    assert len(mid.inspection_log) == 1
+
+    pv.restore_state(prim, before)
+    after = pv.read_panel(prim)
+    assert after.state is pv.PanelState.SOILED
+    assert after.last_inspected == before.last_inspected
+    # The log feeds `history` into the perception prompt — a leftover line would
+    # change the question the next repeat asks.
+    assert list(after.inspection_log) == list(before.inspection_log) == []
+
+
+def test_restore_state_is_not_a_write_and_leaves_no_trace():
+    st = _stage()
+    prim = pv.create_panel(st, "/World/P2", "R01-C002", 1, 2)
+    pv.write_state(prim, pv.PanelState.CRACK, "cracked", "2026-07-28T00:00:01")
+    snap = pv.read_panel(prim)
+    pv.restore_state(prim, snap)
+    # Restoring a snapshot that already had a log preserves it verbatim — the
+    # restore neither appends nor drops entries.
+    assert list(pv.read_panel(prim).inspection_log) == list(snap.inspection_log)
+    assert len(snap.inspection_log) == 1

@@ -185,6 +185,20 @@ def set_state(prim, state: str, note: str):
     prim.GetAttribute(f"{PREFIX}:inspection_log").Set(Vt.StringArray(log))
 ```
 
+**One additional accessor, added 2026-07-28 — `restore_state(prim, record)`.** The
+inverse of `write_state`: it rewrites `pv:state`, `pv:last_inspected` and
+`pv:inspection_log` from a previously read `PanelRecord` and appends **nothing**.
+It exists for `run.py --repeat N` (measuring a KPI's run-to-run spread): the first
+mission's verdict lands on `pv:state`, so without a rewind the second mission
+reads that verdict as ground truth and every `injected_state` it records is
+fiction. The log is rewound too, because it feeds `history` into the perception
+prompt — a leftover line asks the next repeat a different question.
+
+This does **not** weaken "the USD stage is the source of truth": it is a
+harness-only rewind of the stage itself, not a side store, and it is deliberately
+*not* on the `Transport` ABC — a real robot cannot un-inspect a panel
+(`docs/specs/04-interfaces-and-data.md` `IF-10`).
+
 ### 6.2 Coordinates & units
 - **Stage up-axis: Z. Units: meters.** Set explicitly at farm build (`stage_utils.set_stage_up_axis("Z")` — ⚠ verify) and assert it on load. Mismatched up-axis/scale is the classic silent bug.
 - **Georef mapping:** define one anchor — the farm origin `(0,0,0)` maps to a known `(lat, lon)` with a known heading. A panel's `geo_position` is derived from its metric position + the anchor. Put the anchor + a `local_to_geo()` function in `schema/` so World 2 (labels) and World 3 (real SCADA) resolve to the *same* panel. This is what makes a fault the drone finds at row 12 line up with the string SCADA is flagging.
@@ -225,6 +239,17 @@ class Perception:
     def diagnose(self, frame, panel_context: dict) -> Diagnosis: ...  # Drone 2 confirm
 ```
 `ground_truth.py` ignores `frame` and reads `pv:state` from context (Slice 0). `cosmos_reason.py` (later) runs the VLM on `frame` with `panel_context` as the prompt.
+
+**The two ABC methods are the whole contract; `provenance()` is optional
+(2026-07-28).** An implementation MAY expose `provenance() -> dict` naming what
+judged the panels — endpoint, served model, exact decoding config — which
+`run.py` stamps into the run record's `perception` block. It is duck-typed
+(`hasattr`), deliberately **not** added to the ABC, so `ground_truth.py` and any
+future implementation stay valid without it. The reason it exists: a KPI whose
+decoding config was never recorded cannot be reproduced or defended, and on this
+box VLM inference is only byte-repeatable while it is served **serially** —
+concurrent identical requests returned different verdicts for the same frame
+(measured; `docs/specs/08-platform-and-risk-register.md` `RISK-23`).
 
 ### 6.5 Fault taxonomy (the `pv:state` enum)
 Standardize now; it must match the strategy doc and eventually the SCADA fault codes.

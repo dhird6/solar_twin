@@ -1,6 +1,8 @@
 """FarmLayout geometry + seeded fault determinism (no Isaac)."""
 
+import math
 import random
+from pathlib import Path
 
 from solar_twin.schema.pv_module import PanelState
 from solar_twin.world.layout import (
@@ -66,16 +68,52 @@ def test_inspection_targets_cover_all_panels():
 
 def test_standoffs_are_above_the_panel_top():
     # Regression: confirm camera used to land *below* the panel (abs-Z bug).
+    # Second regression, same shape: "top" used to mean mount height + half
+    # thickness, ignoring TILT — so on a 60 deg tracker the camera was placed a
+    # metre under the module's raised edge. Top is the panel's highest point.
     farm = {**FARM, "panel": {"mount_height": 0.75, "height": 0.05}}
     layout = FarmLayout(farm)
     top = layout.panel_top_z()
-    assert top == 0.775
+    # length 2.0 (default) tilted 20 deg -> the upper edge rises 1.0*sin(20).
+    expect = 0.75 + 1.0 * math.sin(math.radians(20.0)) + 0.025 * math.cos(
+        math.radians(20.0)
+    )
+    assert math.isclose(top, expect)
+    assert top > 0.775  # strictly higher than the old flat-panel answer
     t = layout.inspection_targets(
         {"kinematics": {"screen_standoff": 2.5, "confirm_standoff": 0.8}}
     )[0]
-    assert t.confirm.z == 0.775 + 0.8  # strictly above the panel top
-    assert t.screen.z == 0.775 + 2.5
+    assert math.isclose(t.confirm.z, expect + 0.8)  # strictly above the panel top
+    assert math.isclose(t.screen.z, expect + 2.5)
     assert t.confirm.z > top
+
+
+def test_panel_top_clears_a_tracker_at_its_stop():
+    """The case that broke the confirm pass on the real block: a 2.278 m module
+    rotated 60 deg lifts its upper edge ~0.99 m above the torque tube, so a
+    0.8 m confirm standoff measured off a FLAT top puts the camera inside the
+    row. Uses the real site file, driven by a real instant."""
+    site_path = Path(__file__).resolve().parents[1] / "configs/layouts/khavda_a10b_block02.yaml"
+    if not site_path.exists():  # pragma: no cover — file is committed
+        return
+    layout = FarmLayout(
+        {
+            "layout": {"kind": "file", "path": str(site_path), "max_tables": 2},
+            "terrain": {"kind": "flat"},
+            "georef": {"lat0": 24.088, "lon0": 69.418},
+            "panel": {"mount_height": 1.5, "height": 0.035},
+            "sun": {"timestamp": "2026-06-21T02:00:00Z", "tracker_max_rotation_deg": 60.0},
+        }
+    )
+    assert math.isclose(layout.tracker_rotation_deg(), 60.0)
+    site = layout.sites[0]
+    # Site-file dimensions reach the panel, un-transposed: chord across the aisle.
+    assert math.isclose(site.size_x_m, 2.278) and math.isclose(site.size_y_m, 1.134)
+    rise = 2.278 / 2 * math.sin(math.radians(60.0))
+    assert math.isclose(layout.panel_top_z(0.0, site), 1.5 + rise + 0.0175 * 0.5, rel_tol=1e-9)
+    assert layout.panel_top_z(0.0, site) > 1.5 + 0.98   # the flat answer was 1.52
+    t = layout.inspection_targets({"kinematics": {"confirm_standoff": 0.8}})[0]
+    assert t.confirm.z > 1.5 + rise                     # clears the raised edge
 
 
 def test_terrain_flat_by_default_and_deterministic():
@@ -139,3 +177,74 @@ def test_soiling_tiles_are_ragged_localized_and_lower_biased():
     assert soiling_tiles(0, 5, random.Random("s")) == set()
 
 
+
+
+def _file_layout(max_tables=4, **mission):
+    site_path = Path(__file__).resolve().parents[1] / "configs/layouts/khavda_a10b_block02.yaml"
+    if not site_path.exists():  # pragma: no cover — committed
+        return None, None
+    layout = FarmLayout(
+        {
+            "layout": {"kind": "file", "path": str(site_path), "max_tables": max_tables},
+            "terrain": {"kind": "flat"},
+            "georef": {"lat0": 24.088, "lon0": 69.418},
+            "panel": {"mount_height": 1.5, "height": 0.035},
+        }
+    )
+    return layout, mission
+
+
+def test_route_defaults_to_linear_so_kpis_stay_comparable():
+    layout, _ = _file_layout()
+    if layout is None:
+        return
+    assert [s.panel_id for s in layout.route_sites({})] == [s.panel_id for s in layout.sites]
+
+
+def test_serpentine_reverses_alternate_tables():
+    """A one-way sweep of a 128 m table means a 128 m deadhead back to the start
+    of the next row, every row. Serpentine turns round instead."""
+    layout, _ = _file_layout()
+    if layout is None:
+        return
+    route = layout.route_sites({"route": "serpentine"})
+    assert len(route) == len(layout.sites)              # same panels, new order
+    assert {s.panel_id for s in route} == {s.panel_id for s in layout.sites}
+
+    tables: dict[int, list] = {}
+    for s in route:
+        tables.setdefault(s.row, []).append(s)
+    orders = list(tables.values())
+    # First table runs south->north, the second north->south, and so on.
+    assert orders[0][0].position[1] < orders[0][-1].position[1]
+    assert orders[1][0].position[1] > orders[1][-1].position[1]
+    assert orders[2][0].position[1] < orders[2][-1].position[1]
+
+    # The point of it: no long jump between the end of one row and the start of
+    # the next. Compare the worst consecutive hop against the linear order.
+    def worst_hop(sites):
+        return max(
+            math.dist(a.position, b.position) for a, b in zip(sites, sites[1:])
+        )
+
+    assert worst_hop(route) < 0.25 * worst_hop(layout.route_sites({}))
+
+
+def test_panel_stride_samples_a_coverage_sweep():
+    layout, _ = _file_layout(max_tables=2)
+    if layout is None:
+        return
+    full = layout.route_sites({})
+    every4 = layout.route_sites({"panel_stride": 4})
+    assert len(every4) == math.ceil(len(full) / 4)
+    assert every4[0].panel_id == full[0].panel_id
+    assert every4[1].panel_id == full[4].panel_id
+
+
+def test_inspection_targets_follow_the_route_order():
+    layout, _ = _file_layout()
+    if layout is None:
+        return
+    cfg = {"route": "serpentine", "panel_stride": 3, "kinematics": {}}
+    ids = [t.panel_id for t in layout.inspection_targets(cfg)]
+    assert ids == [s.panel_id for s in layout.route_sites(cfg)]

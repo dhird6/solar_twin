@@ -1,0 +1,50 @@
+# nominal_calm_vlm — SC-01 with the live VLM. The SLICE-1 half of the comparison.
+#
+# Byte-for-byte the same world as `nominal_calm.yaml`: same seed, same sun, same
+# fault set, same stride, same gates. The ONLY difference is `perception`, which is
+# the entire claim `FR-02` makes — that Cosmos Reason drops into the `Perception`
+# interface with no orchestration change, so swapping the brain is a config flip.
+#
+# That is also why the two files share a stage: build once with
+# `nominal_calm.yaml`, run both scenarios against `assets/nominal_calm.usd`. If
+# each built its own USD, a difference in KPI-01 could be a difference in the
+# world, and the comparison would prove nothing.
+#
+#   # after building assets/nominal_calm.usd (see nominal_calm.yaml):
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/nominal_calm_vlm.yaml --subset 5 \
+#       --farm-usd assets/nominal_calm.usd --repeat 3
+#
+# ⚠ Needs the vLLM server up on localhost:8000 (`docs/ENVIRONMENT.md` — the NIM
+#   crashes on sm_121, so this box serves Reason-1 via vLLM cu130-nightly).
+# ⚠ Serve it SERIALLY. Batched inference is not reproducible (`RISK-23`), so a
+#   concurrent screening pass would make every number here unquotable.
+
+name: nominal_calm_vlm
+seed: 20260729          # identical to nominal_calm — the world must not move
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # <-- the only intended difference
+
+farm_overrides:
+  sun:
+    timestamp: "2026-06-21T04:00:00Z"
+    tracker_max_rotation_deg: 60.0
+  faults:
+    rate: 0.20
+    states: [soiled, hotspot]
+  # See nominal_calm.yaml: the empty list alone is not enough, `turbine_scatter`
+  # wins unless explicitly disabled.
+  turbines: []
+  turbine_scatter:
+    enabled: false
+
+mission_overrides:
+  panel_stride: 14
+
+kpi_gates:
+  # Same bounds as the stub run, deliberately: the target does not get relaxed
+  # because the brain got harder. A breach here is the finding.
+  detection_rate_min: 0.80
+  abstention_rate_max: 0.0

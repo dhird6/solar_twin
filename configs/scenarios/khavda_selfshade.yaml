@@ -1,0 +1,67 @@
+# khavda_selfshade — KPI-03 (false-fault rate, HAZ-07) on the REAL block.
+#
+# The SLICE-3 stimulus problem, finally solved by the hardware itself. The
+# turbine-blade shadow (SC-05) sailed over the elevated rows onto the ground, and
+# the `hard_shadow` occluder bar is an invented prop. Khavda is an **HSAT** site:
+# at low sun every tracker rotates to its mechanical limit and each row throws a
+# hard-edged shadow across the row to its WEST. That is a real, on-surface,
+# many-panel shading stimulus produced by the plant's own geometry — nothing is
+# added to the scene to create it.
+#
+# Geometry at the timestamp below (24.088 N, 69.418 E, computed with world/solar.py):
+#   sun elevation 17.2 deg, azimuth 71.4 deg (east)
+#   cross-axis projection angle 72.0 deg -> tracker CAPPED at its 60 deg limit
+#   shadow chord 7.20 m vs a 5/6 m row pitch
+#   -> ~30% of each panel shaded at 5 m pitch, ~17% at 6 m pitch
+# Backtracking is NOT modelled (TASKS.md), so this is the worst case a real
+# tracker controller would avoid — state it that way, do not claim otherwise.
+#
+# Denominator: with --subset 5 the band is five adjacent N-S tables at eastings
+# ...440 / ...446 / ...451 / ...457 / ...462. The sun is in the EAST, so the four
+# western tables are shaded by their eastern neighbour and the eastmost table
+# (T0243) has no occluder — a built-in unshaded CONTROL inside the same run.
+# Every panel is healthy, so ANY fault verdict is a false fault.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/khavda_selfshade.yaml --subset 5 \
+#       --out assets/khavda_selfshade.usd
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/khavda_selfshade.yaml --subset 5 \
+#       --farm-usd assets/khavda_selfshade.usd
+#
+# ⚠ Pass the SAME --subset to both, or the mission targets panels the stage lacks.
+
+name: khavda_selfshade
+seed: 20260727
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM — the whole point of KPI-03
+
+farm_overrides:
+  faults:
+    rate: 0.0        # every panel HEALTHY -> any fault verdict is a FALSE fault
+    states: []
+  sun:
+    # 02:00Z = 07:30 local. Solar noon here is 07:22Z, so this is early morning
+    # with the sun low in the east and the trackers pinned at their limit.
+    # Later (>= 02:30Z) the trackers track true again and self-shading vanishes;
+    # earlier (01:30Z) shades ~50% but the whole scene dims, which confounds
+    # "shadow" with "underexposed". 02:00Z is the readable hard-shadow case.
+    timestamp: "2026-06-21T02:00:00Z"
+    tracker_max_rotation_deg: 60.0
+  turbines: []       # isolate the self-shading stressor
+  # ⚠ Required alongside the empty list — see khavda_selfshade_lowsun.yaml. The
+  # scatter wins over an explicit list, so without this a rebuild inserts turbines
+  # that were not present when KPI-03 was measured on this scenario.
+  turbine_scatter:
+    enabled: false
+
+kpi_gates:
+  false_fault_rate_max: 0.05
+  # KPI-03's two halves (decided 2026-07-29) — see the KPI table in
+  # docs/specs/06-scenario-suite-and-kpis.md. `abstention_rate_max` is zero on
+  # purpose: a lost verdict is a plumbing bug, not a budget to spend.
+  false_alarm_rate_max: 0.05
+  abstention_rate_max: 0.0

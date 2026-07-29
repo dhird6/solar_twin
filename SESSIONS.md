@@ -17,6 +17,924 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 11d: the Pegasus/PX4 investigation — PX4 runs on aarch64; the bridge is a 17-call-site port
+
+`FR-06` (real flight dynamics) had sat behind `RISK-02` — "Pegasus on aarch64 is
+unproven" — for weeks. Investigated it. **It was two risks wearing one label, and
+the scary half is closed.**
+
+**⭐ PX4 SITL runs natively on this Spark.** Verified, not assumed:
+`px4io/px4-sitl` publishes a real `linux/arm64` manifest — 119 MB, native aarch64
+ELF, Ubuntu 24.04 base, image built 2026-07-08 (≈v1.18.0-beta1). It boots to
+`INFO [simulator_mavlink] Waiting for simulator to accept connection on TCP port
+4560`, and that port is reachable from the host. `tools/px4_sitl_smoke.py`
+reproduces it in ~30 s and exits non-zero if the seam does not open.
+
+**Two documented routes that do NOT work, recorded so nobody burns a day on them:**
+- Pegasus's install guide has you **build PX4 v1.14.3 from source** — a 2023
+  release, on a 2024 distro, on an architecture its docs never mention.
+- PX4's own "pre-built SITL packages" page advertises Ubuntu 24.04 **arm64
+  `.deb`s**; the tagged GitHub releases carry only a VOXL *board* package. The page
+  documents `main`, not the releases.
+
+⚠ **`PX4_SIM_MODEL` is a trap worth knowing.** `none_*` selects the external
+simulator (Isaac owns physics, PX4 owns control — what we want). Left unset, this
+image runs **SIH**, where PX4 simulates its own dynamics: it starts cleanly, looks
+healthy, and tells you nothing about your twin.
+
+**The Isaac-side bridge is the real remaining work — now sized instead of feared.**
+No Pegasus release targets Isaac 6.x (v5.1.0, Oct 2025, targets 5.0/5.1 on Ubuntu
+22.04/x86_64; Isaac 6.0 is still Early Developer Release, so the ecosystem lag is
+expected). Rather than compare version numbers, I cloned v5.1.0 and probed all 26
+of its `omni.*`/`isaacsim.*` imports inside a real headless 6.0.1 session:
+
+| result | count | detail |
+|---|---|---|
+| resolve fine | **21/26** | the modern `isaacsim.core.*` surface is intact |
+| present on disk, merely **not enabled** | 3 | `isaacsim.ros2.bridge`, `isaacsim.replicator.agent.core`, `omni.anim.graph.core` — **not port work** |
+| genuinely gone | 2 | `omni.isaac.sensor` (peripheral) and **`omni.isaac.dynamic_control`** (load-bearing) |
+
+The whole legacy `omni.isaac.*` namespace is absent from this build except
+`omni.isaac.core_archive`. That distinction mattered: a bare import probe
+*over-reports* absence, because Kit modules only import once their extension is
+enabled — so I checked the extension folders on disk too, which moved three
+"failures" out of the port estimate.
+
+**The port is 17 call sites in 2 files** (`vehicle.py`, `multirotor.py`), all
+funnelled through one accessor `Vehicle.get_dc_interface()`: rigid-body
+handle/pose/velocity reads, `apply_body_force`/`apply_body_torque`, and
+articulation DOF velocity (the *visual* rotor spin only). Every one maps onto
+`isaacsim.core.prims` / `omni.physics.tensors`, both verified present on 6.0.1.
+
+**Recommendation: a time-boxed fork-and-patch spike**, not a from-scratch bridge.
+What Pegasus actually buys us is the multirotor dynamics and the **HIL sensor
+models** (IMU/GPS/baro/mag) that PX4's EKF needs to arm and hold position; that is
+where a hand-rolled MAVLink bridge would sink. `FR-07` keeps the kinematic
+controller valid as the exit if the patch does not converge, and `FR-06`'s wording
+is now corrected to require *PX4-governed* control rather than Pegasus
+specifically.
+
+**New risk found on the way — `RISK-26`:** Pegasus's `px4_mavlink_backend.py` was
+written against PX4 **v1.14.3**; this container ships ~**v1.18.0-beta1**. The HIL
+protocol and lockstep handshake are not guaranteed stable across four minor
+releases, and it is untested because the bridge does not exist yet. Verify the
+handshake before trusting any hover result.
+
+Also flagged rather than discovered later: Pegasus installs with
+`ISAACSIM_PYTHON -m pip install --editable` (forbidden here without an
+`ENVIRONMENT.md` note) and its docs register the extension **through the GUI**
+(must be `--ext-folder`, per the no-GUI-only-steps rule).
+
+## 2026-07-29 — Session 11c: the KPIs get honest — measured determinism, spreads, and gates that actually gate
+
+**Integrated and pushed.** Three commits (`a02d912` perception, `eca6a25` scenario +
+verifier, `052ea9a` harness + docs), rebased onto 11b's tip — the remote had moved 8
+commits ahead while this work was in flight. Only the two narrative docs conflicted;
+`run.py` merged cleanly, including 11b's `build_keepouts(farm_cfg, layout)` fix,
+which was the cross-branch trap 11b warned about. **294 Isaac-free tests pass, and
+at each of the three commits individually**, not just at the tip. `docs/TASKS.md`'s
+own stale-entry warning caught one of mine: my "the full-plant video path is too
+expensive" item was already resolved in 10e *with my diagnosis shown to be wrong*,
+so it is dropped rather than carried forward.
+
+**PR #9 opened into `main`** — the whole 31-commit branch, which TASKS has listed as
+the largest outstanding structural item for several sessions (74 → 294 tests).
+
+**This closes the first two items on Session 11b's `Next` list** — "quantify VLM run-to-run variance before quoting any KPI as a constant" and the low-sun (01:30Z) KPI-03 point. Developed in parallel with 11b, so it touches `perception/`, `orchestrator/`, `kpi/` and the specs while 11b worked in `world/`; `run.py` was the only code file both touched and it merged cleanly.
+
+**The pending item at the top of `TASKS.md` was "quantify VLM run-to-run variance
+before quoting any KPI as a constant." Measuring it changed the diagnosis.**
+
+**⭐ The finding: the model is deterministic; the *batching* is not.** Probed
+directly against the live vLLM server on a real saved camera frame from the
+KPI-03 run (`runs/20260727T183423/shade_R253-C050_confirm.png`) — no Isaac, no
+stage, ~2 minutes:
+
+| config | serial, N=5 each | concurrent, N=4 |
+|---|---|---|
+| `temperature: 0.0` (what shipped) | **1 distinct response / 5** | — |
+| `+ seed` | 1 / 5 | — |
+| `+ top_p 1.0 + top_k 1` | 1 / 5 | — |
+| real code path (taxonomy prompt) | **4/4 identical** (`clean` → `soiled`) | **2× `soiled`, 2× `healthy`** |
+
+So the Session-10b suspicion — "vLLM clamps temperature 0.0 to 0.01, so the
+sampler wobbles" — is **wrong**: served serially it is byte-repeatable even with
+no seed at all. Fire four identical requests *concurrently* and the same frame
+comes back two ways. **Continuous batching changes the arithmetic and no
+request-level parameter fixes it** (`RISK-23`). The mission FSM is serial, so
+today's runs are reproducible — but a future parallelised fleet would silently
+make every KPI non-reproducible, and that is now written down instead of assumed.
+
+That leaves the actual Session-10b flip (`R258-C013`: `soiled` vs `hotspot`)
+unexplained, with the **renderer** as the remaining suspect. It cannot be settled
+retroactively — those runs saved no frames — so the twin now records the evidence:
+
+**What shipped (all of it Isaac-free-tested, 196 tests, was 157):**
+- **Decoding pinned and recorded.** `cosmos_reason.DEFAULT_SAMPLING` sends
+  greedy (`top_k: 1`, `top_p: 1.0`, `seed: 0`) — `top_k` makes the argmax
+  explicit so a server default cannot reintroduce sampling — and
+  `provenance()` stamps endpoint, model and the exact sampling into every run
+  record's new `perception` block, batching caveat included.
+- **Frame digests, then frame thumbnails** — and the second one only exists
+  because the first one *measured something*. A digest of every judged frame
+  (`PanelResult.screen_frame_sha`) went in to turn "renderer or model?" into a
+  lookup; the first 3-repeat run then reported **40/40 panels rendered
+  differently between repeats**, so the probe below was written to find out how
+  differently:
+
+  | `tools/probe_render_determinism.py`, 640x480 | distinct digests | mean pixel Δ | 8x8-thumbnail Δ |
+  |---|---|---|---|
+  | camera held still, 4 captures | **4/4** | 0.85/255 | 0.36 LSB |
+  | leave the pose and return | 4/4 | 2.39/255 | 0.59 LSB |
+  | + 10 settling steps (does it converge?) | 4/4 | 0.70/255 | 0.20 LSB |
+  | **a different panel** (shaded vs. control) | 2/2 | — | **35.5 LSB** |
+
+  **RTX capture is not bit-reproducible even from a camera that never moves, and
+  more settling steps do not fix it** (`RISK-24`). Which means the digest-equality
+  attribution I had just shipped was **wrong in practice**: exact digests always
+  differ in a rendered run, so every future flip would have been blamed on the
+  renderer. The amplitude is the way out — noise is sub-LSB after block
+  averaging, a real difference is 35 LSB, a ~60x gap — so attribution now compares
+  an **8x8 luminance thumbnail with a measured tolerance** (`frame_thumbnail` +
+  `thumbnails_differ`, 1.0 LSB: 1.7x above the worst noise, 35x below the smallest
+  real signal). A quantised *hash* was tried first and rejected by measurement, not
+  by taste: 256 blocks at 16 levels still flipped a boundary on 3 of 4 unchanged
+  captures. Both counts are reported — "same bits" and "same picture" — because the
+  gap between them *is* the renderer's noise.
+- **`run.py --repeat N`** — one scenario N times, `variance.json`: min/median/max
+  per metric (`MetricSpread.quote()` formats a number so it *cannot* be quoted
+  bare), every disagreeing panel attributed `model` / `render` / `both` /
+  `unknown`, plus **renderer stability on every panel** so a flip-free repeat set
+  still answers `RISK-24`.
+  ⚠ **The trap in repeats:** the first mission writes its verdict onto
+  `pv:state`, so repeat 2 would read that verdict as ground truth and every
+  `injected_state` in the record would be fiction. `pv_module.restore_state` +
+  `snapshot_panels`/`restore_panels` rewind it — including the **inspection log**,
+  because the log feeds `history` into the perception prompt, so a leftover line
+  asks the next repeat a different question. Verified at the USD level under
+  Isaac's own Python, not just against the fake backend.
+- **`kpi_gates` are enforced (`FR-17`).** They had been *loaded, printed and
+  never checked* in every scenario config since `IF-03` landed. Now
+  `kpi/gates.py` judges them: `gates.json`, a printed verdict, non-zero exit on
+  breach, **worst-of-N** for a repeat set (not the mean — a fleet flies each
+  sortie once), and a gate naming an unmeasured metric **fails** rather than
+  passing silently.
+- **The second KPI-03 point** (`configs/scenarios/khavda_selfshade_lowsun.yaml`,
+  was `TASKS.md` item 1): 01:30Z, sun 10.7°, cross-axis angle 78.5°, shadow
+  chord 10.87 m → **54% of each module shaded at the 5 m pitch** versus 30% at
+  02:00Z, in a dimmer scene so shading is confounded with underexposure. The
+  geometry is asserted in `test_solar.py` before any run — the SLICE-3 lesson
+  that a KPI-03 of 0.00 means nothing if the stimulus was absent.
+
+- **`tools/kpi_variance.py`** aggregates *archived* run directories, so history
+  can be re-examined without re-running the sim. Pointed at the three 24-panel
+  Session-10b/10c runs it reproduces the finding as a number:
+
+  ```
+  records: 3  scenario=demo_video  seed=20260728
+    false_fault_rate = 0 (N=3, identical across repeats)
+    detection_rate = 0.9167 median (N=3, range 0.875–0.9167)  ⚠ varies
+    per-panel agreement 0.958 (1/24 panels flipped)
+    - R258-C013 (injected soiled): soiled / soiled / hotspot → cause=unknown
+  ```
+
+  Two of three runs said `soiled`, one said `hotspot`; **`KPI-03` was rock
+  stable at 0.00 across all three** while `KPI-01` moved. `cause=unknown` is the
+  honest verdict for those runs — they carry no frame digests, which is exactly
+  the gap now closed. It also refuses to aggregate records whose scenario, seed
+  or decoding config differ: that would be an A/B test wearing a variance report's
+  clothes.
+
+**⭐ Measured result — KPI-03 at low sun (`runs/20260728T200755`, live Reason-1):**
+
+| | value |
+|---|---|
+| **false_fault_rate (KPI-03)** | **0.000 — N=3, identical across all three repeats** |
+| detection_rate (KPI-01) | 1.000, N=3, identical |
+| panels | 40 healthy, stride 14 across all five tables (control included) |
+| per-panel agreement | 1.000 — 0/40 panels flipped |
+| gate | `false_fault_rate_max: 0.05` → **PASS**, basis **worst-of-3** |
+| wall | 825 s for 3 repeats |
+
+**And the stimulus is proven, not assumed** (`tools/verify_shade.py`, promoted out
+of a run directory into a real tool, PV-glass masking built in): shaded rows read
+**77.5–83.0% dark glass** against the unshaded control's **40.0%** — a **+40.1
+point differential**, versus +14 at 02:00Z. Full evidence in the run's
+`STIMULUS.md`. So Reason-1 held clean on ~half-shaded, foreshortened modules in a
+dimmer scene — one geometry, honestly reported, now with N and a gate behind it.
+
+⚠ **Third instance of the same class of bug, caught by the tool's own check.** The
+verifier first announced "NO STIMULUS" on this stage — because it picked the
+control table by **row number**, and row numbering does not run west-to-east here
+(R258 is westmost, R243 eastmost). It was comparing the wrong panel. Ordering is
+now by stage x. Worth noting that the fail-loud check is what surfaced it: an
+honest verifier that shouts is better than a silent one that agrees with you.
+
+**Denominator caveat, stated because `--panel-stride` changes it:** 40 of 560
+panels. The metric denominator is panels VISITED, not the block. A full 560-panel
+census at 3 repeats would be ~5.6 h; the stride keeps all five tables at ~1/14
+the cost.
+
+### The repeat set WITH faults — where the harness earned its keep
+
+The low-sun set is all-healthy, so nothing escalated and no flip could be
+attributed. `demo_video` (20% faults, 24 panels, **7 escalations per repeat**)
+closed that, `--repeat 3`, twice — and the two runs tell the whole story:
+
+| | set A `runs/20260729T112424` | set B `runs/20260729T113839` (after the fix below) |
+|---|---|---|
+| KPI-03 false_fault_rate | 0.00 median, **range 0.00–0.053 ⚠ varies** | **0.000, N=3, identical** |
+| KPI-01 detection_rate | 0.875 median, **range 0.833–0.917 ⚠ varies** | **0.875, N=3, identical** |
+| panels flipped | 2/24 | 1/24 |
+| causes | `model` 1, `both` 1 | `model` 1 |
+
+**⭐ 1. The Session-10b flip reproduced and is attributed.** `R258-C013` (injected
+`soiled`) → `soiled / hotspot / hotspot`, with screen Δ 1.25 and confirm Δ 1.28
+LSB — both inside the measured noise tolerance, so **the model saw the same
+picture and read it differently** (`cause=model`). Its notes are two confident,
+incompatible readings: "opaque tan or brown patch… soiling" vs. "a small, bright
+red/orange spot… localized overheating".
+
+**Be precise about what that means.** It is model **fragility**, not model
+nondeterminism: given identical *bytes* the model is byte-repeatable (measured,
+15/15), but the renderer never sends identical bytes, and a difference invisible
+at picture level was enough to change the verdict. Set B flipped a *different*
+panel the same way (`R258-C014`, injected `hotspot` → `healthy/healthy/soiled`),
+which confirms the mechanism rather than the panel. Logged as **`RISK-25`** — and
+deliberately not treated as a sim bug: a real camera has sensor noise too, so a
+model that flips on it flips in the field. Both flips are on **faulted** panels,
+so this is `KPI-01` fragility; `KPI-03` was 0.000 across all six runs.
+
+**⚠⚠ 2. The harness found a bug in OUR code that was manufacturing false faults.**
+`R258-C004` (healthy) came back `healthy / healthy / unknown` and pushed KPI-03
+from 0.00 to 0.053. The model was not at fault — it answered
+`"fault_type": "healthy"`, confidence 1.0 — and then **closed its ```json fence
+without closing the brace**. No `}` existed anywhere, so `_parse_json_response`
+returned `{}`, the fail-safe mapped it to `unknown`, and because `unknown !=
+healthy` that scored as a **false fault**. *One missing character moved the
+project's headline metric.* The parser now strips fences and repairs an unclosed
+object (still failing closed on genuine garbage), tested against the verbatim
+response; set B re-ran the identical scenario and KPI-03 came back **0.000,
+identical across three repeats**.
+
+**Left as an owner decision, flagged at the definition site:** `unknown` is
+`!= healthy`, so "the model reported a fault that isn't there" and "we lost the
+model's answer" score identically in KPI-03 — opposite fixes. Redefining it
+touches a locked contract (§6.5 / `FR-03`); the recommendation is to report an
+abstention rate alongside rather than change the metric.
+
+**3. The "materially different picture" flag is one panel per CAMERA, explained.**
+Both sets flagged the first frame each camera takes in a repeat — repeat 1
+approaches from the stage home pose, later repeats from the previous repeat's last
+panel, so the renderer's accumulation history genuinely differs. The confirm-camera
+figure reproduced at **38.11 and 38.05 LSB** across two independent runs, which is
+what makes it an approach artifact rather than noise. Verdicts on those panels were
+unaffected in both sets.
+
+**4. `KPI-01 = 0.875` is a discrimination problem before it is a variance problem.**
+3 misses in 24, **2 of them stable across all repeats** (`R258-C013` reads
+`hotspot` every time in set B; `R258-C014` reads `healthy` twice of three). The
+`_STATE_DEFINITIONS` taxonomy block was added precisely to stop dust reading as a
+hotspot — it reduced that confusion, it has not removed it.
+
+## 2026-07-28 — Session 11b: audited the CAD ingest — BLOCK-02 is 100% in; the gap is that we only have ONE block's drawing
+
+Asked to parse the DWG, cross-check the PDF, and rebuild `farm_builder`'s layout
+generation because "only some panels/tables from that layout have been added".
+**Audited it instead of rebuilding it, and the premise does not hold.** Findings,
+all reproducible via the new `tools/audit_layout.py`:
+
+**BLOCK-02 is completely ingested and completely built.** Independent count from the
+plotted PDF's own vector geometry (not the ingest's self-report, which cannot
+corroborate itself):
+
+| | tables | 64.4 m | 96.5 m | 128.6 m | modules |
+|---|---|---|---|---|---|
+| ingest (DXF) | 273 | 6 | 8 | 259 | 30,016 |
+| PDF vectors | 279 | 6 | 8 | 259 | — |
+
+The residual of **6 is exactly the `DETAILS` entities the ingest reported skipping**
+— three extra length pairs (66.4, 99.4, 132.5 m, two each) which are the **legend
+swatches** showing one of each HSAT type, drawn a few metres longer than a real
+table. Module arithmetic closes independently: 6x56 + 8x84 + 259x112 = 30,016, and
+the layer names (`Interior HSAT (1x112)` etc.) state those counts. Geometry audit:
+**0 overlaps, 0 missing dimensions, 0 pitch mismatches, 0 duplicate ids or
+positions**, all `rot_deg` = 0. Nothing was approximated or silently skipped, so
+there was nothing to rebuild — `farm_builder` already authors all 273 tables /
+30,016 panels (verified on the stage). `--subset` is opt-in for fast builds; the
+default is the whole block.
+
+**⚠ The real gap is different, and bigger.** The title block reads *"BLOCK-02 PILE
+FOUNDATION LAYOUT (PLOT: A10b - 567.5 MW)"*, sheets 1 and 2 of 2 — both sheets are
+the same block. So the drawing we hold is **one ~18 MWdc DC block of a 567.5 MW
+plot**, i.e. of order 3% of PLOT A10b, which is itself part of a much larger park.
+Scaling the twin needs the *other blocks'* DC drawings, which we do not have.
+
+**⚠ The master drawing cannot supply them.** `6841-Khavda Overall Master plant
+layout` covers E 527k-552k / N 2,656k-2,677k (~25 x 21 km, and BLOCK-02 does fall
+inside it), but it carries **no per-table geometry**. Measured: 400,878 vector paths
+of which 92% are degenerate lines and only 49 are elongated at all, none with a
+table's signature — against 435 elongated paths and 259 identical 631.4 x 11.2 pt
+(56:1) table shapes in the one block sheet. Its own title block agrees: the block
+drawing says *"FOR BLOCK LOCATION REFER OVERALL PLANT LAYOUT"* — the master gives
+block **locations**, substations, 33 kV panels, gantries and ramps, not tables.
+
+**⚠ Could NOT parse the DWG directly.** Both files are AC1032 (AutoCAD 2018).
+`libredwg-tools` is not in the Ubuntu noble repos, no `dwg2dxf`/ODA converter is on
+this box, and the DXF that produced the current layout is gone (gitignored). The
+audit therefore corroborated the ingest from the **PDF**, which is sufficient to
+answer "is it complete?" but is NOT a substitute for a DXF when ingesting new
+geometry. To add blocks: export DXF from AutoCAD, or build LibreDWG.
+(`tools/layout_from_pdf.py` still fails closed — its two calibration sources
+disagree by 9.2%, so the PDF must never become the geometry source.)
+
+**Calibrating the PDF cross-check took three anchors, two of them wrong** — worth
+recording because both failures were silent and plausible:
+- the **longest** elongated shape biased every length ~3% low (it is a legend
+  swatch, longer than any real table);
+- the **mode over all** elongated shapes was off by 30x (most shapes passing an
+  aspect filter are thin hatch and dimension lines);
+- correct: the mode **within 80% of the longest**, which lands on the 259 identical
+  full-length tables — the one anchor a DC sheet is guaranteed to carry many of.
+
+**209 Isaac-free tests** (was 201). New: `tools/audit_layout.py` (exits non-zero if
+a layout cannot be reconciled with its drawing) + `tests/test_audit_layout.py`.
+
+**⚠ Viewing this build: run from the WORKTREE, not the main checkout.** The siting /
+roads / fleet-scale work lives on `feat/siting-roads-scale`. `assets/khavda_infra.usd`
+was built from it and has **scattered** turbines, but the main checkout's
+`configs/farm_khavda_block02.yaml` has no `turbine_scatter` block and its `run.py`
+does not pass `layout` to `build_keepouts`. Mixing them puts the enforced no-fly
+volumes at the OLD explicit turbine positions while the towers stand somewhere else —
+the planner would route a drone through a tower and report a clean run. Code, config
+and USD have to come from the same branch.
+
+```bash
+cd /home/simulationhub/solar-twin/.claude/worktrees/terrain-infra
+DISPLAY=:1 PYTHONPATH=src "$ISAACSIM_PYTHON_EXE" -m solar_twin.run \
+    configs/farm_khavda_block02.yaml configs/mission.yaml \
+    --farm-usd assets/khavda_infra.usd --gui --live --max-panels 12
+```
+`--gui` alone teleports; `--live` is what makes the fleet fly. `mission.yaml` is on
+`perception: ground_truth`, which is the watchable setting — `cosmos_reason` blocks
+~12 s per panel inside a urllib call and freezes the window for that whole time.
+⚠ The Cosmos Reason vLLM is currently holding **44 GB** of the unified 121 GB
+(61 GB used overall). Isaac Sim fits alongside that, but it is not a lot of headroom:
+if the sim OOMs, stop the container rather than lowering the render settings.
+
+## 2026-07-28 — Session 11: wake-sited turbines, roads on the grade, fleet at named real scale
+
+Worked a four-part brief (terrain / roads / robot+drone scale / windmill placement).
+**Part 1 was already shipped and two of its instructions would have regressed it**,
+so that is recorded first; parts 2-4 were real and are built.
+
+**⚠ Terrain: the brief's premise was out of date.** It opened "current known gap:
+terrain is flat with no elevation data". Session 10d shipped real Copernicus GLO-30
+DEM terrain (`world/dem.py`, `assets/dem/khavda_block02.*`, `terrain: kind: dem`),
+panel z already spans 1.10 m. Two of its instructions were declined, with reasons:
+- **"Use SRTM 30m"** — 10d chose Copernicus *because* SRTM/NASADEM/AW3D30 all
+  require an Earthdata or JAXA login and a reproducible pipeline must not depend on
+  someone's password. Switching would trade a no-auth source for a gated one.
+- **"Re-run the tilt/height calculation ... at each table's (x, y)"** — this is what
+  the code deliberately does NOT do. A torque tube is a rigid beam up to 128 m long;
+  sampling per module bends it into the shape of the desert. `fit_line` least-squares
+  a straight line through the grade, and its residual is the pile-height variation
+  the row needs (worst 0.461 m). Per-table draping would err in the flattering
+  direction (`NFR-07`).
+- Coordinates in the brief (23.85N, 69.55E) are ~27 km from the ingested block
+  (24.0915N, 69.4205E, EPSG:32642 from the vendor CAD). The CAD survey coordinates
+  are authoritative.
+- **Ground albedo left alone on purpose.** The brief asked for a salt-flat material
+  *and* asked not to break the VLM's shadow contrast. Those conflict: albedo feeds
+  the KPI-03 false-fault measurement, so changing it invalidates the 0.00-on-560
+  result until re-measured. Flagged, not silently changed.
+
+**Roads — and an honest negative result.** `derived_ew_roads` looks for east-west
+corridors the way `derived_roads` looks for north-south ones: gaps between the
+merged northing bands of the tables. Measured on the real block, the bands are
+`(0,128.6) (129.6,258.2) (259.2,387.7) (388.7,517.3) (518.3,646.9)` — **gaps of
+exactly 1.0 m**, which are the physical end gaps between tracker tables, not
+corridors. So **BLOCK-02's drawing contains no cross arterial**, and the brief's
+"main arterial roads between block sections" cannot be honoured from the CAD. There
+is deliberately no `inferred_ew_road`: an invented arterial would have to run
+*through* surveyed tracker tables, which does not add an assumption so much as
+contradict the drawing. Cross traffic uses the perimeter.
+What did land: **access spurs** to all five inverter stations (they previously sat
+in the array with no way in) and **roads that follow the grade**. A road was one
+flat quad at the height of its own centre; `subdivide_strip` cuts it into <=25 m
+segments (finer than GLO-30's 20 m grid) sampled individually. Measured per road on
+the real DEM: z spans **0.20-0.87 m**, i.e. the perimeter-south road had been
+floating/burying by nearly a metre. Roads 5 -> 10 logical (135 prims).
+
+**⭐ Turbines: a lattice became a wake-constrained scatter.** The old field was five
+hand-written positions — two columns at fixed eastings, evenly spaced; `lattice_score`
+1.00. `world/siting.py` sites them by seeded dart-throwing under a spacing rule that
+is an **ellipse, not a circle**: ~7 rotor diameters along the prevailing wind and 4
+across, because a wake is long and narrow. A circular Poisson-disk radius cannot
+express that — set it to the downwind figure and you waste the site, set it to the
+crosswind figure and you allow illegal wake overlap. Shipped field scores **0.40**.
+- **The keep-outs could have silently drifted.** `build_keepouts` read
+  `farm_cfg["turbines"]` directly, so a scattered build would have enforced no-fly
+  volumes at the OLD positions while the towers stood elsewhere — the planner would
+  route a drone through a tower. Both now resolve through the same
+  `siting.resolve_turbines`, with a test asserting they agree.
+- An explicit `turbines:` list still WINS over the scatter, so a KPI run pinned to
+  known positions restores with `turbine_scatter.enabled: false`.
+- ⚠ Measured trade-off in `ring_depth_d`: 6.0D scatters to 1.2 km (lattice 0.00 but
+  the machines read as distant specks), 2.5D keeps them 210-560 m out with presence
+  at true scale but lattice 0.40 — a narrow band constrains one axis. Shipped 2.5D.
+  A constrained band is not the old two-column lattice.
+
+**Fleet scale: two errors that only measurement found.** Geometry now derives from
+named real platforms (`world/fleet_specs.py`) instead of literals:
+- The drone was an `arm=0.34` constant making a 0.96 m motor-to-motor diagonal while
+  its docstring claimed "~0.9 m", and neither figure was tied to a machine. Now
+  **DJI M350-class: 0.895 m diagonal, 0.533 m props**. ⚠ The brief asked for 0.4-0.6 m
+  diagonal, which is Mavic-3-class; utility PV IR inspection flies M300/M350-class
+  because that is what carries a radiometric thermal payload. Both are presets
+  (`m350`, `mavic3t`) — the size question is really a payload question.
+- **The rover measured 0.844 m wide against a published 0.670 m — 26% too wide.**
+  Wheels were offset by a fraction of the body width; a platform's published width is
+  its OVERALL width, wheels included. Also the sensor head was centred ON the stated
+  total height, so the machine measured half a head taller than it claimed. Both
+  fixed; the authored envelope now measures 0.670 x 1.010 x 1.050 m exactly.
+- ⚠ The brief's rover spec ("1.0-1.2 m long x 0.6 m wide x **0.4-0.5 m tall including
+  sensor mast**") is not satisfiable: 0.33 m wheels plus a deck reach 0.39 m before any
+  mast exists. Resolved by making body height and payload height two numbers —
+  Husky A200-class body 0.390 m, total with mast 1.050 m.
+- `fits_between_rows` / `standoff_is_safe` are new checks with teeth: motion is
+  kinematic, so a standoff that intersects a module renders as a clean flight through
+  solid glass rather than a crash. (A 3 m-diagonal machine does still fit a 5.5 m
+  aisle — worth knowing, and not obvious.)
+
+**Instancing budget held: build 82.35 s** (budget ~90 s), 75,637 prims, 29,416 panels
+from one prototype. **201 Isaac-free tests** (was 197) + 8 pxr-guarded geometry tests
+that measure the authored robots and skip off the Spark.
+
+**Next:** unchanged — VLM run-to-run variance, the low-sun KPI-03 point, Pegasus/PX4,
+and the rest of the balance of plant (substation/control room/trenches, plus the
+graded civil surface GLO-30 cannot supply).
+
+## 2026-07-28 — Session 10e: the status tour video ✅ + the "video path is too expensive" claim was wrong
+
+**Asked for:** a video of the twin as it stands, watchable end to end, that says
+which parts are done and which still need building. Built as `world/plant_tour.py`
+(Isaac-bound renderer) + `world/tour.py` (pure: chapters, budget, overlay) →
+`assets/plant_status_tour.mp4`, 85 s at 1280x720, 8 chapters.
+
+**⭐ The measurement that unblocked it — Session 10d's diagnosis was wrong.**
+10d left the video path "open: render cost at ground level on the full plant …
+thousands of panels in frame". Measured on the real block with a 4-pose probe:
+
+| camera | z | mean frame |
+|---|---|---|
+| aerial, whole block | 420 m | 0.71 s |
+| mid-descent | 140 m | 0.72 s |
+| in the rows | 6 m | 0.71 s |
+| low along a row | 2.5 m | 0.70 s |
+
+**Flat. Ground level is not dearer than the aerial, at 540p or at 720p.** The
+cost of a video here is its FRAME COUNT and nothing else — which is why 4,900
+ticks of commute read as a hang (that is 58 min of render) while the same stage
+tours comfortably in ~20 min. So the fix was never "make frames cheaper", it was
+`--budget-minutes`: state the budget, project against it, and shorten the shots
+proportionally (loudly — text cards are never cut).
+
+⚠ **And then I budgeted off the wrong number.** 0.71 s is the RENDER; a frame
+written to the mp4 also pays the PIL overlay and the encode. Measured over the
+whole 720p tour: **0.895 s**, 1,300 rendered frames in 1,164 s, per-chapter spread
+0.878-0.909. `SECONDS_PER_FRAME` is **0.92** — a budget projected off 0.71
+under-promises by ~25% and would overrun the cap it exists to enforce.
+Over-projecting shortens the tour a little and says so; under-projecting overruns
+in silence, which is the worse failure. (Projected 20.6 min, actual 19.9.)
+A 540p smoke had suggested the fleet chapter cost ~1.05 s/frame because it renders
+two cameras; on the real tour it came in at **0.904**, inside the ordinary spread.
+That was short-chapter overhead being amortised over 55 frames, not the second
+camera — a reminder to measure the artifact rather than the probe.
+
+**A real bug this surfaced:** `sim_runtime.py` hardcoded the overview render
+product at `(960, 540)`, so `flythrough.py --width/--height` had been silently
+doing nothing — every flythrough ever rendered was 540p whatever the flags said.
+Now `overview_resolution`, defaulted not hardcoded. Deliberately NOT reusing
+`resolution`: that one sizes the drone cameras, and a run wanting 640x480
+inspection frames still wants a watchable external view.
+
+**Three-way status, not two.** `BUILT` / `TODO` cannot express the status most of
+this site actually has, so `INFERRED` is a first-class tag: the roads, fence,
+inverter stations and turbines are *in* the twin and look real, but they are our
+placement, not the drawing's. A test asserts each of those four is labelled
+`INFERRED` — mislabelling one as built would overclaim the CAD ingest, which is
+the one thing this video must not do. `TODO` items sit in the shot where their
+absence is visible, not quarantined in the end card (also tested).
+
+**Captions are counted, never typed.** The overlay's numbers come from the prims
+(30,016 modules · 29,416 instanced · 313 hotspot + 287 soiled · 75,572 prims · 5
+turbines/inverters/roads) or from a generated sidecar (273 tables; 2.17 m of DEM
+relief). A test changes `facts` and asserts the captions change with it.
+
+**⚠ Framing is lens arithmetic, and guessing it cost three iterations.** Worth
+recording because every instinct here was wrong:
+- Turbines, guess #1: heading westward from the block centre → two hazed white
+  lines 160 m off. Correct geometry, no evidence of anything.
+- Guess #2: aim at the prim, stand off 2.4 tip-heights (453 m) → worse, pure haze.
+- Guess #3: 1.05 tip-heights, camera 38 m up, aimed at the hub → a fine turbine
+  and **no panels at all**. A 22 mm lens on a 36 mm aperture has a ~49 deg
+  vertical field; aiming 18 deg up puts the frame's bottom edge 6 deg below
+  horizontal, which from 38 m up first meets the ground **355 m away** — past the
+  turbine. The array was under the frame the whole time.
+- Works: 1.4 tip-heights, camera low (~17 m), aim at 0.37 of tip. Panels in the
+  foreground, machine standing clear of them — the chapter's claim, shown.
+Same lesson for the balance-of-plant chapter: a shot down the middle of the site
+contains the inverters and renders them as an 8-pixel grey box. Both chapters now
+aim at a prim position read off the stage (`tour.look_at`, `_turbine_shot`,
+`_plant_shot`), and `facts["turbine_tip_m"]` is named `tip` on purpose — the Hub
+prim's bound includes its blade children, so it is the 189 m blade-tip height, and
+calling it the hub height aims the camera 70 m too high.
+
+**Also:** `RunRecorder` gained a streaming mode. A 1,300-frame tour buffered at
+720p is ~5.5 GB of RAM on a box already holding a 75k-prim stage in the same
+unified memory; frames now go straight to the encoder. Buffered mode is unchanged
+(`max_frames` still logs what it drops). Its tests inject a fake writer, because
+`imageio` lives only in Isaac's bundled python and the logic must stay Isaac-free.
+
+**⚠ Two overlay defects the 540p smokes could not show**, both found by reading
+the finished 720p frames — worth the habit of checking the artifact at delivery
+size:
+- The opening card rendered **"Khavda BLOCK-02 — the digital twin so fa"**, clipped
+  at the frame edge. Headings are single-line by design, so they cannot wrap out of
+  trouble; `_fit_font` shrinks them to fit instead. A video whose entire purpose is
+  honest reporting must not open on a truncated sentence.
+- Card detail lines sat at a FRACTION of the line pitch, so label descenders
+  collided with them. They now clear the label's own measured height. (The in-shot
+  checklist had already been rebuilt on measured metrics for the same reason.)
+
+**195 Isaac-free tests (was 157), 3 skipped.**
+
+**Next:** unchanged and still the honest backlog — quantify VLM run-to-run
+variance before quoting any KPI as a constant; the low-sun (01:30Z) KPI-03 point;
+Pegasus/PX4; the rest of the balance of plant. The tour's closing card is that
+list, so it stays current with the docs by construction.
+⚠ Turbine blades render very thin and read faintly at distance. Cosmetic, in
+`farm_builder`'s turbine geometry, not in the tour.
+
+## 2026-07-28 — Session 10d: real DEM terrain ✅ + turbines + serpentine routing (full-plant fleet video ⚠ IN PROGRESS)
+**The plant now stands on the real ground.** Terrain was `flat` with a note not to
+ship a synthetic sine field on a real site; it now samples **Copernicus DEM GLO-30**.
+
+- **Source:** AWS Open Data, **no credentials, no registration** — SRTM, NASADEM and
+  AW3D30 all need an Earthdata or JAXA login, which a reproducible pipeline should not
+  depend on. Khavda BLOCK-02 measures **3.3–5.4 m above sea level: 2.2 m of relief over
+  1.1 x 1.4 km**, which is what the Rann of Kutch actually is.
+- **Two-stage, mirroring the CAD ingest.** `tools/dem_fetch.py` needs GDAL, which must
+  not go into Isaac's bundled Python because the build runs there — so it lives in
+  `/home/simulationhub/venvs/dem-ingest` and bakes a `.npy` + YAML sidecar;
+  `world/dem.py` samples that with **numpy alone**.
+  ⚠ **Near-miss on this box:** `pip install --user rasterio` dragged numpy 2.5.1 over the
+  system 1.26.4 and broke scipy 1.11.4. Reverted and isolated in the venv. Never
+  `--user`-install a package with a numpy pin on this machine.
+- **⭐ Straight torque tubes — the fidelity point.** A tracker's tube is a rigid beam up
+  to 128 m long. Sampling the DEM per module and mounting each at its own height would
+  **bend that beam into the shape of the desert** — wrong, and wrong in the flattering
+  direction (`NFR-07`). `fit_line` does what an installer does: least-squares a straight
+  line through the grade. Its residual is a real engineering quantity, and the build
+  prints it. Measured: tube slopes **-0.64% to +0.89%**, worst row **T0130 needs 0.461 m
+  of pile-height variation**. Panel z now spans 1.10 m across the block.
+- **Datum:** absolute elevation would sit the plant 4 m off the stage origin and silently
+  invalidate every waypoint standoff (they are measured from the panel).
+  `datum: hardware_mean` puts the site mean at z=0; relief is preserved. Sampling outside
+  the DEM patch **clamps to the edge on purpose** — the ground mesh reaches kilometres
+  further, and returning 0.0 would tear a cliff around the site.
+
+**Wind turbines added** (5, utility class: 120 m hub, 70 m blade, ~11-12 rpm). ⚠ Tagged
+**INFERRED** like the roads: Khavda is a real hybrid wind+solar park but this drawing
+carries DC block hardware only, so the placement is ours. They sit **outside** the panel
+footprint (x < 0 and x > 321) — both how a hybrid park is laid out, and the honest choice,
+because a turbine standing inside the array would throw blade shadows on panels and any
+KPI-03 number measured against it would be an artefact of where *we* put it.
+
+**Serpentine routing + panel stride** (`route:`/`panel_stride`, `--route`/`--panel-stride`).
+A one-way sweep of a 128 m table means a 128 m deadhead back to the next row's start,
+every row; serpentine turns round instead (worst consecutive hop drops >4x in test).
+Default stays `linear` so existing KPI numbers remain comparable.
+
+**⚠⚠ WHAT IS NOT DONE: the full-plant fleet video.** It looked like a hang; it was
+geometry, twice over, and only the first is fixed:
+1. **Fixed — a 490 m commute at walking pace.** On the full block the first table is
+   ~490 m from the stage origin. At 1 m/s in 0.1 s ticks that is 4,900 *rendered* frames
+   of empty desert before anything is inspected. Two fixes, both what real hardware does:
+   `cruise_speeds` (transit at 16 m/s, ease to 2 m/s inside 6 m of the target — a survey
+   drone cruises and slows for the shot), and the fleet is now **deployed at the first
+   panel** instead of flying there from the origin.
+2. **Open — render cost at ground level on the full plant.** `capture_pair` measures
+   160 ms with the camera high over a small stage, but the chase cam at row level on the
+   real block has *thousands* of panels in frame, and a single stride-14 panel took over
+   5 minutes. Next step is a frame budget, not more speed: raise `dt` so each rendered
+   frame covers more ground (a labelled time-lapse patrol), and/or drop the chase render
+   to 960x540. **Do not conclude the pipeline is broken — teleport mode inspects the full
+   block fine (5 panels in 7 s); only the frame-per-tick video path is too expensive.**
+
+157 Isaac-free tests (was 137).
+
+## 2026-07-28 — Session 10c: the WHOLE plant builds and looks like a plant ✅ (IF-09 done)
+**All 273 tables, 30,016 modules, in one stage, with roads, fencing, inverter stations
+and a real sky.** `assets/khavda_flythrough.mp4` (769 frames / 32 s) is the tour:
+establishing aerial over the block, descent onto the internal access road past the
+inverter skids, low pass along the rows, then a climb turning back over the site.
+
+**IF-09 instancing — the thing that gated all of it.** Every module authored its own
+geometry (one Geom + a 12x6 cell grid = **75 prims each**), so the real block came to
+**~2.25M prims** and had never been built whole. Healthy panels now reference a single
+instanced prototype:
+
+| | before | after |
+|---|---|---|
+| 5 tables / 560 panels | 42,025 prims | **582** |
+| 273 tables / 30,016 panels | ~2.25M prims (never built) | **75,464**, 85 s build, opens in 24 s |
+
+The panel prim is still a real per-panel prim carrying the `pv:` attrs — **only the
+geometry is shared** — so the stage remains the source of truth and verdict writeback is
+untouched. Faulted panels (~2%, 600 of them) still author in full, because a hotspot
+recolours specific cells and soiling bakes a per-panel dust film; neither survives
+instancing. Fence posts use the same trick.
+
+**`world/site.py` — balance of plant, with provenance.** Access roads, perimeter fence,
+inverter/transformer skids. Split honestly: **DERIVED** (the CAD's own 11 m corridor at
+x=143 among 5-6 m maintenance aisles really is a road — found by threshold, not
+invented) vs **INFERRED** (the drawing describes hardware only, so the ring road, fence
+and inverters are standard practice placed by us). Every element carries
+`st:provenance`, the build log prints the split, and inverter COUNT follows capacity
+(30,016 x ~600 W / ~4 MW per station → 5) rather than a magic number. 9 tests.
+
+**⚠ The sky mistake worth remembering: an emissive dome is a light.** First version was
+a self-lit hemisphere. It looked right and was wrong — under raytraced lighting a 1.4 km
+emissive dome is a colossal area light and it **lit the desert floor blue**. Measured, on
+identical stages: dome OFF → ground R-B **+16** (warm), dome ON → **-38** (cold). Two
+objects were disagreeing about the sky, which is the same failure the sun-vs-tracker fix
+already dealt with once. Now **one `DomeLight` carries both the generated latlong sky
+image and the fill**, so they cannot diverge. Orientation **verified empirically, not
+assumed**: looking east gives a saturated sun glow (max 255), west does not (128), and
+the zenith is darkest — so no Z-up correction rotation is needed on this build.
+
+**Other visual fixes, each from looking at a frame:**
+- Ground albedo 0.17 → 0.30. The old near-black was chosen when the ground was a small
+  backdrop behind ten panels; across 320 x 647 m it read as cold grey slate. 0.44 was
+  then measured as a near-white blowout that buried the roads and fence in glare.
+- Ground now reaches ~5 km and **fades into the sky's own horizon haze**. A finite plane
+  ends in a hard edge with void beyond it from any altitude — visible in the first
+  aerial as a literal hole in the world.
+- Below-horizon sky is haze, not ground tone: looking down from altitude puts that
+  region on screen, where a dark value reads as void.
+- Ground colour variation moved to three incommensurate octaves; one sin*cos pair beat
+  into visible corduroy stripes across a site this size.
+
+**Gotcha banked:** `import pxr` must come **after** `SimulationApp` exists. A module-level
+`from pxr import ...` leaves Isaac's schema extensions unregistered and the app dies in a
+wall of `TfNotice wrapper has not been created yet` errors.
+
+**Scope:** terrain is still deliberately `flat` (no real DEM), and there is no substation,
+control room, or module-level torque-tube/pile geometry yet. 137 Isaac-free tests
+(was 123).
+
+## 2026-07-28 — Session 10b: a demo video you can watch ✅ + the VLM is NOT deterministic ⚠
+**`--video` makes the twin show its work.** `runs/20260728T115737/inspection.mp4` —
+24 panels of the real Khavda block, live Reason-1, 576 frames / 38 s: a chase camera
+following the fleet down a 128 m tracker table, the drone's own camera inset, and a
+caption naming the panel, the FSM phase and the verdict as it lands on the USD prim.
+
+**Teleport was why no video existed.** `control/kinematic.py` placed each robot AT its
+waypoint, so the fleet never travelled and there was nothing to film. It now has an
+**interpolated** mode driving the `step_towards` math that had been sitting built and
+tested since Session 3. Teleport stays the default — the KPI runs must not silently
+pick up ~10x the sim steps. Both modes are kinematic (`NFR-07`): this is animation, not
+flight dynamics.
+
+Also built: `world/recorder.py` (Isaac-free, 8 tests), `SimRuntime.capture_pair` (both
+views from ONE render pass — two passes would put the two cameras a render apart, so a
+moving drone would sit in different places in the same frame), `SimRuntime.chase()`
+(the old fixed bird's-eye was written for a 10-panel row and loses the drone within a
+few panels of a real table), `Mission.run(on_phase=...)`, and `--max-panels` with
+`panels_targeted` stamped into the record so a truncated sweep cannot be read as a full
+one. 123 Isaac-free tests (was 108).
+
+**⚠⚠ THE FINDING THAT MATTERS: the same panel got two different diagnoses across two
+identical runs.** Same stage, same config, same seed, back to back:
+
+| panel | injected | run A | run B |
+|---|---|---|---|
+| R258-C013 | soiled | screen suspect → **soiled** | screen suspect → **hotspot** |
+
+detection_rate 0.917 vs 0.875 on 24 panels — one flip. `cosmos_reason.py` does send
+`temperature: 0.0`, but vLLM clamps that to 0.01 (it logs the substitution), and GPU
+batching is not bit-reproducible either way. **So the world is seeded and the model is
+not: a KPI from a single run carries unquantified run-to-run variance.** This does not
+overturn Session 10's KPI-03 = 0.00 (0 false faults across 560 panels is a lot of
+evidence), but every future single-run KPI should be treated as a sample, not a
+constant. Repeat-runs or a fixed sampling seed are owed before any KPI is quoted as
+*the* number.
+
+**Smaller notes.** A 15-min hang on the first `--video` attempt did not reproduce and
+sent no request to vLLM (its log shows a 17-hour gap) — cause unknown, watch for it.
+The confirm drone is visible in the screening drone's camera when both are over the
+same panel; the verdict hold now shows the CONFIRM drone's view for an escalated panel,
+which is the frame the diagnosis was actually made from.
+
+## 2026-07-27 — Session 10: KPI-03 measured for real ✅ (0.00 on 560 panels) + two geometry bugs the check exposed
+**The false-fault number is finally trustworthy.** SLICE-3's 0.00 was hollow — the
+turbine shadow missed the panels. This one has a **verified on-panel stimulus and its
+own unshaded control inside the same run**, so it means what it says.
+
+**The result.** Run `runs/20260727T183423`, scenario `khavda_selfshade`, live Cosmos
+Reason-1, 560 healthy panels of the real Khavda BLOCK-02 (`--subset 5`), 6773 s
+(~12.1 s/panel):
+
+| group | n | escalated | **false faults** |
+|---|---|---|---|
+| shaded (4 tables, self-shaded by their eastern neighbour) | 448 | 8 (1.8%) | **0** |
+| control (R243, eastmost — nothing up-sun of it) | 112 | 2 (1.8%) | **0** |
+
+**KPI-03 = 0.00**, gate was 0.05. The finding is not only the zero: the escalation
+rate is **1.8% in both groups**, so the tracker shadow does not measurably shift the
+screening decision either. Escalations do not track shading depth (R244 at ~30%
+shaded escalated 0; R253 at ~17% escalated 4), which is what you would expect if
+they are model noise rather than a shadow response. The confirm pass cleared all 10.
+
+**The stimulus, quantified BEFORE rendering** (`world/solar.py`: new
+`cross_axis_angle_deg` / `shadow_chord_m` / `self_shaded_fraction`, pure, tested).
+At `2026-06-21T02:00Z` the sun is 17.2 deg up, the cross-axis angle is 72 deg against
+a **60 deg mechanical stop**, so every tracker is pinned and throws a 7.20 m shadow
+into 5/6 m aisles → predicted ~30%/~17% of each row shaded. Measured on the frames the
+VLM actually received, counting **PV-glass pixels only**: 34.1% / 34.0% dark on the two
+5 m-pitch tables, 29.8% / 26.6% on the 6 m ones, **19.9% on the control**. The two
+identical-pitch tables agree to 0.1%. Evidence + captures archived in the run dir
+(`STIMULUS.md`). `tests/test_solar.py` asserts the timestamp still produces shading, so
+editing it cannot silently gut the test.
+
+**⚠⚠ TWO GEOMETRY BUGS, found only because the stimulus was checked first.** Both were
+live in the Session-9 "verified on the Spark" build.
+1. **The module was authored TRANSPOSED.** `panel.width/length` mapped straight to
+   stage X/Y, but the procedural farm's rows run along **+X** while a CAD table's
+   torque tube runs along **+Y** — the two sources need opposite mappings. The real
+   block was built with a **1.134 m chord instead of 2.278 m**, and 112 modules at a
+   1.148 m pitch each 2.278 m long **overlapped their neighbours 2:1 along their own
+   tube**. It also erased the hazard: a 1.134 m chord throws a 3.6 m shadow into a
+   5-6 m aisle, so nothing lands on the next row — **KPI-03 would have read a hollow
+   0.00 for the second time, on a farm with no shadow on any panel.** Fix: module
+   extent is now **per-site** (`PanelSite.size_x_m/size_y_m`), fed from the CAD site
+   file for an import. The site file already carried the real dimensions; naming them
+   a second time in the config is what transposed them.
+2. **`panel_top_z` ignored TILT** — it returned mount height + half thickness. A
+   2.278 m module at the 60 deg stop raises its upper edge **0.99 m** above the torque
+   tube, so the 0.8 m confirm standoff put the camera **below that edge, inside the
+   row**. Same shape as the old abs-Z bug, one layer up. Top is now the panel's highest
+   point, and the tracker angle behind it comes from `FarmLayout.tracker_rotation_deg()`
+   — the builder authors panels from that same call, so geometry and waypoints cannot
+   drift apart (they already did once for the sun light vs the trackers).
+
+**Method note, worth keeping.** The aggregate frame brightness *did* separate shaded
+from control (52.9 vs 81.8 mean) **while the panels were identically lit** — the
+difference was entirely dark GROUND in frame. That is the precise Session-8 near-miss
+repeating itself. Only masking to PV-glass pixels showed the truth. **Never score a
+shading stimulus on whole-frame statistics.**
+
+**Honest scope.** One instant, one seed, one site, no backtracking (worst case), and
+Reason-1's confirm-pass notes are noticeably boilerplate across panels — a 0.00 here is
+a green light for the shading-vs-defect distinction, not a robustness claim. The panel
+is also viewed obliquely: at a 60 deg tracker angle a nadir camera sees a foreshortened
+module, which is realistic for this hazard but not an inspection-optimal viewpoint.
+
+**Also:** `TASKS.md` item 2 (merge `docs/cosmos3-edge-serving`) was **already done** at
+`16e9a35` — the list was stale. 108 Isaac-free tests (was 100). vLLM `vllm-cosmos` is
+left **running** on :8000 at util 0.4 (Isaac-coexistence setting).
+
+**⇢ NEXT:** (1) a second KPI-03 point at `01:30Z` (~50% shaded, dimmer) to see where the
+distinction breaks; (2) PBR materials + HDRI sky; (3) instancing/LOD (`IF-09`) before
+all 273 tables; (4) Pegasus/PX4 (`FR-06`); (5) real DEM.
+
+## 2026-07-27 — Session 9: REAL Khavda layout in the twin ✅ + world-model reality check
+**The twin now runs on real hardware geometry.** BLOCK-02 of Khavda PLOT A10b,
+extracted from the vendor DWG, built in Isaac, inspected end-to-end.
+
+**Verified on the Spark (not just in tests):**
+- `farm_builder --subset 5` → **42,025 prims, 560 panels**, Z-up/metres, `pv:panel_id`
+  `R258-C000`, `pv:geo_position` **(24.0880, 69.4176)** — real Khavda lat/lon via pyproj.
+- Full mission → **560 panels, 11/11 faults detected, detection_rate 1.00, 105 s**
+  (~0.19 s/panel). Run record `runs/20260727T153355`.
+- Both held bugs confirmed fixed on real USD: per-panel tilt/azimuth, and the ground
+  mesh now sized from `bounds()` (x[-28.9,53.1] y[-29.4,158.0] — the old
+  `cols x col_pitch` maths would have undersized it badly).
+
+**Layout ingestion (FR-26/27, IF-08/09).** DWG → DXF via LibreDWG built from source
+(no apt needed). `$INSUNITS=6` (metres) and model space holds real survey coords, so
+**no scale inference**: 273 tables / **30,016 modules** / 320 x 646 m, CRS **EPSG:32642**
+verified by round-trip. CAD is self-describing — block names carry dimensions
+(`MMS Table (128.58 x 2.278)`), layers carry module counts (`Interior HSAT (1x112)`).
+Traps: layer `DETAILS` holds legend copies ~12 km away (would stretch the bbox from
+319 m to 12 km); LibreDWG emits raw newlines in text values, defeating `ezdxf.recover`.
+The PDF path is kept but **fails closed** — its two calibration sources disagreed 9.2%.
+Site is **HSAT**, so tilt is DYNAMIC; any static tilt is an `NFR-07` approximation.
+
+**⚠ Cosmos 3 Edge: serving, but NOT usable for our data factory.** Edge runs on-box
+(vllm-omni from `main`, own venv, ~9.8 GB, ~2 s/image) — sm_121 was never the blocker;
+the image was a dead end because Omni is Qwen3-VL and Edge is Nemotron. **But it is a
+pure-diffusion GENERATOR with no text stage**, so it cannot back `Perception`
+(`mission_edge.yaml` removed). And across **6 generations it never produced a
+physically valid PV module** — one photoreal frame was not a solar panel at all.
+`num_inference_steps` is mandatory or you get valid-looking pure noise, silently.
+→ **Text-to-image is the wrong tool; Cosmos Transfer (conditioned on our render) is
+the right one.** Edge explicitly rejects V2V/transfer, so that stays off-box (`NFR-05`).
+Edge now **stopped**; port 8000 free for Reason-1.
+
+**Evaluator gate built (FR-05/NFR-08)** — `wfm/base.py` + `wfm/evaluator.py`, 91 tests.
+Calibrated on the 6 real Edge frames, which proved **no-reference statistics cannot
+work**: the non-PV frame scored the HIGHEST grid-periodicity, and good frames carry
+MORE high-frequency energy than noise. So the gate is **reference-based** (edge
+retention vs the seed) and **rejects any frame with no seed as unverifiable**.
+
+**Realism pass — robots and sun (same session, later commits).**
+- **`world/robot_builder.py`** — the fleet was three marker CUBES (0.25 m drones with
+  a camera slung 0.3 m below, 0.4 m ground bot) that also slid sideways down the row.
+  Now a real quadcopter (fuselage, canopy, hazard tail, 4 booms + motors, spinning
+  rotor discs, skids, gimbal, ~0.9 m span) and a real rover (1.0 x 0.7 m chassis,
+  four 0.34 m wheels, bonnet, beacon, sensor mast). Procedural — this box has **no
+  Isaac asset pack and no configured asset root**, and procedural keeps it
+  reproducible from script + config.
+- **Motion**: rotors spin every update (alternating direction, as torque balance
+  requires), wheels roll by GROUND distance travelled, and `set_pose` derives heading
+  from the motion delta so vehicles face where they are going. ⚠ **Appearance and
+  articulation, NOT dynamics** — no lift, no traction, no collision (`NFR-07`).
+- **`world/solar.py`** — NOAA solar position + HSAT tracker angle, pure/Isaac-free.
+  `farm.yaml: sun.timestamp` (ISO-8601 UTC) now drives **both** the sun light and the
+  tracker rotation from one vector, so they cannot silently disagree (they were set
+  independently before). Verified at `2026-06-21T04:00Z` (09:30 local): sun 43.7 deg
+  elev / 79.9 deg azim → tracker **+45.9 deg east**; render shows rows foreshortened
+  from nadir, shadows thrown into the aisle west of each row, specular glint off the
+  sun-facing glass, drone frame mean 79.7 → 116.1.
+- Two sign conventions written out in-code because both are easy to get silently
+  wrong: light `rx = 90 - elev, rz = 180 - azim` (DistantLight emits along -Z); and
+  tracker rotation is **about Y, not X** — the torque tube runs N-S, so rotating
+  about X would tilt panels *along* the tube, which the hardware cannot do.
+- **Mistakes I made and fixed** (all caught by tests): subset builds renumbered panel
+  IDs, so `R00-C000` meant different hardware in a subset than in the full build and
+  verdicts would have landed on the wrong panels — `TableSpec.index` is now canonical.
+  Solar noon at 69.418 E is **07:22 UTC**, not 06:22. Asserting a "due south" azimuth
+  at the June solstice is meaningless at 24 N (sun passes 0.65 deg from zenith, azimuth
+  ill-conditioned) — moved to December. Float `rel_tol=1e-12` on differenced ~2.66e6 m
+  northings is unachievable — `abs_tol=1e-6`. And the block's hardware extent is
+  320 x **647** m, not 518 m: modules run a table-length north of each insert point.
+
+**⇢ NEXT SESSION: see `docs/TASKS.md` "NEXT SESSION — start here".** Short version:
+(1) **re-run KPI-03 on the real block** with a low-sun timestamp + `cosmos_reason` —
+tracker self-shading is finally a real on-panel stimulus, which retires the
+`kpi03-denominator-caveat`; (2) **merge branch `docs/cosmos3-edge-serving`** (`7319924`),
+it holds the Edge serving recipe and is NOT on this branch; (3) PBR materials + HDRI
+sky; (4) instancing/LOD (`IF-09`) before all 273 tables; (5) Pegasus/PX4 (`FR-06`) as
+its own investigation; (6) real DEM. Off-box Cosmos **Transfer** (not Edge, not
+text-to-image) remains the right data-factory tool.
+
+**Branch state:** `ID-2-Layout-Integration`, **16 commits ahead of origin, nothing
+pushed**, tree clean, **100 tests + 2 skipped**. Vendor CAD is gitignored (proprietary);
+only the derived `configs/layouts/*.yaml` is tracked.
+
+### Session 9 detail — Cosmos 3 Edge serving investigation
+**The parked Edge A/B is unparked and simultaneously invalidated.** Edge now runs on
+this GB10; the reason it never worked was misdiagnosed, and the reason we wanted it
+was wrong. Full recipe + caveats in `docs/ENVIRONMENT.md`.
+- **Serving works** via **vllm-omni from `main`** in `/home/simulationhub/venvs/vllm-omni-edge`
+  (a plugin — it does NOT depend on `vllm`, install both; aarch64 vLLM wheels exist).
+  `sm_121` was never the Edge blocker: `get_device_capability()` → `(12, 1)`, fine.
+- **The image was a dead end, not a stale pin.** Cosmos3 Omni (Nano/Super) is
+  **Qwen3-VL**-based; **Edge is Nemotron**-based with its own sub-configs + a projector.
+  A model-type alias `cosmos3_edge → Cosmos3OmniConfig` dies on
+  `KeyError: 'cosmos3_edge_vision'`. And there is **no newer image** — `cosmos3`'s arm64
+  layer and `cosmos3-arm64` are the same digest. Stop chasing tags.
+- **⚠⚠ `num_inference_steps` is mandatory.** Omitting it returns a valid-looking
+  640×640 PNG of **pure noise** — no error, no warning. `num_inference_steps: 35` →
+  crisp photoreal PV imagery; `guidance_scale` alone → smeared. A textbook `NFR-07`
+  silent cap. Byte size can't detect it (uncompressed → always 1,229,899 bytes).
+  **Look at a frame before trusting any generated corpus.**
+- **Edge ≠ perception backend.** Served this way it is `pure diffusion mode (single
+  diffusion stage)` — no text stage. `/v1/chat/completions` exists but answers with an
+  `image_url` part, so `cosmos_reason.py` (which reads `content` as a string) cannot
+  consume it. Its real surface is `/v1/images/generations` + `/v1/videos` + the action
+  modes; it also **rejects V2V/transfer**, so Cosmos-Transfer sim2real stays off-box.
+  → **Edge belongs behind a future `WorldModel` seam, not `Perception`.** Reason-1
+  stays the brain. `configs/mission_edge.yaml` **removed** (it encoded the disproven
+  "model-string flip" assumption).
+- **Good news for the roadmap:** ~**9.8 GB GPU, ~2 s/image** — Edge can co-reside with
+  Isaac Sim (Reason-1 at 0.85 util takes ~98 GB and cannot). On-box world-model
+  generation is viable, which softens `NFR-05` for the predict/action arm. Both
+  default to port 8000, so only one at a time; Reason-1's
+  `cu130-nightly-WORKING-sm121` rollback is untouched.
+
+**Also:** `ID-2-Layout-Integration` fast-forwarded to `main` (`86dc834`) — it had zero
+unique commits, so no rebase/force-push was needed. 74 tests pass, 2 skipped.
+
+**Next:** layout ingestion (`world/layout_import.py`, table-level site file) — NOT yet
+started, awaiting plan confirmation. Two bugs found and deliberately NOT fixed:
+`farm_builder.py:256` applies ONE global `tilt_deg` to every panel, and
+`farm_builder.py:107-110` sizes the ground mesh from `layout.cols * col_pitch` — both
+break for a real multi-block imported layout.
+
 ## 2026-07-24 — Session 8b: SLICE-3 done (KPI-03 harness + 2 verified 0.00 results); Cosmos 3 Edge A/B PARKED
 **SLICE-3 shipped** (PRs #3→#4→#5, stacked; merge in that order). KPI-01 = **1.00**
 (detection), KPI-03 = **0.00** on BOTH a soft and a near-black hard shadow — the
@@ -34,6 +952,9 @@ Edge weights (8.6 GB) cached for resume. Full detail + resume path in memory
 `cosmos3-edge-serving-blocker.md`. Reason-1 baseline is already recorded, so the
 A/B is cheap to finish once a newer Edge-capable image exists. `configs/mission_edge.yaml`
 is staged for that.
+> **SUPERSEDED by Session 9 (2026-07-27):** Edge does serve (vllm-omni from `main`), but
+> it is a pure-diffusion **generator** with no text stage, so the perception A/B this
+> entry planned is not possible and `configs/mission_edge.yaml` was **removed**.
 
 ## 2026-07-24 — Session 8: SLICE-3 false-fault harness (KPI-03) — built, first measurement is a honest null
 **Built + tested (74 Isaac-free tests pass), on branch `feat/slice3-false-fault-kpi03` (stacked on #4):**

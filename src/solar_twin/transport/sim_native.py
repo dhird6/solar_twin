@@ -26,6 +26,14 @@ class SimNativeTransport(Transport):
         self._panel_paths = panel_paths
         self.step_count = 0
 
+    @property
+    def runtime(self):
+        """The underlying `SimRuntime`. Exposed so a caller that needs the sim
+        itself (the demo video's chase camera) does not have to reach into a
+        private attribute; the Transport interface deliberately does not carry
+        camera-rig concerns."""
+        return self._rt
+
     def capture(self, robot_id: str) -> Frame:
         return self._rt.capture(robot_id)
 
@@ -48,6 +56,18 @@ class SimNativeTransport(Transport):
         self.step_count += 1
 
     # --- extras used by run.py for artifacts (not part of the Transport API) --
+    def snapshot_panels(self, panel_ids: list[str]) -> dict[str, PanelRecord]:
+        """Pre-mission state of the named panels, for `--repeat` (see
+        `pv.restore_state`). Only the targeted panels: on the full block a
+        census of 30,016 prims would cost more than the runs it protects."""
+        return {pid: self.read_panel(pid) for pid in panel_ids}
+
+    def restore_panels(self, snapshot: dict[str, PanelRecord]) -> None:
+        """Rewind panels to a `snapshot_panels` result so the next repeat reads
+        the injected ground truth instead of the previous repeat's verdict."""
+        for pid, record in snapshot.items():
+            pv.restore_state(self._rt.get_prim(self._panel_paths[pid]), record)
+
     def capture_overview(self):
         return self._rt.capture_overview()
 

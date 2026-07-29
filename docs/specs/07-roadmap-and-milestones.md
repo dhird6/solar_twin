@@ -29,8 +29,33 @@ explicitly multi-quarter — do not compress it.
   `SC-01` for healthy/hotspot/soiled; result compared against the
   `SLICE-0` ground-truth baseline.
 - **Runs:** Spark-local.
-- **Status:** Partly in flight per recent commits (`mission_cosmos.yaml`,
-  camera-frame wiring).
+- **Status:** **Done, 2026-07-29 — exit criteria met, both halves measured.**
+  `SC-01` had to be built first: it was in the scenario table and on no disk, so
+  every prior `KPI-01` came from `demo_video.yaml`, which states in its own header
+  that it is a demo (interpolated motion, 16-panel denominator) and not quotable.
+
+  Both backends ran against **one** stage (`assets/nominal_calm.usd`, 40 panels at
+  stride 14, 7 seeded faults), so the only variable is `perception`:
+
+  | | `detection_rate` (N=3) | `false_fault_rate` | abstention |
+  |---|---|---|---|
+  | SLICE-0 stub (`runs/20260729T130730`) | **1.000**, identical | 0.000, identical | 0.000 |
+  | Reason-1 live (`runs/20260729T130956`) | **0.900** median, 0.875–0.900 | 0.091 median, 0.030–0.091 | 0.000 |
+
+  Gates PASS worst-of-3 on both. The stub sitting at exactly 1.000 is the control
+  working: same world, same route, same escalation FSM, so the −0.10 is the model
+  and nothing else. Abstention is 0.000 in both, so that gap is **misdiagnosis, not
+  lost answers** — `KPI-03a`/`KPI-03b` earning their keep on first real use.
+
+  ⚠ Two findings this measurement produced, neither of which the previous
+  scenarios could have shown:
+  - **`KPI-03` is not stable here.** It ranges 0.030–0.091 across repeats, where
+    `SC-11`/`SC-12` reported 0.000 *identical*. Those stages are all-healthy at low
+    sun; this one is fault-enriched at mid-morning. 3 of 5 flips are healthy panels
+    called `soiled`. The 0.00 headline is a property of those scenarios, exactly as
+    they always said — it is not a property of the model.
+  - **Per-panel agreement is 0.875 (5/40 flipped), attributed `model` 4 / `both` 1**
+    — `RISK-25` reproducing on a proper measurement denominator rather than a demo.
 
 ## SLICE-2 — Physics that bites, one drone
 
@@ -51,8 +76,17 @@ explicitly multi-quarter — do not compress it.
 - **Exit criteria:** drone flies a coverage pass under gust, holds station
   within `KPI-05` bounds, avoids the keep-out (`KPI-04` = 1.0 on `SC-03`/
   `SC-04`); ground bot passes `SC-08` at the declared max grade.
-- **Runs:** Spark-local. **Gating risk:** `RISK-02` (Pegasus-on-aarch64 smoke
-  test).
+- **Runs:** Spark-local. **Gating risk `RISK-02`: investigated 2026-07-29 and
+  downgraded.** It was "Pegasus on aarch64 is unproven"; it is now two known
+  quantities. PX4 SITL **runs natively on this box** (arm64 container, simulator
+  seam open on TCP 4560, `tools/px4_sitl_smoke.py`) — that half is closed. The
+  Isaac-side bridge is a **sized port, not an unknown**: Pegasus v5.1.0 targets
+  Isaac 5.x, and on 6.0.1 exactly two of its modules are missing, needing 17 call
+  sites moved onto `isaacsim.core.prims` (`RISK-02`(b)). Watch `RISK-26` (its
+  MAVLink backend was written for PX4 v1.14.3; the container ships ~v1.18-beta).
+  So `SLICE-2` may now be *planned* rather than blocked — but plan the bridge
+  explicitly, and keep `FR-07`'s kinematic fallback as the exit if the port
+  stalls.
 
 ## SLICE-3 — The false-fault loop
 

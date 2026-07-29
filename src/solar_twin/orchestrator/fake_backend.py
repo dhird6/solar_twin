@@ -76,6 +76,17 @@ class FakeSimBackend(Transport, RobotControl):
         )
 
     # ------------------------------------------------------------------ #
+    # Repeat-run support (mirrors SimNativeTransport's extras, so the whole
+    # --repeat path is exercised by Isaac-free tests)
+    # ------------------------------------------------------------------ #
+    def snapshot_panels(self, panel_ids: list[str]) -> dict[str, PanelRecord]:
+        return {pid: replace(self._panels[pid]) for pid in panel_ids}
+
+    def restore_panels(self, snapshot: dict[str, PanelRecord]) -> None:
+        for pid, record in snapshot.items():
+            self._panels[pid] = replace(record)
+
+    # ------------------------------------------------------------------ #
     # Test helpers
     # ------------------------------------------------------------------ #
     def panel(self, panel_id: str) -> PanelRecord:

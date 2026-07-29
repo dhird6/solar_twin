@@ -15,8 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# `numpy` and `imageio` are deliberately NOT runtime deps: the modules that use
+# them (`perception/base.py`, `world/recorder.py`) import them inside function
+# bodies so the ABCs stay importable on a bare interpreter. The test suite does
+# need them at module level, though, so they belong here — without numpy,
+# test_dem/test_tour/test_wfm_evaluator/test_recorder fail to collect rather
+# than skipping, which would silently shrink the suite on a clean runner.
 dev = [
     "pytest>=7.0",
+    "numpy>=1.24",
+    "imageio[ffmpeg]>=2.31",
 ]
 
 [tool.setuptools.packages.find]

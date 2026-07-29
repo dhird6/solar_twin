@@ -25,16 +25,65 @@ from solar_twin.schema.pv_module import (
 )
 
 
+#: Fallback tilt when a config omits `panel.tilt_deg`. Shared by `_build_sites`
+#: and `panel_top_z` so a site's authored angle and the waypoint above it can
+#: never come from two different defaults.
+DEFAULT_TILT_DEG = 20.0
+
+#: Memoisation sentinel — `None` is a real answer from `tracker_rotation_deg`
+#: ("this site is fixed-tilt"), so it cannot double as "not computed yet".
+_UNSET = object()
+
+
+#: Loaded DEMs, keyed by (sidecar path, site origin). Sampling is called ~30k
+#: times per build (once per module) plus once per ground vertex, so the grid is
+#: read from disk once, not per call.
+_DEM_CACHE: dict = {}
+
+
+def _dem_for(cfg: dict):
+    """The `DemTerrain` for this config, or None when terrain is not DEM-backed."""
+    spec = cfg.get("terrain", {}) or {}
+    if spec.get("kind") != "dem":
+        return None
+    path = spec.get("path")
+    if not path:
+        raise ValueError("terrain.kind: dem requires terrain.path (a dem_fetch.py sidecar)")
+    origin_e = float(spec.get("site_origin_easting", 0.0))
+    origin_n = float(spec.get("site_origin_northing", 0.0))
+    key = (str(path), origin_e, origin_n, spec.get("datum", "hardware_mean"))
+    if key not in _DEM_CACHE:
+        from solar_twin.world.dem import DemTerrain
+
+        # No bounds needed: dem_fetch.py already cropped the grid to this site
+        # plus a margin, so the grid mean IS the site mean. Passing the panel
+        # footprint would be circular — the footprint needs terrain to exist.
+        _DEM_CACHE[key] = DemTerrain.load(
+            str(path), origin_e, origin_n,
+            datum=str(spec.get("datum", "hardware_mean")),
+        )
+    return _DEM_CACHE[key]
+
+
 def terrain_height(x: float, y: float, cfg: dict) -> float:
     """Ground elevation (meters) at stage-local (x, y). Pure + deterministic so
     the farm builder (mesh), the panel mounts, and the drone waypoints all agree
-    on where the ground is — the whole point of a shared terrain function. `flat`
-    (or a missing block) returns 0.0, preserving the old flat-ground behaviour.
+    on where the ground is — the whole point of a shared terrain function.
 
-    A sum of two orthogonal sines gives smooth, seed-free, gentle undulation
-    (no numpy — stays importable in the Isaac-free tests)."""
+    Three kinds:
+    - `flat` (or missing) returns 0.0 — the original behaviour.
+    - `heightfield` sums two orthogonal sines: smooth, seed-free, **synthetic**.
+      Fine for the procedural test farm, never for a real site.
+    - `dem` samples a real Copernicus GLO-30 patch baked by `tools/dem_fetch.py`
+      (see `world/dem.py`). Heights are relative to a datum so the plant still
+      straddles z=0 rather than sitting at its true 4 m above sea level.
+    """
     spec = cfg.get("terrain", {}) or {}
-    if spec.get("kind", "flat") != "heightfield":
+    kind = spec.get("kind", "flat")
+    if kind == "dem":
+        dem = _dem_for(cfg)
+        return dem.height(x, y) if dem else 0.0
+    if kind != "heightfield":
         return 0.0
     amp = float(spec.get("amplitude", 0.0))
     wl = float(spec.get("wavelength", 12.0)) or 12.0
@@ -123,30 +172,133 @@ class PanelSite:
     col: int
     position: tuple[float, float, float]  # stage-local meters (Z-up)
     geo_position: tuple[float, float, float]  # (lat, lon, elev)
+    #: Plan rotation of the panel's mounting structure, degrees about +Z. Zero for
+    #: the procedural grid; per-table for a CAD-imported site, where different
+    #: blocks can face different ways.
+    azimuth_deg: float = 0.0
+    #: Panel tilt, degrees. For a FIXED-tilt site this is the real tilt. For a
+    #: TRACKER site it is only the nominal/stowed angle — the true angle is
+    #: dynamic (sun-following), so a consumer that treats this as ground truth on
+    #: a tracker site is wrong (`NFR-07`).
+    tilt_deg: float = 0.0
+    #: Module extent along stage +X and +Y, metres, BEFORE `azimuth_deg` is
+    #: applied. Zero means "fall back to the config's `panel.width` /
+    #: `panel.length`" (the procedural grid).
+    #:
+    #: This is per-site and not a single config pair because the two layout
+    #: sources put the module's long edge on DIFFERENT stage axes: the procedural
+    #: farm's rows run along +X (so the long edge is +Y), while a CAD table's
+    #: torque tube runs along +Y (so the long edge is +X). A hand-written global
+    #: pair silently transposed the real Khavda module — 2.278 m of chord became
+    #: 1.134 m and 112 modules overlapped 2:1 along their own tube.
+    size_x_m: float = 0.0
+    size_y_m: float = 0.0
 
 
 class FarmLayout:
-    """Panel grid + georef derived from a parsed ``farm.yaml`` dict."""
+    """Panel sites + georef derived from a parsed ``farm.yaml`` dict.
+
+    Two sources, one output. ``layout.kind`` selects between them and defaults to
+    ``grid`` so every existing config keeps working untouched:
+
+    - ``grid`` — the procedural seeded farm (`grid:` block).
+    - ``file`` — a real, CAD-derived site expanded from ``layout.path``
+      (`IF-08`); see `world/layout_import.py`.
+
+    Downstream code only ever reads ``self.sites``, so nothing below this class
+    needs to know which source was used.
+    """
 
     def __init__(self, farm_cfg: dict):
         self.cfg = farm_cfg
+        layout_cfg = farm_cfg.get("layout", {}) or {}
+        self.kind = str(layout_cfg.get("kind", "grid"))
+        geo = farm_cfg.get("georef", {}) or {}
+        self.anchor = GeoAnchor(
+            lat0=float(geo.get("lat0", 0.0)),
+            lon0=float(geo.get("lon0", 0.0)),
+            elev0=float(geo.get("elev0", 0.0)),
+            heading_deg=float(geo.get("heading_deg", 0.0)),
+        )
+        self.site = None
+        self._tracker_rot = _UNSET
+
+        if self.kind == "file":
+            self._init_from_file(
+                str(layout_cfg["path"]),
+                max_tables=int(layout_cfg.get("max_tables", 0) or 0),
+            )
+            return
+
         grid = farm_cfg["grid"]
         self.rows = int(grid["rows"])
         self.cols = int(grid["cols"])
         self.row_pitch = float(grid["row_pitch"])
         self.col_pitch = float(grid["col_pitch"])
         self.origin = tuple(float(v) for v in grid.get("origin", [0.0, 0.0, 0.0]))
-        geo = farm_cfg["georef"]
-        self.anchor = GeoAnchor(
-            lat0=float(geo["lat0"]),
-            lon0=float(geo["lon0"]),
-            elev0=float(geo.get("elev0", 0.0)),
-            heading_deg=float(geo.get("heading_deg", 0.0)),
-        )
         self.sites = self._build_sites()
+
+    def _init_from_file(self, path: str, max_tables: int = 0) -> None:
+        """Expand a CAD-derived site file into per-module panel sites.
+
+        `max_tables > 0` renders only a contiguous southern band of the site —
+        essential while the full 273-table block is ~2.2M USD prims (`IF-09`).
+        Panel coordinates are unchanged by subsetting, so a subset is a genuine
+        crop of the real site rather than a different one.
+        """
+        from solar_twin.world.layout_import import expand_sites, load_site, subset_site
+
+        site = load_site(path)
+        if max_tables:
+            site = subset_site(site, max_tables)
+        self.site = site
+        # A DEM is indexed in survey coordinates, and the anchor that maps stage
+        # (0,0) to them lives in the site file. Inject it rather than asking a
+        # config to restate it: two copies of a georeference is one too many.
+        tspec = self.cfg.get("terrain") or {}
+        if tspec.get("kind") == "dem":
+            tspec.setdefault("site_origin_easting", site.origin_easting)
+            tspec.setdefault("site_origin_northing", site.origin_northing)
+            self.cfg["terrain"] = tspec
+        self.origin = (0.0, 0.0, 0.0)  # stage origin == site file's `origin` anchor
+        # Grid-shaped attributes still have consumers (`inspection_targets`'s
+        # approach offset, the builder's ground extent). Derive honest analogues:
+        # a "row" is a table, a "col" is a module along its torque tube, and the
+        # across-row pitch is the aisle a drone actually flies down.
+        self.rows = len(site.tables)
+        self.cols = max((t.modules_per_row for t in site.tables), default=0)
+        self.row_pitch = site.column_pitch_m() or 6.0
+        self.col_pitch = site.module_pitch_m or 1.0
+        self.sites = expand_sites(
+            site,
+            terrain_z=lambda x, y: terrain_height(x, y, self.cfg),
+            panel_site_cls=PanelSite,
+            panel_id_fn=panel_id,
+        )
+
+    def bounds(self) -> tuple[float, float, float, float]:
+        """(min_x, min_y, max_x, max_y) over all panel sites, stage-local metres.
+
+        The builder must size the ground from this, not from ``rows × pitch`` — an
+        imported site is irregular and has no meaningful row/col rectangle.
+        """
+        xs = [s.position[0] for s in self.sites]
+        ys = [s.position[1] for s in self.sites]
+        if not xs:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (min(xs), min(ys), max(xs), max(ys))
 
     def _build_sites(self) -> list[PanelSite]:
         ox, oy, oz = self.origin
+        # The procedural farm is fixed-tilt and uniformly oriented, so the single
+        # `panel.tilt_deg` is correct here — but it belongs ON the site, not read
+        # separately by the builder, so imported per-table tilt/azimuth flows
+        # through the same field instead of a second code path.
+        pcfg = self.cfg.get("panel", {}) or {}
+        tilt = float(pcfg.get("tilt_deg", DEFAULT_TILT_DEG))
+        # Procedural rows run along +X, so the module's long edge lies along +Y —
+        # exactly the config's own `width` (x) / `length` (y) convention.
+        sx, sy = float(pcfg.get("width", 1.0)), float(pcfg.get("length", 2.0))
         sites: list[PanelSite] = []
         for row in range(self.rows):
             for col in range(self.cols):
@@ -161,6 +313,10 @@ class FarmLayout:
                         col=col,
                         position=(x, y, z),
                         geo_position=local_to_geo(x, y, z, self.anchor),
+                        azimuth_deg=0.0,
+                        tilt_deg=tilt,
+                        size_x_m=sx,
+                        size_y_m=sy,
                     )
                 )
         return sites
@@ -198,19 +354,120 @@ class FarmLayout:
             for s in self.sites
         ]
 
-    def panel_top_z(self, base_z: float | None = None) -> float:
-        """Z of a panel's top face = ground/base z + mount height + half thickness.
+    def tracker_rotation_deg(self) -> float | None:
+        """The HSAT rotation this stage is authored at, or `None` for a fixed-tilt
+        site. **The single source for the tracker angle** — `farm_builder` authors
+        the panels from it and `panel_top_z` places the drone above them from it,
+        so the geometry and the waypoints cannot silently disagree (they already
+        did once for the sun light vs the tracker).
+
+        A site is on trackers when it came from a CAD site file AND the config
+        pins a real instant (`sun.timestamp`); a hand-set elevation/azimuth pair
+        is the legacy scenario path and leaves panels at their nominal tilt.
+        """
+        if self._tracker_rot is not _UNSET:
+            return self._tracker_rot
+        sun_cfg = self.cfg.get("sun", {}) or {}
+        rot: float | None = None
+        if sun_cfg.get("timestamp") and self.site is not None:
+            from solar_twin.world.solar import (
+                DEFAULT_MAX_ROTATION_DEG,
+                parse_timestamp,
+                solar_position,
+                tracker_rotation_deg,
+            )
+
+            elev, azim = solar_position(
+                self.anchor.lat0, self.anchor.lon0, parse_timestamp(sun_cfg["timestamp"])
+            )
+            rot = tracker_rotation_deg(
+                elev,
+                azim,
+                axis_azimuth_deg=0.0,  # Khavda torque tubes run north-south
+                max_rotation_deg=float(
+                    sun_cfg.get("tracker_max_rotation_deg", DEFAULT_MAX_ROTATION_DEG)
+                ),
+            )
+        self._tracker_rot = rot
+        return rot
+
+    def panel_top_z(self, base_z: float | None = None, site: PanelSite | None = None) -> float:
+        """Z of the HIGHEST point of a panel = base z + mount height + how far the
+        tilted module rises above its pivot.
 
         Drone standoffs are measured from *here*, not absolute zero — otherwise the
         close-confirm camera ends up below the panel (it did: confirm=1.0 abs put
         the camera at 0.7 m under a 0.75 m panel). Passing the panel's own base_z
         (which follows the terrain) keeps framing correct over undulating ground.
-        `base_z=None` uses the origin (flat-ground convenience for tests)."""
+        `base_z=None` uses the origin (flat-ground convenience for tests).
+
+        ⚠ Tilt is NOT ignorable. A tracker at its 60° stop lifts the upper edge of
+        a 2.278 m module 0.99 m above the torque tube; treating the module as flat
+        (mount height + half thickness) put the 0.8 m confirm camera *below* that
+        edge, inside the row, looking at the panel's underside.
+        """
         panel = self.cfg.get("panel", {})
         mount_h = float(panel.get("mount_height", 0.75))
         ph = float(panel.get("height", 0.05))
+        tilt = math.radians(abs(self.authored_tilt_deg(site)))
+        # Which horizontal extent swings depends on the rotation axis: a tracker
+        # turns about +Y (the torque tube), so its chord is the module's X extent;
+        # a fixed-tilt row tilts about +X, so its chord is the Y extent.
+        if self.tracker_rotation_deg() is not None:
+            chord = (site.size_x_m if site else 0.0) or float(panel.get("width", 1.0))
+        else:
+            chord = (site.size_y_m if site else 0.0) or float(panel.get("length", 2.0))
+        rise = chord / 2.0 * math.sin(tilt) + ph / 2.0 * math.cos(tilt)
         base = self.origin[2] if base_z is None else base_z
-        return base + mount_h + ph / 2.0
+        return base + mount_h + rise
+
+    def authored_tilt_deg(self, site: PanelSite | None = None) -> float:
+        """The tilt the stage is actually authored at for `site`: the live tracker
+        angle on a tracker site, else the site's own (fixed) tilt."""
+        rot = self.tracker_rotation_deg()
+        if rot is not None:
+            return rot
+        if site is not None:
+            return site.tilt_deg
+        return float((self.cfg.get("panel", {}) or {}).get("tilt_deg", DEFAULT_TILT_DEG))
+
+    def route_sites(self, mission_cfg: dict) -> list[PanelSite]:
+        """The order the fleet visits panels in.
+
+        `route: linear` (default) walks `self.sites` as laid out — table by table,
+        module 0 upward. It is the order every KPI so far was measured in, so it
+        stays the default: changing it would make new numbers incomparable with
+        old ones.
+
+        `route: serpentine` reverses every second table, so the fleet turns round
+        at the end of a row and comes back down the next one. On a real block that
+        is the difference between a patrol and a farce: a 128 m table walked
+        one-way means a 128 m deadhead back to the start of the next row, every
+        row. This is the coverage pattern a real survey flies (and the shape
+        `cuOpt` would optimise later, `FR-xx`).
+
+        `stride` samples every Nth module — a coverage sweep rather than a census.
+        ⚠ It changes what the run measures: the denominator is the panels VISITED,
+        not the panels on site.
+        """
+        route = str(mission_cfg.get("route", "linear"))
+        stride = max(1, int(mission_cfg.get("panel_stride", 1)))
+
+        sites = list(self.sites)
+        if stride > 1:
+            sites = sites[::stride]
+        if route != "serpentine":
+            return sites
+
+        # Group by table, preserving the order tables first appear, then flip the
+        # traversal of alternate tables.
+        by_table: dict[int, list[PanelSite]] = {}
+        for s in sites:
+            by_table.setdefault(s.row, []).append(s)
+        out: list[PanelSite] = []
+        for i, (_row, group) in enumerate(by_table.items()):
+            out.extend(reversed(group) if i % 2 else group)
+        return out
 
     def inspection_targets(self, mission_cfg: dict) -> list[InspectionTarget]:
         """Waypoints per panel derived from layout + mission kinematics.
@@ -222,9 +479,9 @@ class FarmLayout:
         confirm_z = float(kin.get("confirm_standoff", 0.8))
         approach_offset = self.row_pitch / 2.0
         targets: list[InspectionTarget] = []
-        for s in self.sites:
+        for s in self.route_sites(mission_cfg):
             x, y, z = s.position  # z already follows the terrain
-            top = self.panel_top_z(z)
+            top = self.panel_top_z(z, s)
             targets.append(
                 InspectionTarget(
                     panel_id=s.panel_id,

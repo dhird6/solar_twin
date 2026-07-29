@@ -15,6 +15,8 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 | `KPI-06` | Battery/time-window adherence | fraction of missions completed without breaching the declared battery reserve floor or daylight/time window | `SLICE-7` | New — requires `IF-01` (`EnergyAware`) |
 | `KPI-07` | Terrain traversal pass/fail | ground bot completes the ramp testbed at the declared max grade without loss of contact/stall | `SLICE-2`/`SLICE-6` | New — pass/fail per grade angle |
 | `KPI-08` | Generated-frame validity rate | fraction of Cosmos Transfer/Predict output frames that pass the Evaluator filter | `SLICE-4` | New — from the Data Factory Blueprint's Evaluator stage (`NFR-08`) |
+| `KPI-03a` | False-alarm rate | fraction of **healthy** panels given a *specific wrong diagnosis* — `detected_state` is neither `healthy` nor `unknown` | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.false_alarm_rate` |
+| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count) |
 
 **Note on `KPI-01` vs `KPI-03`:** these are deliberately distinct. `KPI-01` is
 overall accuracy across all injected states (including real faults); `KPI-03`
@@ -22,6 +24,32 @@ isolates the specific "swept blade shadow → false hotspot" failure mode this
 project exists to prevent. A system can have decent `KPI-01` and still be
 unsafe to deploy if `KPI-03` is high on adversarial scenarios — report both,
 always.
+
+**`KPI-03`'s two halves (`KPI-03a`/`KPI-03b`), decided 2026-07-29.** `unknown` is
+`!= healthy`, so a panel the model *failed to answer for* scored identically in
+`KPI-03` to one it wrongly called faulty — two failures needing opposite fixes
+(plumbing/prompt versus model robustness) reported as one number. Measured: a VLM
+reply missing its closing brace moved `KPI-03` from 0.00 to 0.053 while the model
+had actually said `healthy` with confidence 1.0.
+
+`KPI-03`'s formula is **unchanged** — it is a locked contract (`FR-03`, §6.5), and
+redefining it would make every number already recorded non-comparable, including
+the two verified-stimulus 0.00 points (`SC-11`, `SC-12`). The split is *reported
+alongside* instead, and it is exact:
+
+```
+KPI-03  ==  KPI-03a  +  (healthy panels that abstained / healthy panels)
+```
+
+So `KPI-03` remains the conservative headline (an abstention still counts against
+you — it can never flatter the system), `KPI-03a` is the number the project is
+actually driving down, and `KPI-03b` answers "did the pipeline work at all?"
+across every panel, not just healthy ones — losing the answer for a *faulted*
+panel is equally a plumbing failure, it just surfaces as a missed detection in
+`KPI-01`. Both are gateable like any other metric and both are tracked in
+`variance.py`'s `DEFAULT_METRICS`, so neither can be quoted from a single run.
+⚠ A vacuous `KPI-03` of 0.00 on a run with no healthy panels is exactly the case
+where quoting it alone misleads — check `KPI-03b`.
 
 ## Scenario suite
 
@@ -32,7 +60,7 @@ starting set, not the final one.
 
 | ID | Name | Composition | Hazards exercised | Primary KPIs | Introduced |
 |---|---|---|---|---|---|
-| `SC-01` | `nominal_calm` | Slice-0 farm, no wind/turbine/birds | none | `KPI-01`, `KPI-02` | `SLICE-0` |
+| `SC-01` | `nominal_calm` | real Khavda BLOCK-02, mid-morning (trackers off their stops, rows face-on, no self-shading), no wind/turbine/birds, faults enriched to 20% so the denominator holds both classes | none | `KPI-01`, `KPI-02` | `SLICE-0` — **built 2026-07-29**, `configs/scenarios/nominal_calm.yaml` (+ `nominal_calm_vlm.yaml`, same world, `perception` flipped) |
 | `SC-02` | `gust_only` | + wind force field, no turbine | `HAZ-03` | `KPI-05` | `SLICE-2` |
 | `SC-03` | `turbine_static_keepout` | + one articulated (non-spinning) turbine | `HAZ-01` | `KPI-04` | `SLICE-2` |
 | `SC-04` | `turbine_wake` | + spinning turbine, wake field active | `HAZ-01`, `HAZ-02` | `KPI-04`, `KPI-05` | `SLICE-2` |
@@ -42,12 +70,34 @@ starting set, not the final one.
 | `SC-08` | `graded_terrain` | ground bot on 5/10/15/20° ramp testbed | `HAZ-04` | `KPI-07` | `SLICE-2`/`SLICE-6` |
 | `SC-09` | `dust_haze_variant_pack` | off-box Transfer/Predict-generated corpus over `SC-05`/`SC-06` | `HAZ-07` | `KPI-03`, `KPI-08` | `SLICE-4` |
 | `SC-10` | `full_farm_battery_window` | full farm, both robots, N panels, declared daylight/battery window | `HAZ-06` | `KPI-02`, `KPI-06` | `SLICE-7` |
+| `SC-11` | `khavda_selfshade` | real Khavda BLOCK-02, HSAT trackers pinned at their 60° stop, sun 17.2° (02:00Z), every panel healthy, no turbines | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade.yaml` |
+| `SC-12` | `khavda_selfshade_lowsun` | `SC-11` one hour earlier (01:30Z, sun 10.7°): ~54% of each module shaded *and* the whole scene dimmer, so shading is confounded with underexposure | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade_lowsun.yaml` |
+
+`SC-11`/`SC-12` supersede `SC-05`'s original stimulus rather than extending it:
+the turbine-blade shadow sailed over the elevated rows onto the ground, while
+tracker self-shading is a real, on-surface, many-panel shadow produced by the
+plant's own hardware. Both are asserted geometrically in `tests/test_solar.py`
+before any run — a KPI-03 of 0.00 means nothing if the stimulus was absent.
 
 ## Gating discipline
 
 - Every scenario config declares its own `kpi_gates` block (see `IF-03`
   example); a slice's exit criteria (`07-roadmap-and-milestones.md`) is
   "all scenarios introduced at or before this slice meet their gates."
+- **Gates are enforced, not decorative** (`FR-17`). `run.py` evaluates the
+  declared block against the measured metrics via `kpi/gates.py`, writes
+  `gates.json`, prints the verdict and exits non-zero on a breach. A gate naming
+  a metric the run never measured **does not pass** — it reports `unmeasured`
+  and fails, because a silently unevaluated bound reads as a green tick.
+- **Quote a spread, not a number.** The world is seeded; the VLM is only
+  reproducible when served serially (measured — see `08-platform-and-risk-register.md`
+  `RISK-23`). `run.py --repeat N` re-runs one scenario N times, rewinding panel
+  state between repeats, and writes `variance.json`: per-metric min/median/max
+  plus every panel the repeats disagreed about, each attributed to the
+  **renderer** or the **model** by comparing frame thumbnails with a measured
+  tolerance — bit-exact digests cannot do this job, because the renderer is
+  stochastic (`RISK-24`). Repeat sets are gated on the
+  **worst** run, never the mean — a fleet flies each sortie once.
 - A KPI regression on an **earlier**-slice scenario blocks merging
   **later**-slice work until fixed or explicitly waived with a tracked
   `RISK-nn` entry — fidelity deepens along a working loop, it should never

@@ -80,6 +80,7 @@ def test_repo_false_fault_scenarios_are_valid():
         "configs/scenarios/sweeping_shadow.yaml",     # SC-05: turbine (faithful, WIP)
         "configs/scenarios/hard_shadow.yaml",         # reliable soft occluder stressor
         "configs/scenarios/hard_shadow_angled.yaml",  # harder: near-black + yawed
+        "configs/scenarios/khavda_selfshade.yaml",    # the REAL block, HSAT self-shading
     ):
         scn = load_scenario(path)
         assert scn.farm_cfg["faults"]["rate"] == 0.0, path
@@ -93,3 +94,24 @@ def test_repo_false_fault_scenarios_are_valid():
     angled = load_scenario("configs/scenarios/hard_shadow_angled.yaml")
     assert angled.farm_cfg["sun"]["ambient"] < 300.0
     assert angled.farm_cfg["shading"]["yaw_deg"] != 0.0
+
+
+def test_khavda_selfshade_is_the_real_block_under_the_live_vlm():
+    """KPI-03 on real hardware geometry. Three things must hold together or the
+    measurement is meaningless: every panel healthy (so any fault is a FALSE
+    fault), the real CAD-derived layout (not the procedural grid), and the live
+    VLM (ground_truth would trivially score 0.00 by construction)."""
+    scn = load_scenario("configs/scenarios/khavda_selfshade.yaml")
+    assert scn.farm_cfg["faults"]["rate"] == 0.0
+    assert scn.farm_cfg["layout"]["kind"] == "file"
+    assert "khavda" in scn.farm_cfg["layout"]["path"]
+    assert scn.mission_cfg["perception"] == "cosmos_reason"
+    # The stimulus is the plant's own trackers, so nothing may be added to the
+    # scene to manufacture a shadow (that was `hard_shadow`'s invented bar).
+    assert scn.farm_cfg["turbines"] == []
+    assert "shading" not in scn.farm_cfg
+    # Sun is driven by a real instant, not a hand-set angle pair that could
+    # disagree with the tracker rotation. tests/test_solar.py asserts that this
+    # exact timestamp produces on-panel shading.
+    assert scn.farm_cfg["sun"]["timestamp"] == "2026-06-21T02:00:00Z"
+    assert "elevation_deg" not in scn.farm_cfg["sun"]
