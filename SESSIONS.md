@@ -17,6 +17,100 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 14: the panels were never broken, and the site now stands in real OSM geography
+
+Two parts. The first was a bug hunt whose answer was "not where you are looking".
+
+### Part 1 — "the plates are not rendering" was a CAMERA fault, twice over
+
+Checked every panel-authoring suspect against the stage and **all of them came back
+clean**: the instanced prototype carried its full 75 prims at `purpose=default` with
+`cell_healthy`/`frame` bound, and all 1,904 panels were instanceable, visible,
+default-purpose, and cleared the ground by **1.95-2.60 m**. So the panels were fine.
+Proved it by rendering the *unmodified* stage from hand-picked poses: a nadir at 120 m
+showed real blue glass with cell grids. Two real bugs, both in how the shot was chosen:
+
+**1. `subset_site` was a smear, not a patch.** It took the N southernmost tables — a
+full-width BAND, which only looks compact on one DC block. On the 24-block S05b plot
+`--subset 20` drew from several blocks over **1739 x 161 m at 1.8% occupancy**: a
+bounding box almost entirely made of holes. A nadir from 400 m over the middle of it
+contains **no panels at all**, only inverter pads. Now selects by distance from an
+anchor: **117 x 161 m, 26.4%**.
+
+⚠ **BLOCK-02 `--subset 5` and `--subset 20` return byte-identical tables**, so every
+recorded KPI stage is untouched. Only `--subset 50`+ changes, and nothing recorded uses it.
+
+**2. The tour was axis-blind.** `default_shots`/`build_chapters` sized standoff from
+`max(span_x, span_y)` but travelled and pulled back along `span_y`. On that smear the
+establishing aerial sat **956 m above a 161 m-wide strip** (a 2.278 m module = **1.8 px**)
+and the road-level shots faced north out of the site while the plant ran away east — so
+the only panel faces in frame were the trackers' pale *backs*. Shots are now written in
+the footprint's own long/short frame (`flythrough.footprint_frame`), standoff capped
+against the SHORT span: **956 -> 353 m**. Verified key-by-key that a north-south
+footprint maps through identically, so BLOCK-02's hand-tuned tour is unchanged.
+
+Also fixed `cx * 0.75`, which **scaled a world coordinate** instead of offsetting from
+centre: a spanwise nudge near the origin, and a **498 m excursion** at Khavda's real
+eastings.
+
+**⭐ And the ground mesh was undersampling every terrain source in the project.** A fixed
+48-160 verts over a horizon-sized sheet gave **65 m spacing against 20 m DEM posts**, and
+40 m against the procedural farm's 14 m heightfield. That aliases, and the new clearance
+test caught a panel **buried 158 mm** in its own drawn ground while clearing
+`terrain_height` fine. `layout.terrain_feature_step` now reports what the source
+justifies and the mesh is **graded** off it — fine over the hardware, expanding to the
+sky dome. BLOCK-02: **25,600 verts @ 65 m -> 3,710 verts @ 19.8 m**, so 7x cheaper *and*
+3.3x finer.
+
+### Part 2 — real OSM geography, and the brief's bbox was 26 km wrong
+
+⚠ **The brief gave the site as 23.80-23.95 N, 69.40-69.65 E. Converting the CAD's own
+EPSG:32642 anchor puts the plant at 24.0898-24.1075 N, 69.4247-69.4723 E — ~26 km away.**
+Fetching OSM for the given box returned real named roads (Khavda-Dhordo Gorewali, Rann
+Bund) that are **29-32 km from our footprint**. Same shape as the clamped-DEM trap: real
+data, wrong place, and no visible symptom because the Rann is featureless either way. So
+the bbox is derived from the site file, never typed.
+
+**Terrain was already real** — Copernicus GLO-30, since Session 12c — so the open item was
+roads. `tools/osm_fetch.py` + `world/osm_features.py`, the same two-stage split
+`dem_fetch`/`dem.py` uses: network and `pyproj` at ingest, pure metre geometry at build.
+
+⚠ **Not Overpass.** Its main instance answered *every* request during this ingest with
+`504 ... dispatcher timeout, the server is probably too busy`, and two mirrors were
+unreachable. The **official OSM API 0.6 `/map`** call served immediately; its cost is a
+hard 0.25 sq-deg bbox limit, which the tool fails loud on rather than truncating.
+
+**What is actually there, measured:** 3 roads, 8 transmission lines including a **765 kV
+2-circuit 6-cable** run, and the mapped boundaries of **"Khavda Renewable Energy Park"
+(Adani Green, 1000 MW)** and **"NTPC Khavda" (397.7 MW)**. Prims carry
+`st:provenance = "mapped"` — a **third** tag beside `site.py`'s derived/inferred. On the
+built stage: **17 derived, 106 inferred, 10 mapped**.
+
+⚠ **OSM has NO internal plant roads here** — the whole footprint returns **5 ways**. The
+plant's own access roads are private and unmapped, so they stay derived/inferred and the
+build prints the two tallies separately. Road **widths** are per-class defaults
+(`st:width_source`) and conductor **sag** is not modelled: the centreline is real, the
+breadth and the catenary are conventions.
+
+⚠ **Radius clipping alone put 582 towers in the void.** `clip_to_radius` keeps whole ways
+so a road never ends in mid-desert — but that dragged all **108 km** of a transmission
+line on stage from one nearby vertex, giving an OSM layer spanning **-23 to +31 km east
+and -70 km north against a 1.5 km ground mesh**. `clip_to_box` against the ground's own
+extent fixes it (**582 -> 93 towers**), inset by the ribbon's miter bound so a road's
+*edge* also stays on terrain. Verified: every OSM/Farm/Site/Turbine prim now inside the
+ground mesh.
+
+⚠ **A small subset may legitimately have no mapped geography, and that is reported not
+hidden.** `--subset 20`'s nearest mapped way is ~1.5 km outside its ground mesh, so that
+stage carries none; `--subset 50` picks up 2 roads, `--subset 200` 3 roads + 6 power ways.
+The deliverable was therefore built at **`--subset 200`: 22,064 panels, 55,945 prims**.
+
+**Tests: 495 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
+material-bound, non-guide, above the *interpolated* ground mesh, instancing on and off),
+Isaac-free framing guards (travel follows the long axis, standoff proportionate to the
+short span, offsets survive translating the site), subset occupancy >= 15%, and OSM
+geometry (miter, drape, clip invariants). `FR-27` and `IF-11` are Locked.
+
 ## 2026-07-29 — Session 13b: the multi-block plant builds and flies — on real S05b terrain
 
 Closed the two build items Session 13 left. Both worked, and one exposed a stale

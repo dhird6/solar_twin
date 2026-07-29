@@ -82,6 +82,42 @@ terrain:
   pad_tolerance_m: 0.025
   pad_blend_m: 40.0
 
+# REAL OpenStreetMap geography (FR-10/FR-20) — the landscape the plant stands in.
+# Baked by
+#   python3 tools/osm_fetch.py configs/layouts/khavda_s05b_digest.yaml \
+#       --out configs/layouts/khavda_s05b_osm.yaml --pad 6000
+# from the official OSM API 0.6 /map call (NOT Overpass — its main instance
+# answered every request during this ingest with a 504 dispatcher timeout).
+# Projected into EPSG:32642 and anchored to the site origin at ingest, so mapped
+# roads and CAD tracker tables share one frame because both are real survey
+# metres — nothing is scaled or fitted to make them line up.
+#
+# What is actually in there, measured: 3 roads (2 unpaved `highway=track`, one
+# `tertiary`), 8 transmission lines including a 765 kV / 2-circuit / 6-cable run,
+# and the mapped boundaries of "Khavda Renewable Energy Park" (Adani Green,
+# 1000 MW) and "NTPC Khavda" (397.7 MW). Prims carry `st:provenance = "mapped"` —
+# a THIRD tag beside site.py's derived/inferred.
+#
+# ⚠ OSM CARRIES NO INTERNAL PLANT ROADS HERE. The plant's own access roads are
+# private and unmapped: the whole footprint returned 5 ways. So the internal
+# roads on this stage remain DERIVED/INFERRED from world/site.py, and the build
+# prints the two tallies separately so they cannot blur (`NFR-07`).
+#
+# ⚠ Road WIDTHS are per-class defaults — OSM tags no width out here. The
+# centreline is mapped, the breadth is a convention; each ribbon records which
+# via `st:width_source`. Conductor SAG is not modelled either: a span is a
+# straight chord between mapped tower positions.
+osm:
+  enabled: true
+  path: configs/layouts/khavda_s05b_osm.yaml
+  # Whole ways with a vertex inside this radius of the plant are kept (never
+  # split — a clipped road ending in mid-desert reads as broken geometry). Omit
+  # to default to 2.5x the footprint's long axis.
+  radius_m: 6000.0
+  # Max spacing between draped vertices. OSM digitises a straight desert track as
+  # two points kilometres apart, and an undraped chord floats over the relief.
+  drape_step_m: 40.0
+
 # Georef is carried by the site file's `crs` (EPSG:32642) and converted with
 # pyproj, so these are a fallback only, used if pyproj is unavailable.
 georef:

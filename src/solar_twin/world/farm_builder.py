@@ -455,6 +455,21 @@ def _graded_axis(
     return vals
 
 
+def ground_extent(farm_cfg, layout, horizon_m: float) -> tuple[float, float, float, float]:
+    """The rectangle the ground mesh covers, in stage metres.
+
+    Exported (and computed once) because the ground mesh is the floor everything
+    else stands on: anything authored beyond it floats in the void against the sky
+    dome. `_build_osm_layer` clips real geography to exactly this box, so terrain
+    and geography cannot disagree about where the world ends.
+    """
+    min_x, min_y, max_x, max_y = layout.bounds()
+    extent = max(max_x - min_x, max_y - min_y)
+    reach = max(horizon_m, extent / 2.0 + max(60.0, 0.12 * extent) + 30.0)
+    cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    return (cx - reach, cy - reach, cx + reach, cy + reach)
+
+
 def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: float = 30.0) -> None:
     """A tessellated ground mesh sampling the SAME terrain_height() the panels and
     waypoints use, so the visible ground matches where things are mounted. Flat
@@ -479,7 +494,8 @@ def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: floa
     # camera saw the sky dome's underside as a grey floor beyond the plant, which
     # made a 320 x 647 m site look like a model on a table. `horizon_m` is the
     # sky dome's base radius, so terrain now meets sky wherever you look.
-    reach = max(horizon_m, extent / 2.0 + pad + 30.0)
+    gx0, gy0, gx1, gy1 = ground_extent(farm_cfg, layout, horizon_m)
+    reach = (gx1 - gx0) / 2.0
     cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
 
     # The spacing the terrain source actually justifies. `flat` returns 0 (no
@@ -683,6 +699,184 @@ def _box(stage, path, w, d, h, x, y, z, material):
     api.SetScale(Gf.Vec3f(w, d, h))
     _bind(cube.GetPrim(), material)
     return cube
+
+
+def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
+    """Real OpenStreetMap geography around the plant: roads, transmission lines and
+    the mapped plant boundaries (`FR-10`/`FR-20`). Returns a tally for the log.
+
+    **This is real third-party data, not our invention and not the vendor CAD's.**
+    Baked by `tools/osm_fetch.py` from the official OSM API into the site's own
+    EPSG CRS and anchored to the site origin, so an OSM road and a CAD tracker
+    table share one frame because both are real survey metres — nothing is scaled
+    or fitted to make them agree. Every prim gets `st:provenance = "mapped"`, a
+    third value beside `site.py`'s `derived`/`inferred`.
+
+    ⚠ Two honesty constraints, both enforced here rather than left to a comment:
+
+    * Road **widths** are per-class defaults where OSM tags no width, so each
+      ribbon records `st:width_source`. The centreline is mapped; the breadth is a
+      convention.
+    * OSM has **no internal plant roads** for this site, so this layer never
+      touches them — `_build_site_works` still owns those as derived/inferred.
+      The build log prints both tallies separately so the two cannot blur.
+
+    Terrain-draped per vertex (`osm_features.resample`), because OSM digitises a
+    straight desert track as two points kilometres apart and an undraped chord
+    floats over the relief the DEM actually has.
+    """
+    from solar_twin.world.osm_features import (
+        MAPPED,
+        clip_to_box,
+        clip_to_radius,
+        load_features,
+        resample,
+        ribbon,
+    )
+
+    cfg = farm_cfg.get("osm", {}) or {}
+    path = cfg.get("path")
+    if not cfg.get("enabled", bool(path)) or not path:
+        return {}
+    if not Path(path).exists():
+        print(f"  [warn] osm.path {path} not found — no mapped geography authored")
+        return {}
+
+    feats = load_features(path)
+    min_x, min_y, max_x, max_y = layout.bounds()
+    cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    # The bake covers a padded bbox so one ingest serves any subset; clip so a
+    # 20-table patch does not get a 108 km transmission line across its stage.
+    radius = float(cfg.get("radius_m", 0.0)) or max(
+        2500.0, 2.5 * max(max_x - min_x, max_y - min_y)
+    )
+    n_raw = len(feats.ways)
+    feats = clip_to_radius(feats, cx, cy, radius)
+    # Then clip to the GROUND's own extent. `clip_to_radius` keeps whole ways so a
+    # road never ends in mid-desert, but that also drags all 108 km of a
+    # transmission line onto the stage from one nearby vertex — measured: an OSM
+    # layer spanning -23..+31 km with the ground mesh reaching 1.5 km, so 582
+    # towers stood in the void. Cutting at the ground edge puts the cut at the
+    # horizon, which is where a road should leave frame.
+    if ground_box is not None:
+        # Inset first: clipping cuts the CENTRELINE, and `ribbon`/curve widths then
+        # extrude outward from it, so a road cut exactly on the edge still overhangs
+        # the terrain by half its width (measured: 2 m past a 9 km mesh). The
+        # allowance is the miter bound `ribbon` uses (half-width / 0.35), so even a
+        # corner sitting on the boundary stays on the ground.
+        widest = max((w.width_m for w in feats.ways), default=0.0)
+        inset = max(3.0, widest / (2.0 * 0.35))
+        gx0, gy0, gx1, gy1 = ground_box
+        feats = clip_to_box(feats, gx0 + inset, gy0 + inset, gx1 - inset, gy1 - inset)
+    if not feats.ways:
+        print(f"  [warn] no OSM features within {radius:,.0f} m of the plant")
+        return {}
+
+    ground = lambda x, y: terrain_height(x, y, farm_cfg)  # noqa: E731
+    root = UsdGeom.Xform.Define(stage, "/World/OSM").GetPrim()
+    root.CreateAttribute("st:provenance", Sdf.ValueTypeNames.String).Set(MAPPED)
+    root.CreateAttribute("st:source", Sdf.ValueTypeNames.String).Set(feats.source)
+    root.CreateAttribute("st:license", Sdf.ValueTypeNames.String).Set(feats.license)
+
+    drape_m = float(cfg.get("drape_step_m", 40.0))
+    tally: dict[str, int] = {}
+
+    def _tag(prim, way, **extra) -> None:
+        prim.CreateAttribute("st:provenance", Sdf.ValueTypeNames.String).Set(MAPPED)
+        prim.CreateAttribute("st:osm_id", Sdf.ValueTypeNames.Int64).Set(way.osm_id)
+        prim.CreateAttribute("st:osm_kind", Sdf.ValueTypeNames.String).Set(way.kind)
+        for k, v in extra.items():
+            prim.CreateAttribute(f"st:{k}", Sdf.ValueTypeNames.String).Set(str(v))
+
+    for i, way in enumerate(feats.roads):
+        pts = resample(way.points, drape_m)
+        edges = ribbon(pts, way.width_m)
+        if not edges:
+            continue
+        # One mesh per road: a quad strip between the two draped edges. Sampling
+        # terrain at each edge vertex (not at the centreline) means the ribbon
+        # follows a cross-slope instead of hovering on the downhill side.
+        verts, counts, idx = [], [], []
+        for (lx, ly), (rx, ry) in edges:
+            verts.append(Gf.Vec3f(lx, ly, ground(lx, ly) + 0.04))
+            verts.append(Gf.Vec3f(rx, ry, ground(rx, ry) + 0.04))
+        for s in range(len(edges) - 1):
+            a = 2 * s
+            counts.append(4)
+            idx.extend([a, a + 1, a + 3, a + 2])
+        name = f"road_{i:02d}_{way.kind}"
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/OSM/Roads/{name}")
+        mesh.CreatePointsAttr(verts)
+        mesh.CreateFaceVertexCountsAttr(counts)
+        mesh.CreateFaceVertexIndicesAttr(idx)
+        mesh.CreateSubdivisionSchemeAttr("none")
+        _bind(mesh.GetPrim(), looks["road"])
+        _tag(
+            mesh.GetPrim(), way,
+            width_m=f"{way.width_m:.1f}",
+            width_source=way.width_source,
+            surface=way.surface,
+            name=way.name,
+        )
+        tally["roads"] = tally.get("roads", 0) + 1
+
+    for i, way in enumerate(feats.power):
+        pts = resample(way.points, drape_m)
+        if way.kind == "plant":
+            # A mapped plant boundary is context, not hardware, and filling it
+            # would paint over the ground we actually build on. Drawn as a
+            # ground-following BasisCurve outline instead, and made guide-purpose:
+            # this is an annotation, so it must never occlude or shadow a sensor
+            # frame (the exact bug the keep-out spheres caused — see
+            # `tests/test_farm_builder_usd.py`).
+            curve = UsdGeom.BasisCurves.Define(stage, f"/World/OSM/Boundaries/plant_{i:02d}")
+            curve.CreatePointsAttr([Gf.Vec3f(x, y, ground(x, y) + 0.10) for x, y in pts])
+            curve.CreateCurveVertexCountsAttr([len(pts)])
+            curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+            curve.CreateWidthsAttr([3.0] * len(pts))
+            curve.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+            curve.CreatePurposeAttr(UsdGeom.Tokens.guide)
+            _tag(curve.GetPrim(), way, name=way.name, operator=way.operator)
+            tally["boundaries"] = tally.get("boundaries", 0) + 1
+            continue
+
+        # A transmission line: the conductor at its voltage-class height. Real
+        # position and real voltage; the catenary SAG is not modelled, so each
+        # span is a straight chord (`NFR-07`).
+        h = way.line_height_m
+        curve = UsdGeom.BasisCurves.Define(stage, f"/World/OSM/Power/line_{i:02d}")
+        curve.CreatePointsAttr([Gf.Vec3f(x, y, ground(x, y) + h) for x, y in pts])
+        curve.CreateCurveVertexCountsAttr([len(pts)])
+        curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+        curve.CreateWidthsAttr([0.9] * len(pts))
+        curve.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        _bind(curve.GetPrim(), looks["structure"])
+        _tag(curve.GetPrim(), way, voltage=way.voltage, height_m=f"{h:.0f}")
+        tally["power_lines"] = tally.get("power_lines", 0) + 1
+
+        # Towers on the original (un-resampled) OSM vertices: those are the
+        # surveyed tower positions, whereas resampled points are interpolation.
+        for j, (x, y) in enumerate(way.points):
+            _box(
+                stage, f"/World/OSM/Power/line_{i:02d}/tower_{j:03d}",
+                2.5, 2.5, h, x, y, ground(x, y), looks["turbine"],
+            )
+        tally["towers"] = tally.get("towers", 0) + len(way.points)
+
+    named = sorted({w.name for w in feats.ways if w.name})
+    print(
+        f"  OSM (MAPPED, real): {tally} from {n_raw} baked ways, clipped to the "
+        f"ground mesh"
+        + (f" · named: {', '.join(named[:3])}" if named else ""),
+        flush=True,
+    )
+    if not feats.roads:
+        print(
+            "    ⚠ no MAPPED roads here — OSM does not map this plant's internal "
+            "roads, so every road on the stage is derived/inferred",
+            flush=True,
+        )
+    return tally
 
 
 def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
@@ -988,6 +1182,14 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
     # --- balance of plant: roads, fence, inverter stations --------------------
     site_stats = _build_site_works(stage, farm_cfg, layout, looks)
+
+    # --- real OSM geography: mapped roads, HV lines, plant boundaries ---------
+    # Clipped to the ground mesh's own extent, so nothing real is authored past
+    # the terrain it should be standing on.
+    _build_osm_layer(
+        stage, farm_cfg, layout, looks,
+        ground_box=ground_extent(farm_cfg, layout, horizon_m),
+    )
 
     # --- optional shading occluder (KPI-03 hard-shadow stressor) --------------
     _build_shading_occluder(stage, farm_cfg, layout, looks["structure"])
