@@ -17,6 +17,49 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 11e: PR #9 merged — `main` is finally the trunk again
+
+**`main` had been 31+ commits behind for weeks.** `docs/TASKS.md` listed "no PR to
+`main`" as the largest outstanding structural item across four sessions. It is
+closed: **PR #9 merged as `71625a8`**, `main` fast-forwarded from `86dc834` to the
+integrated branch, now **71 commits** with **396 Isaac-free tests collected** (it
+was 74 tests on `main` before this).
+
+**Checked before merging, not after:**
+- `mergeable: CLEAN`, `mergeStateStatus: CLEAN`, and `git merge-base --is-ancestor`
+  confirmed a true fast-forward — no merge conflicts were possible.
+- **CI green on both interpreters** (`py3.10`, `py3.12`) against the pushed branch.
+- ⚠ The local tree was **red at the time** (2 failures) and that was worth
+  understanding rather than overriding: `tests/test_docs_fresh.py` was failing
+  because a parallel session had **uncommitted** work adding tests, so the docs'
+  stated count (393) lagged what pytest collected (396). The *committed* branch was
+  green, which is why CI passed and the local run did not. The freshness test was
+  doing exactly its job. It resolved itself when that session committed (`790bf70`)
+  — no number was hand-patched mid-edit, which would only have gone stale again.
+
+**Sequenced around a live parallel session.** Another session was editing
+`cosmos_reason.py` / `test_cosmos_reason.py` / `CLAUDE.md` in the shared worktree,
+so the working diff was backed up to the scratchpad before any branch operation.
+By the time the merge ran they had committed, and the backup turned out empty —
+kept the step anyway, because the cost of the safeguard is nothing and the cost of
+losing someone else's uncommitted experiment is a day.
+
+**New branch for the next phase: `ID-3-Testing-and-new-features-addin`**, cut from
+the merged `main` and pushed with upstream tracking. ⚠ Named with **hyphens, not
+spaces** — the request was "ID-3-Testing and new features addin", but git branch
+names with spaces need quoting in every command and break scripts and CI matrices;
+the repo's own convention is `ID-2-Layout-Integration`. Same words, hyphenated.
+
+**What that branch inherits — read these before starting:**
+- `KPI-03 = 0.00` is a property of the **all-healthy low-sun** scenarios
+  (`SC-11`/`SC-12`), not of the model. On the fault-enriched `SC-01` it measures
+  **0.030–0.091**. Never quote the 0.00 as a general result.
+- `RISK-25` (verdicts fragile to sub-perceptual input noise) and `RISK-27`
+  (`omni.physx.forcefields` absent from this build) are open.
+- `FR-06`: PX4 SITL is proven on aarch64; the Isaac-side bridge is still a
+  17-call-site port (`RISK-02`(b)) with a protocol-drift risk (`RISK-26`).
+- `tools/run_livestream.sh` remains untracked and belongs to another session.
+
 ## 2026-07-29 — Session 11d: the Pegasus/PX4 investigation — PX4 runs on aarch64; the bridge is a 17-call-site port
 
 `FR-06` (real flight dynamics) had sat behind `RISK-02` — "Pegasus on aarch64 is

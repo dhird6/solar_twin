@@ -7,19 +7,22 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 11c)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 11e)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11e.
 
-**State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
-and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **396 Isaac-free
-tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
-`tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
-time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
-so it is a clean fast-forward with no conflicts — what remains is the merge
-decision, not the PR itself. CI (`.github/workflows/ci.yml`) gates it. The twin
+**State:** ✅ **`main` IS the trunk again — PR #9 merged 2026-07-29 as `71625a8`.**
+That was the largest outstanding structural item for four sessions ("no PR to
+`main`"), and it is closed: `main` fast-forwarded from `86dc834` to the integrated
+branch, **71 commits**, and its test count went **74 → 396**. Merged only after
+`mergeable: CLEAN`, a verified fast-forward, and **CI green on py3.10 + py3.12**.
+Work now happens on **`ID-3-Testing-and-new-features-addin`**, cut from the merged
+`main` (hyphens not spaces — a branch name with spaces needs quoting in every
+command and breaks CI matrices; matches `ID-2-Layout-Integration`'s convention).
+**396 Isaac-free tests** collected off-Isaac — 3 more need `pxr` and do not collect
+without it, and `tests/test_docs_fresh.py` **enforces this number** so it cannot rot
+a fourth time. CI (`.github/workflows/ci.yml`) gates every push. The twin
 runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, and KPI-03 now has **two
 verified-stimulus points, both 0.00** — 560 healthy panels at 02:00Z
