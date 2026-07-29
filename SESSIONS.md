@@ -17,6 +17,75 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 12c: the physics finally run TOGETHER — graded pad, wind that bites, PX4 behind the ABC
+
+Three things closed, and the theme is that each one produced a number rather than
+a feature.
+
+**⭐ The graded civil pad.** GLO-30 is a *pre-grading* DSM — the desert as the
+satellite found it, not the surface the contractor handed over. On raw ground the
+worst tracker row needs **0.532 m** of pile-height variation to sit on a straight
+torque tube, far outside any real pile tolerance, so that ground *was* graded and
+we were building on the wrong surface. `world/grading.py` fits a least-squares
+plane: on the real site **grade 0.03%, cut 0.59 m / fill 0.80 m, 14,780 m3 each
+way, balance ratio 1.00** — the cut/fill balance claim verified on real data.
+
+⚠ **The first version was dishonest and the measurement caught it.** A plane is
+perfectly straight along *every* line, so it reported **0.000 m** pile variation —
+claiming the piles need no adjustment, which is not a buildable claim. Real grading
+is signed off to a tolerance, so the pad carries a seeded 25 mm as-built deviation:
+0.532 m raw -> 0.000 m (dishonest) -> **0.013 m** (plausible).
+
+**⭐ Wind that measurably bites, in a scene with everything in it.** `SC-13`
+(`khavda_windy_hover`) is the first scenario where the pieces run *together*: real
+DEM + graded pad + an articulated 120 m turbine + 12 m/s wind with 35% gusts and a
+Jensen wake, flown by PX4.
+
+| | calm air | 12 m/s + 35% gusts |
+|---|---|---|
+| altitude hold | **43 mm** / 35 s | **~724 mm** (2.13–2.86 m) |
+| roll / pitch | ±0.5° | **+36° / −36°** |
+| settles? | yes | **no** — never meets \|vz\| < 0.05 |
+
+So the honest statement is: at this wind the drone holds altitude and **does not
+station-keep**. A ~17x degradation, reported rather than gated away.
+
+⚠ **Two constraints that are physics, not shortcuts.** `SC-13` is a *hover*, not an
+inspection, because wind is a **force** and the inspection mission drives its
+robots kinematically — a force on a kinematically-driven body does *nothing*.
+Running `wind:` against the normal mission would look like gust modelling and
+measurably not be one. And wind is applied only once **airborne**: 15 N exceeds the
+frame's own 14.7 N weight, and applied to a *parked* drone it tumbled it inverted
+(roll −177°) so preflight failed and it never armed.
+
+**⭐ `control/px4.py` — FR-06 behind the ABC.** Deliberately **Isaac-free**:
+commanding PX4 is a MAVLink conversation, not a simulator operation, so it
+unit-tests with a fake link on any machine and the real `orchestrator/mission.py`
+drives it unchanged (`NFR-04`, asserted by running the FSM over it). Mixed fleets
+fall back per robot, so the ground bot stays kinematic (`FR-07`).
+
+The **ENU→NED conversion** gets the most test coverage on purpose: it is the classic
+PX4 bug, it never raises, and its symptom (mirrored position, or descending when
+told to climb) reads as a tuning problem. Also pinned: offboard needs a setpoint
+*stream*, and `at_goal` returns False with no estimate — reporting arrival there
+would let a mission march through every waypoint before the drone moved.
+
+**On the live session you were watching.** Diagnosed three separate causes of poor
+visibility, none of them a rendering fault: the Isaac window was **behind VS Code**;
+you are viewing `:1` over **RustDesk**, which compresses a 3D viewport badly
+(`--livestream` + the WebRTC client is the built-for-purpose path); and a live-VLM
+run **freezes ~10.7 s per panel** (measured: 20 panels / 214 s) because Kit only
+repaints between blocking `urllib` calls. Ground-bot motion also looks wrong and
+is not: consecutive panels are **1.15 m** apart, so it creeps for under a second
+then waits ~10 s for a verdict.
+
+⚠ **A near-miss worth recording:** while freeing the GPU I identified a 42 GB
+process as Isaac and sent it `kill -9`. It was **vLLM's EngineCore**. It survived
+only because the PID was in the container's namespace. Check `ps -o cmd` before
+killing by memory footprint.
+
+FR-06 and FR-12 -> Locked. 450 Isaac-free tests (was 431).
+
 ## 2026-07-29 — Session 12b: ⭐ IT FLIES — PX4 governs an Iris in Isaac 6.0.1, hovering 2.562 m ± 43 mm
 
 `FR-06` is achieved end to end. PX4 SITL owns the attitude/position loops, Isaac
