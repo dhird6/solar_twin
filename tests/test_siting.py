@@ -9,6 +9,7 @@ from solar_twin.world.siting import (
     buildable_ring,
     lattice_score,
     min_spacing_ellipse,
+    rpm_to_deg_per_s,
     scatter_turbines,
 )
 
@@ -215,3 +216,32 @@ def test_the_shipped_narrow_ring_is_still_far_from_a_lattice():
     for i, a in enumerate(sites):
         for b in sites[i + 1 :]:
             assert min_spacing_ellipse(a.x, a.y, b.x, b.y, 250.0, 7 * 140.0, 4 * 140.0)
+
+
+# ------------------------------------------------- rotor speed (FR-11, pure half)
+# One conversion, because two consumers must agree: `farm_builder`'s USD angular
+# drive wants deg/s, and `sim_runtime`'s kinematic spin wants deg per update. They
+# had drifted apart as two separate literals, and a hub that visually spins at one
+# rate while being driven at another is the sort of thing only a blade-shadow KPI
+# eventually notices.
+
+
+def test_one_rpm_is_six_degrees_per_second():
+    assert rpm_to_deg_per_s(1.0) == 6.0
+
+
+def test_a_full_revolution_takes_sixty_seconds_at_one_rpm():
+    assert rpm_to_deg_per_s(1.0) * 60.0 == pytest.approx(360.0)
+
+
+@pytest.mark.parametrize("rpm,expected", [(0.0, 0.0), (10.0, 60.0), (12.0, 72.0)])
+def test_typical_rotor_speeds(rpm, expected):
+    assert rpm_to_deg_per_s(rpm) == pytest.approx(expected)
+
+
+def test_the_kinematic_spin_rate_still_matches_the_old_literal():
+    """`sim_runtime` used `rpm * 0.2` deg/update, i.e. 30 updates/s. Replacing a
+    magic number must not change how fast the blade shadows sweep — the KPI-03
+    stimulus depends on that rate."""
+    for rpm in (5.0, 10.0, 12.0, 20.0):
+        assert rpm_to_deg_per_s(rpm) / 30.0 == pytest.approx(rpm * 0.2)

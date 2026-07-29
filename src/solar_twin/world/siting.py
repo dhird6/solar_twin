@@ -49,6 +49,19 @@ CROSSWIND_SPACING_D = 4.0
 ARRAY_SETBACK_D = 1.5
 
 
+def rpm_to_deg_per_s(rpm: float) -> float:
+    """Rotor rpm -> degrees per second. One revolution is 360 deg per 60 s.
+
+    The single conversion for rotor speed, because there are now two consumers
+    that must agree: `farm_builder._articulate_turbine` feeds it to a USD angular
+    drive's `targetVelocity` (deg/s), and `sim_runtime`'s kinematic spin loop needs
+    deg per *update*, which is this divided by the update rate. Those had drifted
+    apart as two literals — a hub that visually spins at one rate and is driven at
+    another is the kind of thing nobody notices until a blade-shadow KPI does.
+    """
+    return float(rpm) * 6.0
+
+
 @dataclass(frozen=True)
 class TurbineSite:
     """One sited machine, in stage-local metres."""

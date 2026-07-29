@@ -17,6 +17,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+# Pure-python (no Isaac), so importing it at module scope is safe: one canonical
+# rotor-speed conversion shared with `farm_builder`'s angular drive.
+from solar_twin.world.siting import rpm_to_deg_per_s
+
 # Annotators can lag the render by a frame or two; pump this many app updates
 # before reading a freshly-moved camera so capture() returns the current view.
 _RENDER_SETTLE_UPDATES = 3
@@ -143,15 +147,24 @@ class SimRuntime:
         # blades each update (moving shadows sweep the panels — the false-fault
         # test). Each hub carries an `st:rpm` attr; convert to deg/update
         # (assume ~30 updates/s — this is a visual proxy, not a physics rotor).
+        #
+        # ⚠ Hubs marked `st:articulated` (FR-11) are SKIPPED. Those are driven by a
+        # real angular drive, and writing their transform here as well would have
+        # the kinematic write fight the solver every frame — the rotor would judder
+        # or freeze, and it would look like a physics bug rather than two things
+        # both claiming ownership of one transform.
         self._turbines: list[tuple[object, float, list[float]]] = []
         turbines_root = self._stage.GetPrimAtPath("/World/Turbines")
         if turbines_root and turbines_root.IsValid():
             for prim in Usd.PrimRange(turbines_root):
                 if prim.GetName() != "Hub":
                     continue
+                art = prim.GetAttribute("st:articulated")
+                if art and art.IsValid() and bool(art.Get()):
+                    continue  # physics owns this rotor
                 rpm_attr = prim.GetAttribute("st:rpm")
                 rpm = float(rpm_attr.Get()) if rpm_attr and rpm_attr.IsValid() else 10.0
-                self._turbines.append([prim, rpm * 0.2, [0.0]])
+                self._turbines.append([prim, rpm_to_deg_per_s(rpm) / 30.0, [0.0]])
 
         # Optional bird's-eye / chase camera. It serves two unrelated jobs: the
         # source camera for a run video, and the camera a live viewport looks

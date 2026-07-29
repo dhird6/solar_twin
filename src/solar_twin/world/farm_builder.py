@@ -32,6 +32,7 @@ from solar_twin.world.layout import (
     soiling_mask,
     terrain_height,
 )
+from solar_twin.world.siting import rpm_to_deg_per_s
 
 # Fallback panel-centre height if farm.yaml omits panel.mount_height.
 PANEL_MOUNT_HEIGHT = 0.75
@@ -169,6 +170,77 @@ def _add_collision(prim) -> None:
         UsdPhysics.CollisionAPI.Apply(prim)
     except Exception as exc:  # noqa: BLE001 — colliders are additive, not critical
         print(f"  [warn] collider skipped for {prim.GetPath()}: {exc}")
+
+
+def _articulate_turbine(stage, path: str, spec: dict) -> None:
+    """Turn an authored turbine proxy into a real USD articulation (`FR-11`).
+
+    The proxy already carries colliders, but they are **inert**: the runtime spins
+    the Hub by writing its transform each frame, which is animation, not dynamics —
+    nothing can be pushed by a blade that is teleported through it (`RISK-11`).
+    This adds the articulation so the rotor is simulated:
+
+    - `ArticulationRootAPI` on the turbine root,
+    - the **Hub** becomes a rigid body (its blade children are already colliders,
+      so the rotor is one body with three blade colliders rather than three bodies
+      — cheaper, and correct since the blades cannot move relative to each other),
+    - a **revolute joint** about the rotor axis (+Y, matching `_build_turbine`'s
+      geometry) from the static tower to the hub,
+    - an **angular drive** in velocity mode, so the rotor is *driven* at the
+      turbine's rpm and can still be resisted, rather than being kinematically
+      dragged to a pose.
+
+    The tower and nacelle stay static colliders: they are bolted to the ground, and
+    a fixed joint to the world would add a body for the solver to integrate for no
+    behavioural gain.
+
+    ⚠ Opt-in (`turbines_articulated: true`). Enabling it means the runtime must
+    STOP writing the Hub transform, or the kinematic write fights the solver — see
+    `sim_runtime`'s spin loop, which skips articulated hubs. Every KPI run recorded
+    so far used the kinematic proxy, so the default is unchanged deliberately.
+
+    All four APIs used here were verified present on this build (Isaac Sim
+    6.0.1-rc.7 / PhysX 110.1.13) rather than recalled: `ArticulationRootAPI`,
+    `RigidBodyAPI`, `RevoluteJoint`, `DriveAPI`.
+    """
+    root = stage.GetPrimAtPath(path)
+    hub = stage.GetPrimAtPath(path + "/Hub")
+    tower = stage.GetPrimAtPath(path + "/Tower")
+    if not (root and hub and tower):
+        print(f"  [warn] cannot articulate {path}: missing root/Hub/Tower")
+        return
+    try:
+        UsdPhysics.ArticulationRootAPI.Apply(root)
+
+        UsdPhysics.RigidBodyAPI.Apply(hub)
+        # Explicit mass: derived-from-collider mass on a long thin paddle is
+        # plausible but arbitrary, and rotor inertia sets how much a gust
+        # perturbs it — a number worth stating rather than inheriting.
+        UsdPhysics.MassAPI.Apply(hub).CreateMassAttr(
+            float(spec.get("rotor_mass_kg", 2000.0))
+        )
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, path + "/RotorJoint")
+        joint.CreateAxisAttr("Y")  # matches the rotor axis in `_build_turbine`
+        joint.CreateBody0Rel().SetTargets([tower.GetPath()])
+        joint.CreateBody1Rel().SetTargets([hub.GetPath()])
+        # Free-spinning: a revolute joint with no limits set is unlimited, which
+        # is what a rotor is. Limits here would make it an oscillating flap.
+
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive.CreateTypeAttr("force")
+        # Velocity control: zero stiffness (no target *position* to hold), damping
+        # supplies the torque that chases target velocity. Stiffness > 0 would make
+        # the rotor spring back to an angle.
+        drive.CreateStiffnessAttr(0.0)
+        drive.CreateDampingAttr(float(spec.get("rotor_damping", 1.0e5)))
+        drive.CreateTargetVelocityAttr(rpm_to_deg_per_s(spec.get("rpm", 10.0)))
+        drive.CreateMaxForceAttr(float(spec.get("rotor_max_torque", 1.0e7)))
+
+        # Marks the hub for `sim_runtime`, which must not also write its transform.
+        hub.CreateAttribute("st:articulated", Sdf.ValueTypeNames.Bool).Set(True)
+    except Exception as exc:  # noqa: BLE001 — fall back to the kinematic proxy
+        print(f"  [warn] articulation skipped for {path}: {exc}")
 
 
 def _dust_material(stage) -> UsdShade.Material:
@@ -993,6 +1065,12 @@ def build(farm_cfg: dict, out_path: str) -> str:
         stage.GetPrimAtPath(hub).CreateAttribute(
             "st:rpm", Sdf.ValueTypeNames.Float
         ).Set(float(spec.get("rpm", 10.0)))
+
+        # FR-11: opt-in real articulation. Off by default because every KPI run
+        # recorded so far used the kinematic proxy, and a driven rotor is a
+        # different scene — not a free upgrade to a pinned measurement.
+        if bool(farm_cfg.get("turbines_articulated", False)):
+            _articulate_turbine(stage, tpath, spec)
 
         # Translucent no-fly sphere: the SAME rotor keep-out volume the planner
         # enforces (world/keepout.py), made visible. Centred on the rotor hub.

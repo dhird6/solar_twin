@@ -14,7 +14,7 @@ is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c
 
 **State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
 and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **345 Isaac-free
+so there is ONE trunk again rather than divergent worktrees. **389 Isaac-free
 tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
 `tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
 time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
