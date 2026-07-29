@@ -143,3 +143,28 @@ def test_night_and_degenerate_inputs_shade_nothing():
     assert shadow_chord_m(MODULE_W, -3.0, 90.0) == 0.0
     assert self_shaded_fraction(PITCH_5, MODULE_W, -3.0, 90.0) == 0.0
     assert self_shaded_fraction(0.0, MODULE_W, 20.0, 90.0) == 0.0
+
+
+def test_the_low_sun_scenario_timestamp_shades_about_half_the_row():
+    """Same anti-hollow-null guard, for the SECOND KPI-03 point.
+    configs/scenarios/khavda_selfshade_lowsun.yaml claims 01:30Z roughly doubles
+    the shaded fraction while dimming the scene. Assert the geometry it claims,
+    so the timestamp cannot be edited into a weaker stimulus unnoticed."""
+    elev, az = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 1, 30))
+    assert 9.0 < elev < 12.5, elev                              # low, not sunrise
+    assert math.isclose(tracker_rotation_deg(elev, az), 60.0)    # still on the stop
+    assert cross_axis_angle_deg(elev, az) > 77.0
+    assert 9.5 < shadow_chord_m(MODULE_W, elev, az) < 12.0       # ~10.9 m chord
+    # ~54% shaded at the 5 m pitch, ~45% at 6 m — about half the module.
+    assert 0.50 < self_shaded_fraction(PITCH_5, MODULE_W, elev, az) < 0.60
+    assert 0.40 < self_shaded_fraction(PITCH_6, MODULE_W, elev, az) < 0.50
+
+
+def test_the_two_kpi03_points_differ_only_by_a_real_step_in_shading():
+    """The pair has to be a curve, not two names for the same stimulus."""
+    hard = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 2, 0))
+    low = solar_position(LAT, LON, dt.datetime(2026, 6, 21, 1, 30))
+    f_hard = self_shaded_fraction(PITCH_5, MODULE_W, *hard)
+    f_low = self_shaded_fraction(PITCH_5, MODULE_W, *low)
+    assert f_low - f_hard > 0.15, (f_hard, f_low)
+    assert low[0] < hard[0]  # and the scene really is dimmer, not just shadier

@@ -1,0 +1,68 @@
+# khavda_selfshade_lowsun — the SECOND KPI-03 point, one hour earlier.
+#
+# `khavda_selfshade.yaml` is the readable hard-shadow case: 02:00Z, sun 17.2 deg
+# up, ~30% of each row shaded at the 5 m pitch, and live Reason-1 was untroubled
+# by it (0.00 false faults on 560 healthy panels). One datapoint at one sun angle
+# is not a curve. **01:30Z is where the distinction should start to break**, and
+# it is the harder question in two ways at once:
+#
+#   1. **More shadow.** Geometry at 24.088 N, 69.418 E (computed with
+#      world/solar.py, asserted in tests/test_solar.py):
+#        sun elevation 10.72 deg, azimuth 68.96 deg (east)
+#        cross-axis projection angle 78.5 deg -> tracker still CAPPED at 60 deg
+#        shadow chord 10.87 m vs a 5/6 m row pitch
+#        -> 54% of each panel shaded at 5 m pitch, 45% at 6 m
+#      Roughly HALF the module, versus a third at 02:00Z.
+#
+#   2. **Less light.** The whole scene is dimmer, so "shadow" becomes confounded
+#      with "underexposed" — which is the point. A false-fault rate that only
+#      holds in good light is not a result you can fly a plant on. If the number
+#      degrades here, the confound is a finding, not a flaw in the scenario:
+#      report which of the two caused it (the frames are captured either way).
+#
+# Everything else is held identical to khavda_selfshade.yaml — same site, same
+# seed, same 0% fault rate, no turbines — so the ONLY variable between the two
+# KPI-03 points is the timestamp. Same caveats also carry over verbatim:
+# backtracking is not modelled (worst case), and the nadir viewpoint on a 60 deg
+# tracker sees the module foreshortened (TASKS.md).
+#
+# Denominator: with --subset 5, four of the five tables are shaded by their
+# eastern neighbour and the eastmost (T0243) is an unshaded CONTROL in the same
+# run. Every panel is healthy, so ANY fault verdict is a false fault.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/khavda_selfshade_lowsun.yaml --subset 5 \
+#       --out assets/khavda_selfshade_lowsun.usd
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/khavda_selfshade_lowsun.yaml --subset 5 \
+#       --farm-usd assets/khavda_selfshade_lowsun.usd --repeat 3
+#
+# ⚠ Pass the SAME --subset to both, or the mission targets panels the stage lacks.
+# ⚠ Use --repeat: the world is seeded, the VLM is only reproducible when served
+#   serially (perception/cosmos_reason.py DEFAULT_SAMPLING), so quote the spread.
+
+name: khavda_selfshade_lowsun
+seed: 20260727        # same seed as khavda_selfshade — the sun is the only change
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM — the whole point of KPI-03
+
+farm_overrides:
+  faults:
+    rate: 0.0        # every panel HEALTHY -> any fault verdict is a FALSE fault
+    states: []
+  sun:
+    # 01:30Z = 07:00 local. Solar noon here is 07:22Z. Earlier than this
+    # (01:00Z, elevation 4.4 deg) the scene is essentially at sunrise and a
+    # verdict says more about exposure than about shading.
+    timestamp: "2026-06-21T01:30:00Z"
+    tracker_max_rotation_deg: 60.0
+  turbines: []       # isolate the self-shading stressor
+
+kpi_gates:
+  # Same bound as the 02:00Z scenario, deliberately: the target does not get
+  # relaxed because the stimulus got harder. Gates are now ENFORCED (FR-17), and
+  # with --repeat they are judged on the WORST repeat, not the mean.
+  false_fault_rate_max: 0.05
