@@ -90,12 +90,6 @@ _DUST_RGB = (0.26, 0.21, 0.14)
 #: Density above which a sub-tile carries dust at all.
 _DUST_THRESHOLD = 0.5
 
-#: `power=*` values that are ground AREAS, not conductors — drawn as outlines.
-#: OSM around Khavda maps two real substations (`PSS 3`, `KPS 2`) and a generator
-#: area alongside the plant boundaries, and treating every non-`line` power way as
-#: a line authored them as 14 m overhead cables complete with towers.
-_OSM_POWER_AREAS = frozenset({"plant", "substation", "generator", "generator_area"})
-
 # Rotor keep-out margin (m) — MUST match keepout.build_keepouts' rotor_margin so
 # the translucent no-fly sphere we author here shows the SAME volume the planner
 # enforces (world/keepout.py). Keep the two in sync.
@@ -733,6 +727,7 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
     """
     from solar_twin.world.osm_features import (
         MAPPED,
+        OSM_POWER_AREAS,
         clip_to_box,
         clip_to_radius,
         load_features,
@@ -828,7 +823,7 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
 
     for i, way in enumerate(feats.power):
         pts = resample(way.points, drape_m)
-        if way.kind in _OSM_POWER_AREAS:
+        if way.kind in OSM_POWER_AREAS:
             # A mapped plant/substation boundary is an AREA on the ground, not a
             # conductor. Treating anything non-`line` as a line is a bug this
             # already had: OSM here maps two real substations (`PSS 3`, `KPS 2`)

@@ -45,6 +45,16 @@ LAYER_ROADS = "roads"
 LAYER_POWER = "power"
 LAYER_WATER = "water"
 
+#: `power=*` values that are ground AREAS, not conductors. Lives here rather than
+#: in `farm_builder` so the classification is testable without pxr — the bug it
+#: guards is invisible on a stage where these happen to be clipped away.
+#:
+#: ⚠ Anything closed and NOT in this set gets authored as an overhead conductor
+#: strung around its own perimeter, at tower height. That was live: OSM around
+#: Khavda maps two real substations (`PSS 3`, `KPS 2`) and a generator area as
+#: closed rings, and all three became 14 m cables with towers.
+OSM_POWER_AREAS = frozenset({"plant", "substation", "generator", "generator_area"})
+
 #: Transmission-line render heights by voltage (volts -> metres). Real tower
 #: heights for the class; the conductor sag between towers is NOT modelled, so a
 #: span is a straight chord — an approximation, stated (`NFR-07`).

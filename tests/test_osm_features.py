@@ -297,3 +297,30 @@ def test_a_small_subset_may_legitimately_have_no_mapped_geography():
         "if this now finds features, the ingest or the ground extent changed — "
         "update the numbers in the docstring rather than deleting the test"
     )
+
+
+def test_every_closed_power_area_in_the_real_bake_is_classified_as_an_area():
+    """`farm_builder` splits `power=*` ways into ground AREAS (drawn as outlines)
+    and conductor LINES (drawn overhead, with towers). Anything closed that is not
+    in the area set gets authored as a cable strung around its own perimeter.
+
+    That bug was live: the real bake contains two mapped substations (`PSS 3`,
+    `KPS 2`) and a generator area alongside the two plant boundaries, and all three
+    were being authored as 14 m overhead lines. They happen to be clipped away at
+    `--subset 200`, so the stage did not show it — which is exactly why this is a
+    test on the BAKE rather than on a built stage.
+    """
+    if not OSM_YAML.exists():  # pragma: no cover
+        pytest.skip("OSM bake not present")
+    from solar_twin.world.osm_features import OSM_POWER_AREAS
+
+    f = load_features(str(OSM_YAML))
+    closed_kinds = {w.kind for w in f.power if w.closed}
+    assert closed_kinds, "expected some closed power rings in the real bake"
+    missing = closed_kinds - set(OSM_POWER_AREAS)
+    assert not missing, (
+        f"closed power ring kind(s) {sorted(missing)} are not classified as ground "
+        "areas, so they would be authored as overhead conductors with towers"
+    )
+    # And a conductor must NOT be in the area set, or real lines lose their height.
+    assert "line" not in OSM_POWER_AREAS

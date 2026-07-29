@@ -105,7 +105,7 @@ hidden.** `--subset 20`'s nearest mapped way is ~1.5 km outside its ground mesh,
 stage carries none; `--subset 50` picks up 2 roads, `--subset 200` 3 roads + 6 power ways.
 The deliverable was therefore built at **`--subset 200`: 22,064 panels, 55,945 prims**.
 
-**Tests: 495 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
+**Tests: 497 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
 material-bound, non-guide, above the *interpolated* ground mesh, instancing on and off),
 Isaac-free framing guards (travel follows the long axis, standoff proportionate to the
 short span, offsets survive translating the site), subset occupancy >= 15%, and OSM
