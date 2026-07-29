@@ -7,10 +7,10 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 12b)
+## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 13)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-12b.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-13.
 
 **State:** ✅ **`main` IS the trunk again — PR #9 merged 2026-07-29 as `71625a8`.**
 That was the largest outstanding structural item for four sessions ("no PR to
@@ -90,6 +90,22 @@ with N and a gate from here on, not from a single run.
   `git log`, `gh pr list` and `SESSIONS.md` before trusting any of it.
 
 **Do these first, in this order:**
+
+-1. **Finish the reference-repo integration (Session 13).** Three ingredients landed
+   — real surveyed turbines, `tools/digest_to_site.py`, and the whole 24-block S05b
+   plot (6,213 tables / 679,616 panels). What remains, cheapest first:
+   (a) **re-bake the DEM for S05b's extent** — ⚠ the current patch is BLOCK-02's and
+   `dem._raw` CLAMPS outside its grid *by design*, so most of S05b sits at a flat
+   clamped elevation **while looking like real terrain** (`NFR-07`);
+   (b) **build a few-block subset at `faults.rate 0`** — the full plot is ~1.69M
+   prims, worse than the 2.25M that gated the plant before IF-09, because faulted
+   panels cannot be instanced;
+   (c) **get a blob URL/SAS for `imagery_near.png`** — the ~1 m imagery is the single
+   biggest remaining visual gap and is NOT in the archive (Azure blob only).
+   ⚠ Do not inherit their `resolutionMeters: 1` claim: it is upsampled 30 m plus
+   semi-manual corrections, not a survey. Everything imported is `provenance:
+   digest` (second-hand), never `derived`.
+
 
 0. **Perception robustness, now that the flip is explained (`RISK-25`).** Two
    `--repeat 3` sets on `demo_video` reproduced and attributed it: the model reads

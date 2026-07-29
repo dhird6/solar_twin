@@ -17,6 +17,90 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 13: reviewed the two reference repos, and took the real plant data out of them
+
+Asked to review `solar_plant_layout/reference/`. Findings, then what got integrated.
+
+**Repo 1 (`adani-khavda-solar-park`, 22 MB) has NO 3D.** `Viewer3D.tsx` is a nine-line
+stub rendering a static PNG, and the deps confirm it — React/Tailwind/MobX, no
+renderer. The impressive plant view is `public/images/temp-bg.png`, an aerial photo.
+Its real asset is a documented content hierarchy (catalog→group→experience→hotspot)
+with placeholder camera coords. A presentation shell awaiting a 3D backend.
+
+**Repo 2 (`gs-vr-variant-2`) is the real system** — R3F + Koota ECS + Robot FSM,
+volumetric cloud/rain shaders, `wtg-blades.vert`, drone/first-person modes, Azure
+SWA. ⚠ It arrived as a **stalled 433 MB `.part`** and is a *streaming* zip (all
+entries have `csize 0`, sizes live in trailing data descriptors), so no normal tool
+opens it; 148 of 150 source files were recovered by inflating entries directly.
+
+**⭐ Its digests are in EPSG:32642 — our own CRS — so they compose by subtraction.**
+
+| | A5 | S05b |
+|---|---|---|
+| blocks / tables | 40 / 11,134 | 24 / 6,213 |
+| inverters / IDT | 2,229 / 40 | 1,102 / 24 |
+| **5.2 MW WTG** | **14** | **8** |
+
+**Shipped 1 — real turbines (`e919239`).** Our `turbines:` were always INFERRED
+(the DC drawing carries hardware only). Measured against our footprint: **7 of
+S05b's 8 WTGs are within 3 km, nearest 546 m**, while all 14 of A5's are ≥7.5 km
+and correctly excluded by `--radius`. `SC-13`'s invented turbine is now those seven.
+
+⚠ **THE FINDING: with real siting the SW-wind wake deficit over our block is 0.0%
+everywhere** — all seven turbines are east/NE, so the block is *upwind* of every
+one. Verified as geometry, not a broken model (wind from 45° → 9.2%, from 70° →
+22.1%). So my invented turbine at x=−180 had put the block **downwind and was
+manufacturing a wake hazard the real plant does not have.** The `NFR-07` failure
+mode, caught only by using real data.
+
+**Shipped 2 — the alternative to their extractor (`6f2ce14`).** We do not hold
+`build_gis_digest.py` (different workspace), but we hold its OUTPUT, so
+`tools/digest_to_site.py` converts rather than re-derives. Sound because the
+hardware matches, measured: their boxes **2.3 × 128.6 m** vs our own DXF's
+**2.278 × 128.58 m**, all `rot_deg 0.0`, same CRS. Verified end-to-end —
+`load_site` accepts it, `FarmLayout` built 224 panels, `inspection_targets` 224.
+
+⚠ **The fail-closed guard fired on real data, which is the point of it.** A
+bounding box cannot express a rotated table. Plot A5 has **10 of 11,134 boxes over
+4 m wide (worst 32.3 m)** → conversion REFUSED rather than emit a mis-sized plant.
+S05b had none and converted cleanly. Same discipline as `layout_from_pdf.py`
+refusing its 9.2% calibration disagreement.
+
+**Shipped 3 — the whole plot (`dab1531`): 6,213 tables → 679,616 panels over
+4.84 × 1.97 km**, 23× BLOCK-02, in 44 s pure-python. Committed **with both
+blockers written into the config**, because one is silent:
+
+1. **~1.69M prims** at `faults.rate 0.02` — worse than the 2.25M that gated the
+   plant before IF-09, since faulted panels cannot be instanced (~75 prims each
+   against ~1 healthy).
+2. ⚠ **The DEM does not cover this plot and fails silently.** The baked patch is
+   BLOCK-02's; S05b starts ~300 m east and runs 4.8 km further, and `dem._raw`
+   **clamps** outside its grid *by design* (so the far ground mesh does not tear a
+   cliff) — so most of S05b would sit at a flat clamped elevation **while looking
+   like real terrain**. Re-bake for S05b's extent, or set `terrain.kind: flat` so
+   the approximation is explicit. I would have shipped a plausible 4.8 km plant on
+   fake ground had I not checked the extent.
+
+**⚠ Two of their claims not to inherit.** Their DEM report says
+`resolutionMeters: 1`, but `sourceDem: dem-30m.json` plus *"semi-manual corrections
+inferred from imagery"* — it is **upsampled 30 m, not a 1 m survey**. And their
+plot digests are second-hand for us (vendor DWG → their script → JSON → us), so
+everything imported is tagged `provenance: digest`, never `derived`.
+
+**On "the exact visualisation" as the end goal — the honest position.** Three of
+four ingredients are now in place (whole-park layout, real turbines, graded pad).
+The missing one is the one that actually makes their render look like Khavda: the
+**~1 m imagery pyramid**, which is *photographed*, not modelled — and it lives in
+**Azure blob**, not in the archive (the 426 MB `imagery.png` and 3.3 GB site-DEM
+are both excluded from the deployable build). Also worth stating: they are
+three.js/WebGL with raymarched clouds, we are Isaac RTX/USD — the *ingredients*
+port, the shaders do not, and RTX will differ by nature. Repo 2 is a stakeholder
+VR experience; this twin is a measurement instrument.
+
+**Next, cheapest first:** re-bake the DEM for S05b's extent; build a few-block
+subset at `faults.rate 0` to see the multi-block plant at a sane prim count; and
+get a blob URL/SAS for `imagery_near.png` (the single biggest visual gap).
+
 ## 2026-07-29 — Session 12c: the physics finally run TOGETHER — graded pad, wind that bites, PX4 behind the ABC
 
 Three things closed, and the theme is that each one produced a number rather than
