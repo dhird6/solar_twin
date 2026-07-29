@@ -6,8 +6,25 @@
 #       --out assets/khavda_s05b_full_tour.mp4
 #
 # Measured: 6,213 tables -> 679,616 modules over 4.84 x 1.97 km, ~680k prims.
-# That is 22.6x BLOCK-02 and takes tens of minutes to author; it exists to answer
-# "what does the whole plant look like", not to run a mission on.
+#
+# ⚠⚠ **THIS CONFIG DOES NOT BUILD IN PRACTICAL TIME, AND THE REASON IS NOT PRIM
+# COUNT.** `farm_builder` is superlinear in panel count — measured on this box, with
+# nothing else competing:
+#
+#     200 tables /  22,064 panels ->   55 s
+#     500 tables /  55,328 panels ->  495 s     (2.5x the panels, 9x the time)
+#
+# That is **n^2.39**, which puts this plot at roughly **55 HOURS**. A first attempt
+# ran 1h16m and was killed. Scaling BLOCK-02's 85 s linearly predicts 32 min and is
+# wrong by a factor of ~100 — do not repeat that estimate.
+#
+# Prime suspect is `prim.SetInstanceable(True)` re-resolving the instance master as
+# the instance set grows. UNVERIFIED: profile it before attempting this again.
+#
+# Until that is fixed, the largest honest "whole plant" is a COMPLETE DC BLOCK:
+# `configs/farm_khavda_block02.yaml` builds all 273 tables / 30,016 modules in
+# **96.75 s**, faults included. Use that for a plant video. The measured ceiling
+# here is ~110k panels in ~43 min.
 #
 # ⚠ `faults.rate` IS DELIBERATELY 0.0, AND THAT IS WHAT MAKES THIS BUILDABLE.
 # A healthy panel is ONE instanced prim; a faulted one is ~75, because a hotspot

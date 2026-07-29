@@ -129,6 +129,42 @@ the stage before and after the fix is byte-identical; that is precisely why
 `OSM_POWER_AREAS` lives in the Isaac-free module and the test asserts against the
 **bake** rather than a built stage.
 
+### ⭐⭐ `farm_builder` is O(n^2.4) in panel count — the whole-plot video is INFEASIBLE, not slow
+
+Asked for a whole-plant video, I started the full 6,213-table S05b plot and estimated
+32 min by scaling BLOCK-02's 85 s linearly. **It ran 1h16m with no end in sight**, so I
+stopped guessing and measured two clean points:
+
+| tables | panels | build |
+|---|---|---|
+| 200 | 22,064 | **55 s** |
+| 500 | 55,328 | **495 s** |
+
+**2.5x the panels cost 9x the time** -> `n^2.39`. Extrapolated, the full plot is
+**~55 HOURS**, not 32 minutes. I killed the build. The estimate was wrong by a factor of
+100 because it assumed a linear cost that this code does not have.
+
+⚠ **So `configs/farm_khavda_s05b_full.yaml`'s "~680k prims" blocker was the wrong
+blocker.** The prim count is real but it is not what stops you: the AUTHORING TIME is,
+and it is superlinear, so no fault-rate trick helps. Prime suspect is
+`prim.SetInstanceable(True)` re-resolving the instance master as the instance set grows
+— unverified, and worth profiling before anyone attempts a multi-block plot again.
+
+**Practical ceiling on this box, from the measured curve:** ~30k panels in ~1.6 min,
+~110k in ~43 min. So a plant video means a COMPLETE BLOCK, not a complete plot.
+
+### The full-plant video: the complete BLOCK-02, all 273 tables
+
+`assets/khavda_full_plant.mp4` — **ALL 273 tracker tables / 30,016 modules / 75,777
+prims, built in 96.75 s**, on real GLO-30 terrain with real OSM geography. Not a subset:
+this is a whole DC block with its 600 seeded faults intact, which the 4.8 km plot cannot
+be at any sane cost.
+
+⭐ **And it is where the substation fix finally bit.** BLOCK-02's own OSM bake contains
+the real substation **`PSS 3`**, which S05b's clip had excluded — so this stage is the
+first to prove `substation_03` lands under `/World/OSM/Boundaries` as a ground outline
+rather than being strung up as a 14 m overhead cable with towers.
+
 ### The two videos, and what rendering them exposed
 
 Asked for a proper status tour and a whole-plant video. Both delivered — and the

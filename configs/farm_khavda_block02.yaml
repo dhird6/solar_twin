@@ -47,6 +47,30 @@ panel:
 # world/dem.py) rather than following it, and the build prints the worst
 # deviation — that number is the pile-height variation the row would need.
 # Regenerate rather than editing; `kind: flat` remains available for a fast build.
+# REAL OpenStreetMap geography (FR-10/FR-20/IF-11) — the landscape the block sits in.
+# Baked by
+#   python3 tools/osm_fetch.py configs/layouts/khavda_a10b_block02.yaml \
+#       --out configs/layouts/khavda_block02_osm.yaml --pad 6000
+# from the official OSM API 0.6 /map call, projected into EPSG:32642 and anchored to
+# THIS layout's origin (its own anchor, not S05b's — the two plots have different
+# ones, so the bakes are not interchangeable).
+#
+# Measured content: 3 roads (one `tertiary`, two unpaved `track`), 5 transmission
+# lines including a 765 kV run, the mapped boundaries of "Khavda Renewable Energy
+# Park" (Adani Green, 1000 MW) and "NTPC Khavda" (397.7 MW), and the real substation
+# "PSS 3". Prims carry `st:provenance = "mapped"` — a THIRD tag beside
+# derived/inferred, because this is neither read from the vendor CAD nor invented.
+#
+# ⚠ OSM CARRIES NO INTERNAL PLANT ROADS. The block's own access roads stay
+# DERIVED/INFERRED from world/site.py, and the build prints the two tallies
+# separately so they cannot blur (`NFR-07`). Road WIDTHS are per-class defaults
+# (`st:width_source`); conductor SAG is not modelled, so a span is a straight chord.
+osm:
+  enabled: true
+  path: configs/layouts/khavda_block02_osm.yaml
+  radius_m: 6000.0
+  drape_step_m: 40.0
+
 terrain:
   kind: dem
   path: assets/dem/khavda_block02.yaml
