@@ -257,6 +257,38 @@ Consequences worth knowing:
 - Buffering frames is the real memory risk, not rendering them: 1,300 frames at
   720p is ~5.5 GB. `RunRecorder(stream_path=...)` encodes incrementally.
 
+## PX4 SITL status — ✅ RUNS on this aarch64 Spark (verified 2026-07-29)
+
+Investigating `FR-06` (real flight dynamics) starts here, because everything else
+about it is downstream of "can PX4 run on this box at all".
+
+- **Route: the official multi-arch container.** `docker pull --platform linux/arm64
+  px4io/px4-sitl:latest` → 119 MB, `Architecture=arm64`, base Ubuntu 24.04, image
+  built 2026-07-08 (≈ v1.18.0-beta1 era). Docker 27.5.1 is already on this box.
+- **Verified:** boots to `INFO [simulator_mavlink] Waiting for simulator to accept
+  connection on TCP port 4560`, and that port is reachable from the host.
+  Reproduce with `python3 tools/px4_sitl_smoke.py` (exit 0 = seam open, tears the
+  container down; `--keep` leaves it up for a bridge).
+- ⚠ **`PX4_SIM_MODEL=none_iris` matters.** `none_*` selects the **external
+  simulator** path — Isaac owns the physics, PX4 owns the control loops, which is
+  what the twin needs. Left unset, this image runs **SIH** (PX4 simulating its own
+  dynamics), which is the wrong half of the loop and would look like it works.
+- **Two routes NOT taken, so nobody retries them blind:**
+  - Pegasus's install guide has you build **PX4 v1.14.3 from source** — a 2023
+    release, on a 2024 distro, on an architecture its docs never mention.
+  - PX4's "pre-built SITL packages" page advertises Ubuntu 24.04 **arm64 `.deb`s**,
+    but the tagged GitHub releases carry only a VOXL board package. The docs
+    describe `main`, not the releases.
+- **Not installed system-wide.** No `apt`, no source build, nothing in Isaac's
+  bundled Python — the container is the whole footprint (`docker rmi
+  px4io/px4-sitl` removes it). This respects the "do NOT `apt upgrade` this box"
+  rule below.
+- ⚠ **The Isaac-side bridge does not exist yet.** PX4 running is necessary, not
+  sufficient: Pegasus v5.1.0 does not support Isaac 6.x and needs a bounded port
+  (`RISK-02`(b)), and its MAVLink backend was written for PX4 v1.14.3 against this
+  container's much newer PX4 (`RISK-26`). Do not read "PX4 runs" as "we have
+  flight dynamics".
+
 ## ROS 2 status (updated 2026-07-21)
 - **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).
   Installed via `tools/install_ros2_jazzy.sh` → `/opt/ros/jazzy`, 201 pkgs.

@@ -14,9 +14,13 @@ is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c
 
 **State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
 and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **294 Isaac-free
-tests**, 4 skipped. ⚠ Still **no PR to `main`**, now 29 commits ahead of it — that
-is the largest outstanding structural item. The twin runs on the real Khavda
+so there is ONE trunk again rather than divergent worktrees. **300 Isaac-free
+tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
+`tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
+time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
+so it is a clean fast-forward with no conflicts — what remains is the merge
+decision, not the PR itself. CI (`.github/workflows/ci.yml`) gates it. The twin
+runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, and KPI-03 now has **two
 verified-stimulus points, both 0.00** — 560 healthy panels at 02:00Z
 (`runs/20260727T183423`) and 40 panels at 01:30Z measured as a **spread over 3
@@ -34,8 +38,11 @@ with N and a gate from here on, not from a single run.
   (7D x 4D), `lattice_score` 1.00 -> 0.40. Roads were single flat quads floating up
   to 0.87 m off the real DEM; now segmented and sampled. Fleet derives from named
   real platforms (`world/fleet_specs.py`) — the rover had measured 26% too wide.
-  ⚠ `build_keepouts` now needs `layout` threaded in, or a scattered field enforces
-  no-fly volumes at the OLD turbine positions.
+  ~~⚠ `build_keepouts` needs `layout` threaded in~~ ✅ **done in 11c** —
+  `run.py:176` calls `build_keepouts(farm_cfg, layout)` and
+  `tests/test_siting.py::test_keepouts_resolve_from_the_same_scattered_field_as_the_build`
+  is the regression test. This warning outlived its fix by two sessions; see the
+  freshness note below.
 - **CAD ingest audited** ✅ — Session 11b (`tools/audit_layout.py`). BLOCK-02 is
   **100% ingested**: 273 tables / 30,016 modules, reconciled entity-for-entity
   against the PDF (residual 6 = the DETAILS legend swatches), 0 overlaps, 0 missing
@@ -70,9 +77,14 @@ with N and a gate from here on, not from a single run.
   `tools/verify_shade.py`: shaded rows 77.5-83.0% dark glass vs the control's
   40.0%, a **+40 point differential** (02:00Z measured +14). See that run's
   `STIMULUS.md`.
-- ⚠ Stale-entry warning that keeps recurring: this block claimed "nothing pushed"
-  and listed the DEM as to-do for a day after both were false. Check `git log`
-  and `SESSIONS.md` before trusting it.
+- ⚠ **Stale-entry warning that keeps recurring — now partly automated.** This
+  block has claimed "nothing pushed" after a push, listed the DEM as to-do after
+  it shipped, warned about the `build_keepouts` fix for two sessions after it
+  landed, and quoted three test counts (204 / 247 / 294) none of which were
+  current. The count is the one claim a machine can check, so
+  `tests/test_docs_fresh.py` now checks it and fails the PR instead of a reader
+  catching it later. **Everything else here is still just prose** — check
+  `git log`, `gh pr list` and `SESSIONS.md` before trusting any of it.
 
 **Do these first, in this order:**
 
@@ -94,8 +106,27 @@ with N and a gate from here on, not from a single run.
    fixed and KPI-03 returned to 0.000 across 3 repeats, but the conflation stands.
    Recommendation: report an abstention rate alongside rather than redefine the
    metric — it is a locked contract (§6.5 / `FR-03`), so it is an owner call.
-2. **Pegasus / PX4 flight dynamics (`FR-06`)** — its own investigation. Not
-   installed, and v5.1.0 targets Isaac 5.1 against the installed 6.0.1.
+2. **Pegasus / PX4 flight dynamics (`FR-06`) — investigated 2026-07-29; the work
+   left is a bounded port, not an unknown.** ✅ **PX4 SITL runs natively on this
+   box**: `px4io/px4-sitl` publishes an arm64 container (119 MB), it boots to
+   `Waiting for simulator to accept connection on TCP port 4560`, and the host can
+   reach it — `python3 tools/px4_sitl_smoke.py` (exit 0 = seam open). No apt, no
+   source build, nothing in Isaac's Python. `RISK-02`(a) closed.
+   ⚠ **Do not read that as "we have flight dynamics."** The Isaac-side bridge is
+   missing and Pegasus does not support Isaac 6.x. Measured port size: of 26
+   `omni.*`/`isaacsim.*` imports, 21 resolve on 6.0.1; three of the failures are
+   just extensions that were not *enabled*; only `omni.isaac.dynamic_control`
+   (load-bearing) and `omni.isaac.sensor` (peripheral) are truly gone. That is
+   **17 call sites in 2 files** (`vehicle.py`, `multirotor.py`) behind one
+   accessor, all mapping onto `isaacsim.core.prims`/`omni.physics.tensors` —
+   verified present. Recommended next step: a **time-boxed fork-and-patch spike**,
+   because what Pegasus really gives us is the multirotor dynamics + HIL sensor
+   models PX4's EKF needs; writing those from scratch is the expensive path. Also
+   watch `RISK-26`: that backend was written for PX4 v1.14.3 and the container
+   ships ~v1.18-beta, so verify the HIL handshake before trusting any hover.
+   Two golden-rule conflicts to plan around, not discover: Pegasus installs via
+   `ISAACSIM_PYTHON -m pip install --editable` (needs an `ENVIRONMENT.md` note) and
+   its docs add the extension **via the GUI** (use `--ext-folder` instead).
 3. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
    anything not in the drawing must be tagged `INFERRED` like the rest. The

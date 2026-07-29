@@ -51,8 +51,17 @@ explicitly multi-quarter — do not compress it.
 - **Exit criteria:** drone flies a coverage pass under gust, holds station
   within `KPI-05` bounds, avoids the keep-out (`KPI-04` = 1.0 on `SC-03`/
   `SC-04`); ground bot passes `SC-08` at the declared max grade.
-- **Runs:** Spark-local. **Gating risk:** `RISK-02` (Pegasus-on-aarch64 smoke
-  test).
+- **Runs:** Spark-local. **Gating risk `RISK-02`: investigated 2026-07-29 and
+  downgraded.** It was "Pegasus on aarch64 is unproven"; it is now two known
+  quantities. PX4 SITL **runs natively on this box** (arm64 container, simulator
+  seam open on TCP 4560, `tools/px4_sitl_smoke.py`) — that half is closed. The
+  Isaac-side bridge is a **sized port, not an unknown**: Pegasus v5.1.0 targets
+  Isaac 5.x, and on 6.0.1 exactly two of its modules are missing, needing 17 call
+  sites moved onto `isaacsim.core.prims` (`RISK-02`(b)). Watch `RISK-26` (its
+  MAVLink backend was written for PX4 v1.14.3; the container ships ~v1.18-beta).
+  So `SLICE-2` may now be *planned* rather than blocked — but plan the bridge
+  explicitly, and keep `FR-07`'s kinematic fallback as the exit if the port
+  stalls.
 
 ## SLICE-3 — The false-fault loop
 

@@ -129,5 +129,10 @@ This is the part that makes Claude Code a hands-on collaborator in the sim, not 
 - NeMo Agent Toolkit — developer.nvidia.com/agentiq ; github.com/NVIDIA/NeMo-Agent-Toolkit ; docs.nvidia.com/nemo/agent-toolkit
 - cuOpt — nvidia.com/en-us/ai-data-science/products/cuopt ; github.com/NVIDIA/cuopt ; github.com/NVIDIA/cuopt-examples
 - Isaac Sim MCP servers — github.com/omni-mcp/isaac-sim-mcp ; lobehub.com/mcp/nullbyte91-nvidia-isaac-mcp
-- Pegasus Simulator (drone/PX4, Isaac 5.1) — github.com/PegasusSimulator/PegasusSimulator
+- Pegasus Simulator (drone/PX4) — github.com/PegasusSimulator/PegasusSimulator
+  ⚠ latest release **v5.1.0 targets Isaac Sim 5.0/5.1** (Ubuntu 22.04, x86_64); **no
+  release targets Isaac 6.x**, which is what this box runs. Needs a port — sized in
+  `docs/specs/08-platform-and-risk-register.md` `RISK-02`(b). The **PX4 half is
+  separable and already proven** on aarch64 via `px4io/px4-sitl` (arm64 container,
+  `tools/px4_sitl_smoke.py`) — do not conflate the two when planning `SLICE-2`.
 - Isaac GR00T (adjacent) — developer.nvidia.com/isaac/gr00t

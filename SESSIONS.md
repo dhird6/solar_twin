@@ -17,6 +17,74 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+## 2026-07-29 — Session 11d: the Pegasus/PX4 investigation — PX4 runs on aarch64; the bridge is a 17-call-site port
+
+`FR-06` (real flight dynamics) had sat behind `RISK-02` — "Pegasus on aarch64 is
+unproven" — for weeks. Investigated it. **It was two risks wearing one label, and
+the scary half is closed.**
+
+**⭐ PX4 SITL runs natively on this Spark.** Verified, not assumed:
+`px4io/px4-sitl` publishes a real `linux/arm64` manifest — 119 MB, native aarch64
+ELF, Ubuntu 24.04 base, image built 2026-07-08 (≈v1.18.0-beta1). It boots to
+`INFO [simulator_mavlink] Waiting for simulator to accept connection on TCP port
+4560`, and that port is reachable from the host. `tools/px4_sitl_smoke.py`
+reproduces it in ~30 s and exits non-zero if the seam does not open.
+
+**Two documented routes that do NOT work, recorded so nobody burns a day on them:**
+- Pegasus's install guide has you **build PX4 v1.14.3 from source** — a 2023
+  release, on a 2024 distro, on an architecture its docs never mention.
+- PX4's own "pre-built SITL packages" page advertises Ubuntu 24.04 **arm64
+  `.deb`s**; the tagged GitHub releases carry only a VOXL *board* package. The page
+  documents `main`, not the releases.
+
+⚠ **`PX4_SIM_MODEL` is a trap worth knowing.** `none_*` selects the external
+simulator (Isaac owns physics, PX4 owns control — what we want). Left unset, this
+image runs **SIH**, where PX4 simulates its own dynamics: it starts cleanly, looks
+healthy, and tells you nothing about your twin.
+
+**The Isaac-side bridge is the real remaining work — now sized instead of feared.**
+No Pegasus release targets Isaac 6.x (v5.1.0, Oct 2025, targets 5.0/5.1 on Ubuntu
+22.04/x86_64; Isaac 6.0 is still Early Developer Release, so the ecosystem lag is
+expected). Rather than compare version numbers, I cloned v5.1.0 and probed all 26
+of its `omni.*`/`isaacsim.*` imports inside a real headless 6.0.1 session:
+
+| result | count | detail |
+|---|---|---|
+| resolve fine | **21/26** | the modern `isaacsim.core.*` surface is intact |
+| present on disk, merely **not enabled** | 3 | `isaacsim.ros2.bridge`, `isaacsim.replicator.agent.core`, `omni.anim.graph.core` — **not port work** |
+| genuinely gone | 2 | `omni.isaac.sensor` (peripheral) and **`omni.isaac.dynamic_control`** (load-bearing) |
+
+The whole legacy `omni.isaac.*` namespace is absent from this build except
+`omni.isaac.core_archive`. That distinction mattered: a bare import probe
+*over-reports* absence, because Kit modules only import once their extension is
+enabled — so I checked the extension folders on disk too, which moved three
+"failures" out of the port estimate.
+
+**The port is 17 call sites in 2 files** (`vehicle.py`, `multirotor.py`), all
+funnelled through one accessor `Vehicle.get_dc_interface()`: rigid-body
+handle/pose/velocity reads, `apply_body_force`/`apply_body_torque`, and
+articulation DOF velocity (the *visual* rotor spin only). Every one maps onto
+`isaacsim.core.prims` / `omni.physics.tensors`, both verified present on 6.0.1.
+
+**Recommendation: a time-boxed fork-and-patch spike**, not a from-scratch bridge.
+What Pegasus actually buys us is the multirotor dynamics and the **HIL sensor
+models** (IMU/GPS/baro/mag) that PX4's EKF needs to arm and hold position; that is
+where a hand-rolled MAVLink bridge would sink. `FR-07` keeps the kinematic
+controller valid as the exit if the patch does not converge, and `FR-06`'s wording
+is now corrected to require *PX4-governed* control rather than Pegasus
+specifically.
+
+**New risk found on the way — `RISK-26`:** Pegasus's `px4_mavlink_backend.py` was
+written against PX4 **v1.14.3**; this container ships ~**v1.18.0-beta1**. The HIL
+protocol and lockstep handshake are not guaranteed stable across four minor
+releases, and it is untested because the bridge does not exist yet. Verify the
+handshake before trusting any hover result.
+
+Also flagged rather than discovered later: Pegasus installs with
+`ISAACSIM_PYTHON -m pip install --editable` (forbidden here without an
+`ENVIRONMENT.md` note) and its docs register the extension **through the GUI**
+(must be `--ext-folder`, per the no-GUI-only-steps rule).
+
 ## 2026-07-29 — Session 11c: the KPIs get honest — measured determinism, spreads, and gates that actually gate
 
 **Integrated and pushed.** Three commits (`a02d912` perception, `eca6a25` scenario +
