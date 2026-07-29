@@ -105,6 +105,30 @@ hidden.** `--subset 20`'s nearest mapped way is ~1.5 km outside its ground mesh,
 stage carries none; `--subset 50` picks up 2 roads, `--subset 200` 3 roads + 6 power ways.
 The deliverable was therefore built at **`--subset 200`: 22,064 panels, 55,945 prims**.
 
+**Deliverable: `assets/khavda_s05b_tour.mp4`, 769/769 frames at 1280x720, zero drops**
+— 22,064 panels reading as blue PV glass with visible cell grids, on real GLO-30
+terrain, with a mapped track and a 765 kV tower in shot.
+
+**Two more defects fell out of validating it.**
+
+⚠ **`flythrough.py` buffered 2.1 GB and then lied about it.** 769 frames at 720p held
+in RAM, on a box already carrying a 56k-prim stage and a vLLM server in the same
+unified memory — `recorder.py`'s own docstring says a few thousand buffered frames is
+not fine, and `plant_tour.py` already streams for exactly that reason. Measured: it
+captured **0 of 769 frames**, printed `wrote flythrough (0 frames)`, exited 0, and left
+the PREVIOUS video in place. Fifteen minutes for an mp4 that was never rewritten, and
+the cheerful log made it look like a scene bug. Isolated by rendering the same stage at
+65 and 129 frames first, to separate resolution from frame count. Now streams, absorbs
+RTX's warm-up, counts dropped frames, and raises instead of claiming success.
+
+⚠ **Mapped substations were being authored as overhead cables.** Every non-`plant`
+`power=*` way was treated as a conductor, so OSM's two real substations (`PSS 3`,
+`KPS 2`) and a generator area — all closed rings — became 14 m cables strung around
+their own perimeters, with towers. They happen to be clipped away at `--subset 200`, so
+the stage before and after the fix is byte-identical; that is precisely why
+`OSM_POWER_AREAS` lives in the Isaac-free module and the test asserts against the
+**bake** rather than a built stage.
+
 **Tests: 497 Isaac-free (was 464) + 38 pxr.** New: panel visibility (visible,
 material-bound, non-guide, above the *interpolated* ground mesh, instancing on and off),
 Isaac-free framing guards (travel follows the long axis, standoff proportionate to the
