@@ -68,6 +68,16 @@ class SimRuntime:
 
         if livestream:
             self._app.set_setting("/app/window/drawMouse", True)
+            # The client negotiates the stream size from ITS window, but our frames
+            # come out at window_width x window_height (1920x1080). Without this the
+            # server refuses every frame — measured: "Cannot stream video frame with
+            # resolution 1920x1080 that differs from that of 1280x720 established
+            # when the client connected", i.e. a connected client sees nothing. The
+            # streaming .kit app sets this; the SimulationApp path (and NVIDIA's own
+            # livestream.py example) leaves it at false.
+            self._app.set_setting(
+                "/exts/omni.kit.livestream.app/primaryStream/allowDynamicResize", True
+            )
             app_utils.enable_extension("omni.kit.livestream.app")
             self._app.update()
             print(

@@ -207,6 +207,21 @@ Notes, each of which was a real trap:
   per this build's `standalone_examples/api/isaacsim.simulation_app/livestream.py`.
   Ports come from `apps/isaacsim.exp.full.streaming.kit`: signal **49100**,
   stream **47998**.
+- **The client is not in the build.** This build ships only the *server*
+  (`omni.kit.livestream.webrtc`, "Kit Livestream WebRTC Server"). There is no
+  browser client and nothing on port 8211 — a plain `GET :49100` returns 501
+  because it is a signalling endpoint. Install the **Isaac Sim WebRTC Streaming
+  Client** on the machine you watch from, then Connect to this host's LAN IP
+  with signal **49100**.
+- **`allowDynamicResize` must be on, or a connected client sees nothing**
+  (fixed 2026-07-30). The client negotiates the stream size from *its* window
+  (e.g. 1280x720) while our frames come out at `window_width x window_height`
+  (1920x1080), and the server then drops every frame: *"Cannot stream video
+  frame with resolution 1920x1080 that differs from that of 1280x720 established
+  when the client connected"*. `isaacsim.exp.full.streaming.kit` sets
+  `primaryStream.allowDynamicResize = true`, but the `SimulationApp` path — and
+  NVIDIA's own `livestream.py` example — leaves it false, so `sim_runtime.py`
+  sets it explicitly before enabling `omni.kit.livestream.app`.
 - **Kit only repaints when `app.update()` is called.** With
   `perception: cosmos_reason` each panel blocks ~12 s inside a `urllib` request
   and the window is frozen for that whole time. For a watchable run use

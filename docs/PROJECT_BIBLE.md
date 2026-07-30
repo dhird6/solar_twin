@@ -47,7 +47,7 @@ The Spark (GB10, aarch64, unified memory) is the **development bench**, not the 
 
 **Hard constraints to design around (⚠ verify against current NVIDIA notes):**
 - aarch64 requires **CUDA ≥ 13** and the **cu13** build of PyTorch or newer. Isaac Sim is built from source and Isaac Lab symlinked to it (`_isaac_sim`).
-- **Livestream is not supported** on the Spark → plan to inspect via the local GUI or by rendering to files/video, not remote streaming.
+- ~~**Livestream is not supported** on the Spark~~ — **disproved 2026-07-30**: WebRTC livestream works on this Spark. A real client connected to `--livestream` (kit log: "Started primary stream server on signal port 49100 and stream port 47998" → "Client connected to WebRTC server"). Local GUI (`--gui`) and `--video` remain the cheaper options when you are at the machine; see `docs/ENVIRONMENT.md` for the connect procedure and the resize trap.
 - **Cosmos Transfer1 is not currently supported** on the Spark → the heavy sim2real generation is a *burst-out* workload (RTX PRO 6000 / DGX / cloud via build.nvidia.com blueprints), not a Spark job.
 - **Reported ROS 2 sensor-rendering quirks** on the Spark (camera topics not publishing / no publisher). **This is why Slice 0 defaults to the sim-native Transport** and treats ROS 2 as a seam we validate early but don't depend on until proven (§8, Day 1 + Day 9–11).
 
