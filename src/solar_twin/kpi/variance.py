@@ -88,7 +88,15 @@ DEFAULT_METRICS = (
     "false_fault_rate",  # KPI-03
     "false_alarm_rate",  # KPI-03's genuine-false-alarm half
     "abstention_rate",  # KPI-03's lost-answer half (over all panels)
-    "detection_rate",  # KPI-01
+    "detection_rate",  # KPI-01 — ⚠ ACCURACY over every panel, not recall
+    # KPI-01's honest halves, added 2026-07-31. `detection_rate`'s denominator is
+    # every panel, so on a mostly-healthy scenario it is dominated by healthy
+    # panels being correctly left alone: `nominal_calm_vlm` is 82.5% healthy
+    # against a 0.80 gate, so a model that finds NOTHING scores 0.825 and passes.
+    # These three make that visible in the spread as well as in a single run.
+    "fault_recall",  # KPI-01a — named right, faulted denominator
+    "fault_flagged_rate",  # KPI-01b — noticed at all, faulted denominator
+    "healthy_fraction",  # KPI-01n — the null baseline a gate must beat
     "faults_detected",
     "panels_inspected",
 )

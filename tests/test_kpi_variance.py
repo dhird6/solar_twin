@@ -233,3 +233,24 @@ def test_tolerance_is_the_calibrated_one():
     assert V.thumbnails_differ([_thumb(100), _thumb(102)]) is False
     # 35 LSB was the smallest real difference measured (shaded vs. control).
     assert V.thumbnails_differ([_thumb(100), _thumb(135)]) is True
+
+
+def test_the_recall_metrics_get_a_spread_like_every_other_kpi():
+    """A metric that never appears in `variance.json` is half a metric: it can be
+    read off a single run but never quoted with an N and a range, which is the
+    rule this whole module exists to enforce.
+
+    Added with `fault_recall`/`fault_flagged_rate`/`healthy_fraction` because
+    `DEFAULT_METRICS` is a hardcoded tuple -- adding a metric to the run record
+    does NOT get it summarised, and that is easy to miss.
+    """
+    for name in ("fault_recall", "fault_flagged_rate", "healthy_fraction"):
+        assert name in V.DEFAULT_METRICS, f"{name} would get no spread"
+
+
+def test_the_null_baseline_travels_with_the_metric_it_qualifies():
+    """`healthy_fraction` is only useful next to `detection_rate` -- it is the
+    score the latter gets for free. Summarising one without the other would let a
+    reader see 0.825 and not know it was the null."""
+    assert "detection_rate" in V.DEFAULT_METRICS
+    assert "healthy_fraction" in V.DEFAULT_METRICS

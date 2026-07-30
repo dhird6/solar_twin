@@ -20,7 +20,7 @@ branch, **71 commits**, and its test count went **74 → 396**. Merged only afte
 Work now happens on **`ID-3-Testing-and-new-features-addin`**, cut from the merged
 `main` (hyphens not spaces — a branch name with spaces needs quoting in every
 command and breaks CI matrices; matches `ID-2-Layout-Integration`'s convention).
-**694 Isaac-free tests** collected off-Isaac — 9 more need `pxr` and do not collect
+**696 Isaac-free tests** collected off-Isaac — 9 more need `pxr` and do not collect
 without it, and `tests/test_docs_fresh.py` **enforces this number** so it cannot rot
 a fourth time. CI (`.github/workflows/ci.yml`) gates every push. The twin
 runs on the real Khavda
