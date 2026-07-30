@@ -86,23 +86,92 @@ nothing a running job had open was clobbered):
 
 | | shaded rows (% dark glass) | control | differential |
 |---|---|---|---|
-| **SC-11**, Session 16, legacy ramp | 22.3 / 29.7 / 23.5 / 30.8 | 14.1 | **+12.5 pts** |
-| **SC-11**, Preetham sky + PBR | 23.0 / 30.2 / 23.7 / 31.6 | **17.0** | **+10.1 pts** |
-| **SC-12**, Preetham sky + PBR | 39.1 / 45.9 / 38.9 / 47.3 | 17.3 | **+25.5 pts** |
+| **SC-11**, Session 16, legacy ramp *(old stage)* | 22.3 / 29.7 / 23.5 / 30.8 | 14.1 | **+12.5 pts** |
+| **SC-11**, Preetham sky, **PBR ON** (black ground) | 23.0 / 30.2 / 23.7 / 31.6 | 17.0 | **+10.1 pts** |
+| **SC-11**, Preetham sky, **PBR OFF** ⭐ *the real one* | 78.9 / 74.6 / 72.2 / 75.3 | **51.5** | **+23.7 pts** |
+| **SC-12**, Preetham sky, PBR ON (black ground) | 39.1 / 45.9 / 38.9 / 47.3 | 17.3 | **+25.5 pts** |
 
-The stimulus is intact on both — SC-12 emphatically so. But note *how* SC-11 changed:
-**every shaded row got slightly darker, and the unshaded control darkened more**
-(14.1 → 17.0), compressing the differential by ~19%.
+⚠⚠ **CORRECTION to my own first reading.** I initially reported the SC-11 differential as
+*compressed* (+12.5 → +10.1) and attributed it to the sky redistributing radiance. Running
+the `--pbr off` arm — the whole point of the bisect — shows that was **wrong**. On the
+correctly-lit stage the differential is **+23.7 points, nearly double the legacy figure**,
+and every absolute number roughly triples (control 14.1 → 51.5%).
 
-⭐ **This is the Session 16 invariant leaking, and it is worth stating precisely.** The
-physical sky was normalised to hold the legacy ramp's **solid-angle-weighted hemisphere
-mean** — and it did, to within 8-bit quantisation. But holding a *mean* does not hold a
-*distribution*: a Preetham sky concentrates radiance in the aureole and darkens the
-zenith, so how much light a given panel receives depends on which part of the sky it
-sees. "Fill held constant" is true of the hemisphere and false of any individual panel.
-**A KPI measured under one sky does not transfer to another sky for free.** ⚠ Part of
-the SC-11 shift is *also* §4's black ground — the two were measured together, and
-`--pbr off` is the arm that separates them.
+**The mechanism, and it is the opposite of what I first said.** `verify_shade` scores a
+pixel dark relative to *that panel's own* bright reference, so it measures **contrast
+within the glass**, not absolute brightness. A warm, bright desert floor bounces light up
+onto the modules unevenly, which *creates* that contrast. The black ground removed the
+bounce, flattened the illumination, and therefore **suppressed the measured dark fraction
+on shaded and control panels alike** — which is why the +10.1 arm looked like a weakened
+stimulus when it was really a broken renderer.
+
+⚠ Two things this does NOT establish, stated so nobody over-reads the table:
+- The legacy +12.5 row was measured on the **Jul 27 stage**, which predates the DEM, the
+  graded pad and the OSM geography. It differs from the new rows in more than the sky, so
+  "the sky doubled the stimulus" is **not** a supported claim — only "the current twin's
+  stimulus is +23.7" is.
+- The +23.7 vs +10.1 comparison *is* clean: same scenario, same subset, both freshly
+  built, differing only in `--pbr`.
+
+**What survives as the operational rule:** a KPI is only quotable against the stage it was
+measured on, and the stimulus must be re-proved whenever the lighting changes. That is why
+the KPI-03 re-measurement is running against `khavda_selfshade_sky.usd` and not against
+the older number.
+
+### 6. ⭐⭐ The mission video — and the real brain missing what the stub catches
+
+Two cuts of `fault_response_demo`, both on `assets/fault_response_demo_pbr.usd` (600
+tables / 66,528 panels, 2 interspersed turbines, real DEM + OSM, Preetham sky, PBR off —
+**the only stage on disk that reflects HEAD**).
+
+| cut | perception | frames | detection | KPI-03 | outcome |
+|---|---|---|---|---|---|
+| `runs/20260731T022151` | `ground_truth` stub | 471 (31.4 s) | **1.00** | 0.000 | ⭐ full choreography |
+| `runs/20260731T023719` | **live Cosmos Reason** | 338 (22.5 s) | **0.958** | 0.000 | ⚠ **missed the fault** |
+
+The stub cut is the watchable one and it works end to end: 24 panels targeted, **23
+correctly passed as healthy and 1 escalated** — `R160-C071`, injected `hotspot`, screened
+`suspect`, confirmed `hotspot`, verdict written to the prim. All four beats render.
+
+**⚠⚠ The VLM cut is the finding.** Given the *same stage, same panel, same camera*,
+Cosmos Reason scored `R160-C071` **clean at the screen standoff and never escalated**, so
+`faults_detected` is **0** and no DISPATCH/CONVERGE/INSPECT beat occurs at all. Its own
+words:
+
+> "The panel appears to have a uniform pattern of blue photovoltaic cells … with no
+> visible defects such as dirt, cracks, or discoloured spots … The overall appearance
+> suggests a healthy, well-maintained solar panel."
+
+A fluent, confident, **wrong** paragraph about a panel carrying an injected hotspot.
+
+⭐ **Why this matters more than the video does.** `false_fault_rate` is 0.000 on both cuts
+— KPI-03 is a *false-positive* rate and it cannot see this at all. The failure is a **false
+negative**, and the only reason we know is that the stub arm was run against the same
+scenario. **A 0.00 KPI-03 says nothing about whether the brain finds anything.** The
+orchestration is not the weak link; the perception is. ⚠ Note this is a single panel at
+one standoff on one scenario — it is a flag to go measure recall properly (`KPI-01`), not
+a recall number.
+
+### 7. From the parallel audit: two more real defects
+
+Ran a fan-out of finder+verifier agents over yesterday's Isaac-bound work. Two survived
+adversarial verification (several verifiers were cut short by an API quota, so this is a
+partial sweep, not a clean bill):
+
+- **⚠ `sky.py:415` truncates instead of rounding.** `(img * 255.0).astype(np.uint8)` biases
+  every sky texture a **systematic half-LSB (0.00196) darker** than the exposure solve
+  bisected for — measured identical at widths 128/256/512/1024, so it is *not* the "finite
+  row count" the test comment blames. This is precisely the residual commit `1fe0eb6`
+  records as "8-bit quantisation": that diagnosis is wrong, it is removable with
+  `np.rint`, and the sibling `textures.py` already rounds at all four of its conversion
+  sites. It is a **one-directional bias that cannot average out across `--repeat N`**.
+  Small (~0.36% of fill, well under the stimulus) but it always darkens.
+- **⚠ `grid_dispatch.py:151` can label a greedy plan `cuopt`.** There is no cuOpt code
+  path — `_greedy_route` runs unconditionally — and the `import cuopt` is only a feature
+  probe that flips the provenance string. Verified by injecting a stub module: the plan
+  comes back `solver="cuopt"` with a byte-identical greedy order and travel. The module
+  explicitly refuses to fall back silently *because* "a greedy result labelled cuopt would
+  be a false provenance" — and it will produce exactly that the day cuOpt is installed.
 
 ### 4. ⚠⚠ The textured-PBR layer renders the desert BLACK — now off by default
 
