@@ -51,6 +51,16 @@ from solar_twin.schema.pv_module import PanelRecord, PanelState
 #: point is that a simulated number cannot be relabelled as a measured one.
 SCADA_SOURCE = "simulated"
 
+#: The one wording of the circularity warning, so `summary()` and the dispatch
+#: layer's run-record block cannot drift into two differently-worded (or one
+#: silently missing) caveat. A run record that carries the ranking must carry
+#: this next to it.
+SIMULATED_CAVEAT = (
+    "SIMULATED SCADA derived from the twin's own pv:state/pv:iv_yield — the "
+    "prior is a function of the ground truth being sought, so this is "
+    "circular by construction and says NOTHING about real-plant performance."
+)
+
 #: Per-state DC output multiplier, applied on top of `pv:iv_yield`. These are
 #: plausible O&M magnitudes, NOT measured from hardware — a soiled module loses a
 #: few percent, a dropped string loses nearly everything.
@@ -281,11 +291,7 @@ def summary(scores: Sequence[SimulatedCellScore]) -> dict:
     return {
         "scada_source": SCADA_SOURCE,
         "simulated": True,
-        "caveat": (
-            "SIMULATED SCADA derived from the twin's own pv:state/pv:iv_yield — the "
-            "prior is a function of the ground truth being sought, so this is "
-            "circular by construction and says NOTHING about real-plant performance."
-        ),
+        "caveat": SIMULATED_CAVEAT,
         "n_cells": len(scores),
         "n_anomalous": sum(1 for s in scores if s.anomaly > 0.0),
         "pr_unexplained_cells": [s.cell_id for s in scores if s.pr_unexplained],

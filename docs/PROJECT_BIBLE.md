@@ -195,14 +195,60 @@ Subdividing a table into N equal groups to look string-shaped was **rejected**: 
 invents electrical topology. `modules_per_cell` exists so a real string map can
 refine the cell later; its default of `0` means "the whole table".
 
-Stamped at build time by `farm_builder._cell_id_for()` from `(site.row, site.col)`
-= `(table index, module index)`, i.e. from the layout's own structure. **Off unless
-`grid.enabled`** is set in `farm.yaml`, so a stage built without it authors no
-attribute and stays byte-identical to one built before the namespace existed.
+Derived in **exactly one place — `world/layout.py::cell_id_for()`** — from
+`(site.row, site.col)` = `(table index, module index)`, i.e. from the layout's own
+structure. Two callers, one convention:
+
+- `farm_builder._cell_id_for()` writes it onto the prim as `grid:id` at build time
+  (a one-line forward to `cell_id_for`, deliberately not a copy).
+- `FarmLayout.panel_records()` stamps the same value onto `PanelRecord.cell_id`,
+  which is what the mission's ranker buckets panels by.
+
+They must agree — a join key with two derivations is not a join key. (It briefly
+had one: `panel_records()` left `cell_id` blank, so the first suspicion-first demo
+had to set it by hand.)
+
+**Off unless `grid.enabled`** is set in `farm.yaml`, so a stage built without it
+authors no attribute, every `PanelRecord.cell_id` is `""`, and behaviour is
+byte-identical to before the namespace existed.
 
 Consumers: `kpi/simulated_scada.py` (⚠ **simulated** PR-anomaly ranking) and
 `orchestrator/grid_dispatch.py` (prioritisation, strictly upstream of the FSM).
 See `docs/specs/06` for `KPI-09` and why the simulated arm is circular.
+
+#### Suspicion-first dispatch in `run.py` (`grid_dispatch`)
+
+`run.py` applies `grid_dispatch.order_targets` between `layout.inspection_targets()`
+and the mission, so the layer decides **only which panels in what order** — the FSM,
+`Perception`, `Transport`, `RobotControl` and `FaultReport` are untouched.
+
+- **Off by default, and off is the identity.** With `grid_dispatch.enabled` unset,
+  `order_targets` returns the target list *itself*, builds no plan, and does not
+  even construct `panel_records()`. A run with the feature off is byte-identical to
+  one from before it existed, so every recorded KPI stays reproducible.
+- Enable per mission (`grid_dispatch:` block in `mission.yaml`) or per run
+  (`--grid-dispatch`, `--dispatch-max-cells N`). CLI merges **onto** the mission's
+  block rather than replacing it.
+- Applied **before** `--max-panels`, because `docs/specs/06` requires KPI-09's
+  ranker-ON and ranker-OFF arms to be compared at the same seed *and the same panel
+  budget* — so the budget is spent on the ranked order.
+- Cell membership comes from the stage/layout (`farm.yaml`'s `grid:` block).
+  `grid_dispatch.modules_per_cell` is a reserved stub that `order_targets` does not
+  read; a mission that sets it is warned, not silently re-grouped.
+- `plan.escalation_arm` is **recorded, not enacted** — the FSM's
+  `ADVANCE → SCREEN → CONFIRM` is ground-first by construction.
+
+**Run record.** Every record carries a `dispatch` block, including disabled runs, so
+none is ambiguous about whether a simulated prior chose the visit order:
+`enabled`, `reason`, `scada_source` (`"simulated"` when on, `"none"` when off),
+`n_targets_in`/`n_targets_out`, `plan` (solver, cell order, travel, suspicion,
+`dropped` cells **named**, never silently truncated) and `cells`. When the ranker
+ran, a `caveat` field states in prose — one shared wording,
+`simulated_scada.SIMULATED_CAVEAT` — that the prior is derived from the twin's own
+`pv:state`/`pv:iv_yield` and is therefore **circular by construction**.
+
+⚠⚠ There is **no SCADA feed**. The entry point is named `rank_cells_simulated` for
+that reason, and a `KPI-09` from this arm says nothing about a real plant.
 
 Read/write helper sketch (**⚠ verify pxr calls against your build**):
 

@@ -248,3 +248,65 @@ def test_inspection_targets_follow_the_route_order():
     cfg = {"route": "serpentine", "panel_stride": 3, "kinematics": {}}
     ids = [t.panel_id for t in layout.inspection_targets(cfg)]
     assert ids == [s.panel_id for s in layout.route_sites(cfg)]
+
+
+# --------------------------------------------------------------------------- #
+# `grid:id` — the dispatch-cell join key on a PanelRecord
+#
+# `panel_records()` used to leave `cell_id` blank, so the first suspicion-first
+# demo had to stamp the join key by hand — exactly how the mission and the stage
+# drift apart. It is now derived by `layout.cell_id_for`, the SAME function
+# `farm_builder._cell_id_for` forwards to, so a record's `cell_id` and the prim's
+# `grid:id` are the same string by construction rather than by agreement.
+# --------------------------------------------------------------------------- #
+
+#: 3 tables x 4 modules with the grid layer ON. A cell is a TABLE, so a whole row
+#: of this farm shares one id.
+GRID_FARM = {
+    **FARM,
+    "grid": {**FARM["grid"], "rows": 3, "cols": 4, "enabled": True},
+}
+
+
+def _grid_farm(**grid_overrides) -> dict:
+    return {**GRID_FARM, "grid": {**GRID_FARM["grid"], **grid_overrides}}
+
+
+def test_panel_records_stamp_the_same_cell_id_the_builder_authors():
+    """One derivation, two callers. A join key with two conventions is not a
+    join key — which is why `farm_builder._cell_id_for` is a one-line forward."""
+    from solar_twin.schema.pv_module import cell_for_panel
+    from solar_twin.world.layout import cell_id_for
+
+    layout = FarmLayout(_grid_farm())
+    for site, rec in zip(layout.sites, layout.panel_records()):
+        assert rec.cell_id == cell_id_for(site, layout.cfg)
+        assert rec.cell_id == cell_for_panel((site.row, site.col))
+
+
+def test_a_cell_is_a_table_so_a_whole_row_shares_one_id():
+    recs = FarmLayout(_grid_farm()).panel_records()
+    assert {r.cell_id for r in recs} == {"G-0000", "G-0001", "G-0002"}
+    assert len([r for r in recs if r.cell_id == "G-0002"]) == 4
+
+
+def test_cell_id_is_empty_unless_the_grid_layer_is_enabled():
+    """Off must be byte-identical to before the namespace existed: the builder
+    authors no `grid:id` attribute, so a record must carry no cell either."""
+    recs = FarmLayout(_grid_farm(enabled=False)).panel_records()
+    assert {r.cell_id for r in recs} == {""}
+
+
+def test_an_absent_grid_enabled_key_is_also_off():
+    """Every farm.yaml predating the namespace omits the key entirely."""
+    grid = {k: v for k, v in GRID_FARM["grid"].items() if k != "enabled"}
+    farm = {**GRID_FARM, "grid": grid}
+    assert {r.cell_id for r in FarmLayout(farm).panel_records()} == {""}
+
+
+def test_modules_per_cell_subdivides_exactly_as_the_builder_would():
+    """Reserved for a real string map; the default of 0 means 'the whole table'."""
+    by_id = {r.panel_id: r.cell_id
+             for r in FarmLayout(_grid_farm(modules_per_cell=2)).panel_records()}
+    assert by_id["R02-C000"] == by_id["R02-C001"] == "G-0002-01"
+    assert by_id["R02-C002"] == by_id["R02-C003"] == "G-0002-02"

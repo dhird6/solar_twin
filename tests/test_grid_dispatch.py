@@ -229,6 +229,21 @@ class TestDisabledIsTheIdentity:
         _, res = gd.order_targets(targets, recs, gd.DispatchConfig(enabled=False))
         assert res.to_dict()["scada_source"] == "none"
 
+    def test_disabled_carries_no_caveat_because_nothing_was_ranked(self):
+        recs, targets = _farm()
+        _, res = gd.order_targets(targets, recs, gd.DispatchConfig(enabled=False))
+        assert "caveat" not in res.to_dict()
+
+    def test_enabled_spells_out_the_circularity_in_words(self):
+        """⚠⚠ `scada_source: "simulated"` is a label, and a label is too easy to
+        read as a detail of the plumbing. Whenever a ranking actually chose the
+        visit order, the record states in prose that the prior is derived from the
+        ground truth being sought — one wording, shared with `scada.summary()`."""
+        recs, targets = _farm(faults={"R02-C000": PanelState.STRING_DROPOUT})
+        _, res = gd.order_targets(targets, recs, gd.DispatchConfig(enabled=True))
+        assert res.to_dict()["caveat"] == scada.SIMULATED_CAVEAT
+        assert "circular" in res.to_dict()["caveat"].lower()
+
     def test_default_config_is_disabled(self):
         """Off by default, so every previously recorded number stays reproducible."""
         assert gd.DispatchConfig().enabled is False
