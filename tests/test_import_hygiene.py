@@ -110,6 +110,81 @@ def test_the_contract_surfaces_are_importable_without_isaac():
         importlib.import_module(name)
 
 
+def _module_level_bound_names(path: Path) -> dict[str, int]:
+    """The NAMES a module's top-level imports bind, not the roots they come from.
+
+    `import solar_twin.world.textures as tex` binds `tex`; `from pathlib import
+    Path` binds `Path`. Those names are what a function body can shadow.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    bound: dict[str, int] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                name = alias.asname or alias.name.split(".")[0]
+                bound[name] = node.lineno
+    return bound
+
+
+def _assigned_names(fn: ast.AST):
+    """Every name a function body BINDS, with the line that binds it.
+
+    Skips anything the function declares `global`/`nonlocal`: rebinding a
+    module-level name you have explicitly claimed is a deliberate act, not a
+    shadow. Nested functions are walked too — they shadow just as effectively.
+    """
+    declared: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            declared.update(node.names)
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            if node.id not in declared:
+                yield node.id, node.lineno
+
+
+def test_no_function_shadows_a_module_level_import_alias():
+    """A function that rebinds an imported name silently breaks every LATER use
+    of that name in the same scope.
+
+    Measured, not hypothetical: `farm_builder.build()` assigned the generated sky
+    texture's path to `tex`, which was the module alias for `world.textures`
+    imported at the top of the file. The sky lines worked; 27 lines further down
+    `tex.write_all(...)` raised `AttributeError: 'str' object has no attribute
+    'write_all'` and the whole farm build died. Nothing caught it, because the
+    crash needs Isaac to reach -- so it shipped, was committed, and surfaced on
+    the first real render.
+
+    This is the cheap Isaac-free guard for that: it is a pure AST property of the
+    source, so it holds for the Isaac-bound half exactly as well as the pure half.
+    """
+    violations: list[str] = []
+    for path in _modules():
+        source = path.read_text(encoding="utf-8")
+        imported = _module_level_bound_names(path)
+        if not imported:
+            continue
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for name, lineno in _assigned_names(node):
+                if name in imported:
+                    violations.append(
+                        f"{_rel(path)}:{lineno} `{name}` shadows the module-level "
+                        f"import bound at line {imported[name]} "
+                        f"(in `{node.name}`)"
+                    )
+    assert not violations, (
+        "A local assignment must not reuse an imported name -- every later use of "
+        "that name in the same scope gets the local value instead of the module. "
+        "Rename the local, or declare `global` if the rebinding is deliberate. "
+        "Violations:\n  " + "\n  ".join(violations)
+    )
+
+
 def test_pv_module_keeps_its_pxr_import_inside_the_functions():
     """Guards the pattern the rest of the codebase copies: the panel contract's
     pure half must stay above its USD adapter, not behind it.

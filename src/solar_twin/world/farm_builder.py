@@ -1367,7 +1367,11 @@ def build(farm_cfg: dict, out_path: str) -> str:
         # overwrites the texture the live render is reading. Measured: a full-plot
         # build clobbered `sky_44_80.png` mid-tour and RTX logged
         # `Failed to read texture file ... or file is empty` for the rest of the run.
-        tex = _write_sky_texture(
+        # NOT named `tex`: that is the `world.textures` module alias, and rebinding
+        # it here shadowed the module for the PBR block below -- `tex.write_all`
+        # crashed on a `str`. Caught on the first real render, which is why the
+        # render gate exists.
+        sky_tex = _write_sky_texture(
             str(
                 Path(out).parent
                 / f"sky_{Path(out).stem}_{int(round(elev))}_{int(round(azim))}.png"
@@ -1375,9 +1379,9 @@ def build(farm_cfg: dict, out_path: str) -> str:
             elev,
             azim,
         )
-        dome.CreateTextureFileAttr().Set(tex)
+        dome.CreateTextureFileAttr().Set(sky_tex)
         dome.CreateTextureFormatAttr().Set(UsdLux.Tokens.latlong)
-        print(f"  sky: generated {tex}", flush=True)
+        print(f"  sky: generated {sky_tex}", flush=True)
 
     # --- shared material set (one look per _LOOKS entry, reused everywhere) ---
     looks = {
