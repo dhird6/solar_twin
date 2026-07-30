@@ -33,6 +33,8 @@ from solar_twin.world.layout import (
     terrain_feature_step,
     terrain_height,
 )
+from solar_twin.world import sky as sky_model
+from solar_twin.world import textures as tex
 from solar_twin.world.siting import rpm_to_deg_per_s
 
 # Fallback panel-centre height if farm.yaml omits panel.mount_height.
@@ -45,7 +47,18 @@ PANEL_MOUNT_HEIGHT = 0.75
 _LOOKS: dict[str, tuple[tuple, tuple, float, float]] = {
     "cell_healthy": ((0.02, 0.04, 0.13), (0.0, 0.0, 0.0), 0.22, 0.35),  # dark-blue glassy PV
     "cell_hotspot": ((0.14, 0.05, 0.03), (2.2, 0.35, 0.0), 0.5, 0.0),   # hot cell glow
-    "frame": ((0.62, 0.63, 0.66), (0.0, 0.0, 0.0), 0.3, 0.9),           # aluminium rail
+    # ⚠ THE PANEL FRAME IS DEFERRED — do not texture, do not re-tune. Its 0.62
+    # albedo is what the soiling film's baked alpha window (0.72-0.94) was tuned
+    # against: at lower alpha this rail survives at ~0.54 while the 0.02 cells go
+    # dark, manufacturing a grid of BRIGHT LINES that Cosmos Reason read as "a
+    # cluster of bright pixels ... characteristic of a hotspot". Four stacked
+    # fixes got this right. Changing it is a flagged decision with a measurement.
+    "panel_frame": ((0.62, 0.63, 0.66), (0.0, 0.0, 0.0), 0.3, 0.9),     # aluminium rail
+    # Same base look, separate material — SO THE FENCE CAN BE TEXTURED WITHOUT
+    # TOUCHING THE PANEL FRAME. These were one material, which put "add PBR to the
+    # fence" in direct conflict with "defer the panel frame"; the values are
+    # identical on purpose, so the split alone changes nothing visually.
+    "fence_frame": ((0.62, 0.63, 0.66), (0.0, 0.0, 0.0), 0.3, 0.9),     # galvanised fence steel
     # Kutch is pale, dusty, sun-bleached ground — NOT the near-black it used to
     # be. The old value was chosen when the ground was a small backdrop behind a
     # 10-panel row and the worry was blowing out the frame; across a 320 x 647 m
@@ -125,6 +138,114 @@ def _make_material(
     return mat
 
 
+#: World-metres covered by one texture tile, per surface. Sized to the thing:
+#: soil drifts read over metres, a cast concrete pad's pitting over centimetres.
+#: Too large and the map turns to mush; too small and it visibly repeats.
+_UV_TILE_M = {
+    "ground": 24.0,
+    "road": 8.0,
+    "concrete": 4.0,
+    "equipment": 2.0,
+    "structure": 1.5,
+    "fence_frame": 1.5,
+}
+
+
+def _textured_material(
+    stage: Usd.Stage,
+    path: str,
+    name: str,
+    tex_paths: dict,
+    metallic: float,
+    diffuse_from_primvar: bool = False,
+) -> UsdShade.Material:
+    """A `UsdPreviewSurface` driven by generated albedo / roughness / normal maps.
+
+    `diffuse_from_primvar=True` keeps `diffuseColor` wired to the mesh's
+    `displayColor` primvar and applies only the roughness and normal maps. That
+    is what the GROUND needs: its per-vertex colour carries both the
+    three-octave grading variation and the aerial-perspective fade that melts the
+    mesh rim into the horizon haze — replacing it with a flat texture would bring
+    back the hard ground edge with void beyond it (Session 10c). So the ground
+    gains real microsurface without losing either of those.
+
+    `metallic` stays a constant: none of these surfaces has a metalness *map*, and
+    inventing one would be decoration rather than measurement.
+    """
+    mat = UsdShade.Material.Define(stage, path)
+    shader = UsdShade.Shader.Define(stage, path + "/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+
+    st = UsdShade.Shader.Define(stage, path + "/UvReader")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    st_out = st.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    def _tex(channel: str, out_type, out_name: str):
+        t = UsdShade.Shader.Define(stage, f"{path}/{channel.capitalize()}Tex")
+        t.CreateIdAttr("UsdUVTexture")
+        t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(tex_paths[channel])
+        t.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_out)
+        # Repeat, not clamp: these are tiled across hundreds of metres.
+        t.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        t.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        return t, t.CreateOutput(out_name, out_type)
+
+    if diffuse_from_primvar:
+        reader = UsdShade.Shader.Define(stage, path + "/ColorReader")
+        reader.CreateIdAttr("UsdPrimvarReader_float3")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            reader.ConnectableAPI(), "result"
+        )
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+    else:
+        _, rgb_out = _tex("albedo", Sdf.ValueTypeNames.Float3, "rgb")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            rgb_out
+        )
+
+    _, r_out = _tex("roughness", Sdf.ValueTypeNames.Float, "r")
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(r_out)
+
+    _, n_out = _tex("normal", Sdf.ValueTypeNames.Float3, "rgb")
+    ntex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/NormalTex"))
+    # A normal map is stored 0..1 but read as -1..1; without this bias/scale the
+    # surface is lit as if every normal pointed into the +XYZ octant.
+    ntex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
+    ntex.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
+    # Normal maps are non-colour data; letting the renderer sRGB-decode them
+    # bends the normals.
+    ntex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+    shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(n_out)
+
+    rtex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/RoughnessTex"))
+    rtex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+
+    mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    return mat
+
+
+def _planar_uvs(pts, tile_m: float):
+    """World-space planar UVs (X/Y over `tile_m`) as a vertex-interpolated primvar.
+
+    Planar projection is correct for the surfaces this is used on — ground, roads
+    and pads are all near-horizontal — and it means adjacent quads share a
+    continuous UV field, so a road built from many subdivided segments does not
+    show a texture reset at every seam.
+    """
+    return [Gf.Vec2f(p[0] / tile_m, p[1] / tile_m) for p in pts]
+
+
+def _set_uvs(mesh, pts, tile_m: float) -> None:
+    pv_api = UsdGeom.PrimvarsAPI(mesh.GetPrim())
+    primvar = pv_api.CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+    )
+    primvar.Set(_planar_uvs(pts, tile_m))
+
+
 #: Where instanced panel prototypes live. A USD *class* prim: composed on demand
 #: by references, never imaged in its own right.
 _PROTO_ROOT = "/__Prototypes"
@@ -158,7 +279,7 @@ def _panel_prototype(stage, cache: dict, sx, sy, ph, n_ccol, n_crow, looks) -> s
     geom = UsdGeom.Cube.Define(stage, path + "/Geom")
     geom.CreateSizeAttr(1.0)
     UsdGeom.XformCommonAPI(geom).SetScale(Gf.Vec3f(sx, sy, ph))
-    _bind(geom.GetPrim(), looks["frame"])
+    _bind(geom.GetPrim(), looks["panel_frame"])
 
     cells = UsdGeom.Xform.Define(stage, path + "/Cells")  # noqa: F841 — parent scope
     cw, cl = sx / n_ccol, sy / n_crow
@@ -312,7 +433,7 @@ def _build_dust_film(stage, panel_path, pw, pl, ph, n_ccol, n_crow, rng, materia
     cw, cl = pw / n_ccol, pl / n_crow
     z = ph * 1.02  # just above the cell tops (cells top out at ~ph)
     cell_rgb = _LOOKS["cell_healthy"][0]
-    gap_rgb = _LOOKS["frame"][0]
+    gap_rgb = _LOOKS["panel_frame"][0]
     half_gap = 0.86 / 2  # cells are inset by this fraction; outside it is frame
 
     pts, counts, idx, colors = [], [], [], []
@@ -549,6 +670,7 @@ def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: floa
     mesh.CreateFaceVertexCountsAttr(counts)
     mesh.CreateFaceVertexIndicesAttr(idx)
     mesh.CreateSubdivisionSchemeAttr("none")
+    _set_uvs(mesh, pts, _UV_TILE_M["ground"])
     # Break up the flat tan sheet. A uniform ground over 320 x 647 m reads as a
     # backdrop, not terrain: with nothing varying, the eye gets no scale cue and
     # the whole plant looks like a model. Low-frequency, deterministic (a seeded
@@ -615,24 +737,13 @@ def _vertex_colour_material(stage, path: str, roughness: float, emissive: bool):
     return mat
 
 
-#: Sky gradient stops: (fraction up from the horizon, RGB). Warm dusty haze at the
-#: horizon into deep blue overhead — a Kutch desert sky, not a studio grey.
-_SKY_STOPS = (
-    (0.00, (0.78, 0.74, 0.66)),
-    (0.10, (0.62, 0.66, 0.71)),
-    (0.35, (0.35, 0.50, 0.72)),
-    (1.00, (0.13, 0.28, 0.62)),
-)
-
-
 def _sky_colour(frac: float) -> tuple[float, float, float]:
-    """Linearly interpolate `_SKY_STOPS`. Pure — unit tested without pxr."""
-    frac = min(1.0, max(0.0, frac))
-    for (f0, c0), (f1, c1) in zip(_SKY_STOPS, _SKY_STOPS[1:]):
-        if frac <= f1:
-            t = 0.0 if f1 == f0 else (frac - f0) / (f1 - f0)
-            return tuple(a + (b - a) * t for a, b in zip(c0, c1))
-    return _SKY_STOPS[-1][1]
+    """The legacy gradient ramp, now living in `world/sky.py`.
+
+    Still used for the ground mesh's aerial-perspective haze target, so the rim
+    of the ground fades into the same horizon tone the sky renders (Session 10c).
+    """
+    return sky_model.gradient_colour(frac)
 
 
 def _write_sky_texture(path: str, sun_elev_deg: float, sun_azim_deg: float, width: int = 1024) -> str:
@@ -649,77 +760,98 @@ def _write_sky_texture(path: str, sun_elev_deg: float, sun_azim_deg: float, widt
     A `DomeLight` with this texture IS both the visible background and the
     illumination, so they cannot diverge. Generated at build time next to the
     USD, never committed (`CLAUDE.md`: no large binaries).
+
+    The radiance model is now **Preetham** (`world/sky.py`) rather than a
+    four-stop ramp, normalised so its hemisphere mean still equals the ramp's.
+    That normalisation is the reason this swap cannot move `KPI-03`: the dome IS
+    the ambient fill, the fill sets how far shadows fill in, and the shadow
+    contrast is the KPI's stimulus. See `world/sky.py` for the measurement.
     """
-    from PIL import Image
-
-    height = width // 2
-    img = Image.new("RGB", (width, height))
-    px = img.load()
-    sun_az = math.radians(sun_azim_deg % 360.0)
-    sun_el = math.radians(max(0.0, sun_elev_deg))
-    for j in range(height):
-        # Row 0 is the zenith, row height-1 the nadir (USD latlong convention).
-        elev = math.radians(90.0 - 180.0 * j / (height - 1))
-        if elev >= 0.0:
-            base = _sky_colour(elev / (math.pi / 2))
-        else:
-            # Below the horizon: dry ground tone, so anything sampling the lower
-            # hemisphere (reflections, bounce) does not pick up sky blue. Blend
-            # into it over ~8 degrees — a hard switch at the equator row rendered
-            # as a dark brown band sitting above the terrain horizon.
-            # Stay close to the horizon haze rather than dropping to ground
-            # tone: looking DOWN from altitude puts this region on screen beyond
-            # the ground mesh, where a dark value reads as a hole in the world.
-            t = min(1.0, math.degrees(-elev) / 25.0)
-            g = tuple(v * 1.5 for v in _LOOKS["ground"][0])
-            h = _sky_colour(0.0)
-            base = tuple(a + (b - a) * t for a, b in zip(h, g))
-        for i in range(width):
-            azim = 2.0 * math.pi * i / width
-            r, g, b = base
-            if elev >= 0.0:
-                # Warm glow around the sun's own direction: the sky is brightest
-                # near the sun, and without it a gradient reads as a painted
-                # backdrop rather than as air.
-                cos_sep = math.sin(elev) * math.sin(sun_el) + math.cos(elev) * math.cos(
-                    sun_el
-                ) * math.cos(azim - sun_az)
-                glow = max(0.0, cos_sep) ** 8
-                r += 0.42 * glow
-                g += 0.36 * glow
-                b += 0.22 * glow
-            px[i, j] = (
-                int(max(0, min(255, r * 255))),
-                int(max(0, min(255, g * 255))),
-                int(max(0, min(255, b * 255))),
-            )
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    img.save(path)
-    return path
-
-
-def _quad(stage, path, x0, y0, x1, y1, z, material):
-    """A flat axis-aligned rectangle at height `z` — a road, a pad, an apron."""
-    mesh = UsdGeom.Mesh.Define(stage, path)
-    mesh.CreatePointsAttr(
-        [Gf.Vec3f(x0, y0, z), Gf.Vec3f(x1, y0, z), Gf.Vec3f(x1, y1, z), Gf.Vec3f(x0, y1, z)]
+    return sky_model.write_sky_texture(
+        path,
+        sun_elev_deg,
+        sun_azim_deg,
+        ground_rgb=_LOOKS["ground"][0],
+        width=width,
     )
+
+
+def _quad(stage, path, x0, y0, x1, y1, z, material, uv_tile_m: float | None = None):
+    """A flat axis-aligned rectangle at height `z` — a road, a pad, an apron.
+
+    `uv_tile_m` authors world-space planar UVs. Planar (not per-quad 0..1) is the
+    point: a road is laid as many subdivided segments, and per-quad UVs would
+    reset the texture at every segment boundary — a visible ladder of seams down
+    the length of every road.
+    """
+    pts = [
+        Gf.Vec3f(x0, y0, z), Gf.Vec3f(x1, y0, z),
+        Gf.Vec3f(x1, y1, z), Gf.Vec3f(x0, y1, z),
+    ]
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(pts)
     mesh.CreateFaceVertexCountsAttr([4])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
     mesh.CreateSubdivisionSchemeAttr("none")
+    if uv_tile_m:
+        _set_uvs(mesh, pts, uv_tile_m)
     _bind(mesh.GetPrim(), material)
     return mesh
 
 
-def _box(stage, path, w, d, h, x, y, z, material):
-    """An axis-aligned box sitting ON z (not centred on it)."""
-    cube = UsdGeom.Cube.Define(stage, path)
-    cube.CreateSizeAttr(1.0)
-    api = UsdGeom.XformCommonAPI(cube)
-    api.SetTranslate(Gf.Vec3d(x, y, z + h / 2.0))
-    api.SetScale(Gf.Vec3f(w, d, h))
-    _bind(cube.GetPrim(), material)
-    return cube
+#: The 6 faces of a unit box as vertex-index quads, with the two in-plane axes
+#: each face's UVs run along. Ordered so every face is wound outward.
+_BOX_FACES = (
+    ((0, 1, 2, 3), (0, 1)),  # -Z, spans X,Y
+    ((7, 6, 5, 4), (0, 1)),  # +Z
+    ((0, 4, 5, 1), (0, 2)),  # -Y, spans X,Z
+    ((3, 2, 6, 7), (0, 2)),  # +Y
+    ((0, 3, 7, 4), (1, 2)),  # -X, spans Y,Z
+    ((1, 5, 6, 2), (1, 2)),  # +X
+)
+
+
+def _box(stage, path, w, d, h, x, y, z, material, uv_tile_m: float | None = None):
+    """An axis-aligned box sitting ON z (not centred on it).
+
+    Without `uv_tile_m` this stays a `UsdGeom.Cube` — byte-identical to before, so
+    the instanced fence posts and the OSM building boxes are untouched. With it,
+    the box is authored as an explicit `Mesh` carrying **per-face** UVs, because a
+    `Cube` has no place to put them and a single planar projection would smear the
+    texture down the vertical sides.
+    """
+    if not uv_tile_m:
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        api = UsdGeom.XformCommonAPI(cube)
+        api.SetTranslate(Gf.Vec3d(x, y, z + h / 2.0))
+        api.SetScale(Gf.Vec3f(w, d, h))
+        _bind(cube.GetPrim(), material)
+        return cube
+
+    hw, hd = w / 2.0, d / 2.0
+    corners = [
+        (x - hw, y - hd, z), (x + hw, y - hd, z),
+        (x + hw, y + hd, z), (x - hw, y + hd, z),
+        (x - hw, y - hd, z + h), (x + hw, y - hd, z + h),
+        (x + hw, y + hd, z + h), (x - hw, y + hd, z + h),
+    ]
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([Gf.Vec3f(*c) for c in corners])
+    mesh.CreateFaceVertexCountsAttr([4] * 6)
+    idx, uvs = [], []
+    for verts, (a0, a1) in _BOX_FACES:
+        idx.extend(verts)
+        for v in verts:
+            c = corners[v]
+            uvs.append(Gf.Vec2f(c[a0] / uv_tile_m, c[a1] / uv_tile_m))
+    mesh.CreateFaceVertexIndicesAttr(idx)
+    mesh.CreateSubdivisionSchemeAttr("none")
+    UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+    ).Set(uvs)
+    _bind(mesh.GetPrim(), material)
+    return mesh
 
 
 def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
@@ -832,6 +964,7 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
         mesh.CreateFaceVertexCountsAttr(counts)
         mesh.CreateFaceVertexIndicesAttr(idx)
         mesh.CreateSubdivisionSchemeAttr("none")
+        _set_uvs(mesh, verts, _UV_TILE_M["road"])
         _bind(mesh.GetPrim(), looks["road"])
         _tag(
             mesh.GetPrim(), way,
@@ -977,6 +1110,7 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
                     s.x0, s.y0, s.x1, s.y1,
                     ground((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2) + 0.03,
                     looks["road"],
+                    uv_tile_m=_UV_TILE_M["road"],
                 )
                 q.GetPrim().CreateAttribute("st:provenance", Sdf.ValueTypeNames.String).Set(
                     s.provenance
@@ -1006,12 +1140,22 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
                 p.x - p.width_m / 2, p.y - p.depth_m / 2,
                 p.x + p.width_m / 2, p.y + p.depth_m / 2,
                 gz + 0.05, looks["concrete"],
+                uv_tile_m=_UV_TILE_M["concrete"],
             )
             # Inverter container + the transformer beside it: the pair a real
             # skid carries, and enough mass to give the rows a sense of scale.
-            _box(stage, base + "/Inverter", 6.0, 2.6, 2.7, p.x - 2.6, p.y, gz + 0.05, looks["equipment"])
-            _box(stage, base + "/Transformer", 3.2, 2.6, 2.2, p.x + 3.2, p.y, gz + 0.05, looks["structure"])
-            _box(stage, base + "/Radiator", 0.5, 2.0, 1.6, p.x + 5.1, p.y, gz + 0.05, looks["frame"])
+            _box(
+                stage, base + "/Inverter", 6.0, 2.6, 2.7, p.x - 2.6, p.y, gz + 0.05,
+                looks["equipment"], uv_tile_m=_UV_TILE_M["equipment"],
+            )
+            _box(
+                stage, base + "/Transformer", 3.2, 2.6, 2.2, p.x + 3.2, p.y, gz + 0.05,
+                looks["structure"], uv_tile_m=_UV_TILE_M["structure"],
+            )
+            _box(
+                stage, base + "/Radiator", 0.5, 2.0, 1.6, p.x + 5.1, p.y, gz + 0.05,
+                looks["fence_frame"], uv_tile_m=_UV_TILE_M["fence_frame"],
+            )
             UsdGeom.Xform(stage.GetPrimAtPath(base)).GetPrim().CreateAttribute(
                 "st:provenance", Sdf.ValueTypeNames.String
             ).Set(p.provenance)
@@ -1030,7 +1174,13 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
             stage.CreateClassPrim(_PROTO_ROOT)
         if not stage.GetPrimAtPath(proto):
             UsdGeom.Xform.Define(stage, proto)
-            _box(stage, proto + "/Post", 0.09, 0.09, 2.2, 0.0, 0.0, 0.0, looks["frame"])
+            # UV'd mesh so the post can carry the fence texture. The prototype is
+            # still referenced + instanceable below, so IF-09 is unaffected: one
+            # prototype, N instances, regardless of Cube-vs-Mesh.
+            _box(
+                stage, proto + "/Post", 0.09, 0.09, 2.2, 0.0, 0.0, 0.0,
+                looks["fence_frame"], uv_tile_m=_UV_TILE_M["fence_frame"],
+            )
         for i, (px, py) in enumerate(posts):
             p = UsdGeom.Xform.Define(stage, f"/World/Site/Fence/post_{i:04d}").GetPrim()
             UsdGeom.XformCommonAPI(p).SetTranslate(Gf.Vec3d(px, py, ground(px, py)))
@@ -1048,7 +1198,11 @@ def _build_site_works(stage, farm_cfg, layout, looks) -> dict:
                 wapi.SetTranslate(Gf.Vec3d(cx, cy, ground(cx, cy) + wz))
                 wapi.SetRotate((0.0, 0.0, yaw), UsdGeom.XformCommonAPI.RotationOrderXYZ)
                 wapi.SetScale(Gf.Vec3f(length, 0.02, 0.02))
-                _bind(wire.GetPrim(), looks["frame"])
+                # Left as a Cube with no authored UVs: a 2 cm wire spans a tiny
+                # fraction of a 1.5 m tile, so any sample of a mean-1.0 modulation
+                # is the base colour — texturing it would be indistinguishable.
+                # It shares `fence_frame` so the fence stays one look.
+                _bind(wire.GetPrim(), looks["fence_frame"])
 
     tally = provenance_summary(roads + pads)
     root.CreateAttribute("st:provenance_note", Sdf.ValueTypeNames.String).Set(
@@ -1106,6 +1260,26 @@ def _build_turbine(stage, path, spec, ground_z, looks) -> str:
         _bind(blade.GetPrim(), looks["turbine"])
         _add_collision(blade.GetPrim())
     return path + "/Hub"
+
+
+def _cell_id_for(site, farm_cfg: dict) -> str:
+    """`grid:id` for a panel, derived from the layout's OWN table structure.
+
+    `(site.row, site.col)` is `(table index, module index)` — set by
+    `layout_import.expand_sites` — so the cell falls out of the CAD's real table
+    grouping. Nothing new is invented here: no geometric grid is imposed, and the
+    table is used because it is the finest unit the vendor DWG actually carries
+    (there is no string map; see `schema.pv_module`'s `grid:` namespace note).
+
+    Off unless `grid.enabled` is set, so a stage built without it is byte-identical
+    to one built before the namespace existed.
+    """
+    g = (farm_cfg.get("grid", {}) or {})
+    if not g.get("enabled", False):
+        return ""
+    return pv.cell_for_panel(
+        (site.row, site.col), int(g.get("modules_per_cell", 0))
+    )
 
 
 def _label(prim, *labels: str) -> None:
@@ -1205,12 +1379,39 @@ def build(farm_cfg: dict, out_path: str) -> str:
         dome.CreateTextureFormatAttr().Set(UsdLux.Tokens.latlong)
         print(f"  sky: generated {tex}", flush=True)
 
-    # --- shared material set (5 looks, reused across all prims) --------------
+    # --- shared material set (one look per _LOOKS entry, reused everywhere) ---
     looks = {
         name: _make_material(stage, f"/World/Looks/{name}", diff, emis, rough, metal)
         for name, (diff, emis, rough, metal) in _LOOKS.items()
     }
     dust_mat = _dust_material(stage)
+
+    # --- textured PBR for the balance-of-plant surfaces ---------------------- #
+    # Generated beside the USD, never committed. Panel glass/frame are pointedly
+    # NOT in `textures.SURFACES`: their look feeds the soiling bake and the hotspot
+    # emissive, and texturing them re-opens the bright-frame-as-hotspot failure.
+    # That is a separate, flagged decision — see SESSIONS.md.
+    pbr_paths = {}
+    if (farm_cfg.get("pbr", {}) or {}).get("enabled", True):
+        tex_dir = Path(out).parent / f"tex_{Path(out).stem}"
+        pbr_paths = tex.write_all(
+            str(tex_dir),
+            size=int((farm_cfg.get("pbr", {}) or {}).get("size", tex.DEFAULT_SIZE)),
+            diffuse={n: _LOOKS[n][0] for n in tex.SURFACES if n in _LOOKS},
+        )
+        for name, paths in pbr_paths.items():
+            looks[name] = _textured_material(
+                stage,
+                f"/World/Looks/{name}_pbr",
+                name,
+                paths,
+                metallic=_LOOKS[name][3],
+            )
+        print(
+            f"  pbr: textured {len(pbr_paths)} surfaces "
+            f"({', '.join(sorted(pbr_paths))}) -> {tex_dir}",
+            flush=True,
+        )
 
     # --- ground: reaches the horizon so terrain, not sky, meets the eye -------
     sky_cfg = farm_cfg.get("sky", {}) or {}
@@ -1218,10 +1419,22 @@ def build(farm_cfg: dict, out_path: str) -> str:
     horizon_m = float(sky_cfg.get("horizon", 0.0)) or max(
         1500.0, 8.0 * max(_max_x - _min_x, _max_y - _min_y)
     )
+    # The ground keeps its VERTEX-COLOUR diffuse and gains only roughness+normal
+    # maps. Its displayColor carries the three-octave grading variation AND the
+    # aerial-perspective fade into the horizon haze; a flat albedo texture would
+    # discard both and bring back the hard mesh rim with void beyond it (10c).
+    ground_mat = (
+        _textured_material(
+            stage, "/World/Looks/ground_pbr", "ground", pbr_paths["ground"],
+            metallic=_LOOKS["ground"][3], diffuse_from_primvar=True,
+        )
+        if "ground" in pbr_paths
+        else _vertex_colour_material(
+            stage, "/World/Looks/ground_vc", 1.0, emissive=False
+        )
+    )
     _build_ground_heightfield(
-        stage, farm_cfg, layout,
-        _vertex_colour_material(stage, "/World/Looks/ground_vc", 1.0, emissive=False),
-        horizon_m=horizon_m,
+        stage, farm_cfg, layout, ground_mat, horizon_m=horizon_m,
     )
 
     # --- balance of plant: roads, fence, inverter stations --------------------
@@ -1320,6 +1533,7 @@ def build(farm_cfg: dict, out_path: str) -> str:
                     farm_spec,
                     pv.panel_path("", site.row, site.col).lstrip("/"),
                     site.panel_id, site.row, site.col, site.geo_position,
+                    cell_id=_cell_id_for(site, farm_cfg),
                 )
                 # Same ops XformCommonAPI would author, in the same order, so the
                 # resulting prim is identical to the `create_panel` path's.
@@ -1360,7 +1574,8 @@ def build(farm_cfg: dict, out_path: str) -> str:
             continue  # fully authored in the batched pass above
         path = pv.panel_path("/World/Farm", site.row, site.col)
         prim = pv.create_panel(
-            stage, path, site.panel_id, site.row, site.col, site.geo_position
+            stage, path, site.panel_id, site.row, site.col, site.geo_position,
+            cell_id=_cell_id_for(site, farm_cfg),
         )
         # Place + orient the panel Xform (Z-up). Tilt is about the row axis (X);
         # azimuth is the mounting structure's plan rotation about Z.
@@ -1417,7 +1632,7 @@ def build(farm_cfg: dict, out_path: str) -> str:
         geom = UsdGeom.Cube.Define(stage, path + "/Geom")
         geom.CreateSizeAttr(1.0)
         UsdGeom.XformCommonAPI(geom).SetScale(Gf.Vec3f(sx, sy, ph))
-        _bind(geom.GetPrim(), looks["frame"])
+        _bind(geom.GetPrim(), looks["panel_frame"])
 
         rng = random.Random(f"{seed}:{site.panel_id}")
         # Cell-level faults (hotspot) recolor cells; soiling is a film authored
