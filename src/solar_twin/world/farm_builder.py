@@ -1269,7 +1269,95 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
     n_fault = 0
     n_instanced = 0
+
+    # --- fast path: author every HEALTHY instanced panel in ONE ChangeBlock ----
+    #
+    # This is what makes a whole plot buildable. Going through `UsdStage` per panel
+    # is QUADRATIC — every `DefinePrim` recomposes the parent's children, measured
+    # at n^2.39 end-to-end, i.e. ~55 hours for S05b's 679,616 modules. Authoring
+    # `Sdf.PrimSpec`s into the layer inside one `Sdf.ChangeBlock` defers composition
+    # to the end: measured n^1.03 and 60x faster at 32k panels.
+    #
+    # Faulted panels are deliberately NOT here. Each carries unique geometry (a
+    # hotspot recolours specific cells, soiling bakes a per-panel dust film), which
+    # is far more code against the Usd API, and at a few percent of the plant they
+    # are not what makes the build quadratic. They fall through to the loop below.
+    done_fast: set = set()
+    if instancing:
+        from pxr import Sdf as _Sdf
+
+        # Prototypes must exist BEFORE the ChangeBlock: `_panel_prototype` goes
+        # through UsdStage, which cannot compose inside one. There is one per
+        # distinct module size, so this is a handful of calls, not N.
+        proto_for: dict = {}
+        for site in layout.sites:
+            if faults.get(site.panel_id, pv.PanelState.HEALTHY) is not pv.PanelState.HEALTHY:
+                continue
+            key = (site.size_x_m or pw, site.size_y_m or pl)
+            if key not in proto_for:
+                proto_for[key] = _panel_prototype(
+                    stage, proto_cache, key[0], key[1], ph, n_ccol, n_crow, looks
+                )
+
+        # `/World/Farm` has to exist as a real spec before children can be added to
+        # it. It used to be created implicitly, as an ancestor of the first
+        # `Xform.Define(".../Panel_R00_C000")`, so at this point the layer has no
+        # spec at that path and `Sdf.PrimSpec` raises "parent prim is NULL".
+        UsdGeom.Xform.Define(stage, "/World/Farm")
+        layer = stage.GetRootLayer()
+        farm_spec = layer.GetPrimAtPath("/World/Farm")
+        with _Sdf.ChangeBlock():
+            for site in layout.sites:
+                if faults.get(site.panel_id, pv.PanelState.HEALTHY) is not pv.PanelState.HEALTHY:
+                    continue
+                x, y, gz = site.position
+                rot = (
+                    (site.tilt_deg, 0.0, site.azimuth_deg)
+                    if tracker_rot is None
+                    else (0.0, tracker_rot, site.azimuth_deg)
+                )
+                spec = pv.author_panel_spec(
+                    farm_spec,
+                    pv.panel_path("", site.row, site.col).lstrip("/"),
+                    site.panel_id, site.row, site.col, site.geo_position,
+                )
+                # Same ops XformCommonAPI would author, in the same order, so the
+                # resulting prim is identical to the `create_panel` path's.
+                _Sdf.AttributeSpec(
+                    spec, "xformOp:translate", _Sdf.ValueTypeNames.Double3
+                ).default = Gf.Vec3d(x, y, gz + mount_h)
+                _Sdf.AttributeSpec(
+                    spec, "xformOp:rotateXYZ", _Sdf.ValueTypeNames.Float3
+                ).default = Gf.Vec3f(*(float(v) for v in rot))
+                _Sdf.AttributeSpec(
+                    spec, "xformOpOrder", _Sdf.ValueTypeNames.TokenArray
+                ).default = ["xformOp:translate", "xformOp:rotateXYZ"]
+                spec.referenceList.prependedItems.append(
+                    _Sdf.Reference(primPath=proto_for[(site.size_x_m or pw, site.size_y_m or pl)])
+                )
+                spec.instanceable = True
+                # The semantic label, authored as specs for the same reason. This is
+                # what `UsdSemantics.LabelsAPI` writes: the schema in apiSchemas plus
+                # the labels attribute in its instance namespace.
+                spec.SetInfo(
+                    "apiSchemas",
+                    _Sdf.TokenListOp.CreateExplicit(["SemanticsLabelsAPI:class"]),
+                )
+                _Sdf.AttributeSpec(
+                    spec, "semantics:labels:class", _Sdf.ValueTypeNames.TokenArray
+                ).default = ["panel", pv.PanelState.HEALTHY.value]
+                done_fast.add(site.panel_id)
+        n_instanced += len(done_fast)
+        if done_fast:
+            print(
+                f"  authored {len(done_fast):,} healthy panels via Sdf specs in one "
+                f"ChangeBlock ({len(proto_for)} prototype(s))",
+                flush=True,
+            )
+
     for site in layout.sites:
+        if site.panel_id in done_fast:
+            continue  # fully authored in the batched pass above
         path = pv.panel_path("/World/Farm", site.row, site.col)
         prim = pv.create_panel(
             stage, path, site.panel_id, site.row, site.col, site.geo_position
@@ -1316,19 +1404,14 @@ def build(farm_cfg: dict, out_path: str) -> str:
             prim.GetAttribute(pv.ATTR_STATE).Set(state.value)
             n_fault += 1
 
-        if state is pv.PanelState.HEALTHY and instancing:
-            # The overwhelming majority of a real plant is healthy and identical,
-            # so share one prototype (`IF-09`). Faulted panels fall through and
-            # are authored in full below — a hotspot recolours specific cells and
-            # soiling bakes a per-panel dust film, neither of which an instance
-            # can carry. At a 2% fault rate that is ~600 unique panels, not 30k.
-            prim.GetReferences().AddInternalReference(
-                _panel_prototype(stage, proto_cache, sx, sy, ph, n_ccol, n_crow, looks)
-            )
-            prim.SetInstanceable(True)
-            _label(prim, "panel", state.value)
-            n_instanced += 1
-            continue
+        # NOTE: there is deliberately no healthy-and-instanced branch here any more.
+        # The overwhelming majority of a real plant is healthy and identical, so it
+        # shares one prototype (`IF-09`) — and ALL of those are authored in the
+        # batched Sdf pass above, because doing it one prim at a time through
+        # UsdStage is what made the build quadratic. Anything reaching this loop is
+        # either faulted or on a stage with `render.instancing: false`. Keeping a
+        # second copy of the instancing logic here would be two implementations of
+        # one contract, free to drift.
 
         # --- unique geometry: faulted panels (and the procedural farm) --------
         geom = UsdGeom.Cube.Define(stage, path + "/Geom")

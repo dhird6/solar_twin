@@ -218,3 +218,126 @@ def test_panels_clear_the_ground_mesh_under_them(tmp_path, instancing):
             f"{prim.GetPath()} bottom z={lo[2]:.3f} is at or below the ground mesh "
             f"({gz:.3f}) — it is buried or z-fighting, not visible"
         )
+
+
+# --------------------------------------------------------------------------- #
+# The batched Sdf authoring path.
+#
+# `farm_builder` authors every healthy instanced panel as `Sdf.PrimSpec`s inside one
+# `Sdf.ChangeBlock`, because going through UsdStage per panel is QUADRATIC — every
+# `DefinePrim` recomposes the parent's children. Measured: n^2.39 end to end, which
+# put S05b's 679,616 modules at ~55 HOURS. Batched it is n^1.03 and the full plot
+# builds in 176 s.
+#
+# The cost is a SECOND authoring path for one contract, so these tests exist to stop
+# the two drifting. `pv.author_panel_spec` must stay in lockstep with
+# `pv.create_panel`.
+# --------------------------------------------------------------------------- #
+
+_PV_ATTRS = (
+    "pv:panel_id", "pv:grid_index", "pv:state", "pv:iv_yield",
+    "pv:rul_days", "pv:last_inspected", "pv:inspection_log", "pv:geo_position",
+)
+
+
+def test_author_panel_spec_matches_create_panel_field_for_field(tmp_path):
+    """The two authoring paths must produce indistinguishable prims — same
+    attributes, same VALUES, and same USD types.
+
+    Types are asserted explicitly because that is the failure that hides: a bare
+    tuple makes USD infer a double vector and silently mismatch the declared Int2 /
+    Double3, which reads back fine in Python and breaks a consumer that asks for the
+    declared type.
+    """
+    from pxr import Sdf
+
+    from solar_twin.schema import pv_module as pv
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Slow")
+    UsdGeom.Xform.Define(stage, "/Fast")
+    geo = (24.0915, 69.4205, 4.2)
+
+    pv.create_panel(stage, "/Slow/Panel_R01_C002", "R01-C002", 1, 2, geo)
+    layer = stage.GetRootLayer()
+    with Sdf.ChangeBlock():
+        pv.author_panel_spec(
+            layer.GetPrimAtPath("/Fast"), "Panel_R01_C002", "R01-C002", 1, 2, geo
+        )
+
+    slow = stage.GetPrimAtPath("/Slow/Panel_R01_C002")
+    fast = stage.GetPrimAtPath("/Fast/Panel_R01_C002")
+    assert fast and fast.IsValid(), "the Sdf spec did not compose into a prim"
+    assert fast.GetTypeName() == slow.GetTypeName() == "Xform"
+
+    for name in _PV_ATTRS:
+        a, b = slow.GetAttribute(name), fast.GetAttribute(name)
+        assert bool(a) == bool(b), f"{name}: present on one path only"
+        if not a:
+            continue
+        assert a.Get() == b.Get(), f"{name}: {a.Get()!r} != {b.Get()!r}"
+        assert a.GetTypeName() == b.GetTypeName(), (
+            f"{name}: type {a.GetTypeName()} != {b.GetTypeName()}"
+        )
+
+    # And no EXTRA pv: attribute on either side — a field added to one path only is
+    # the drift these tests exist to catch.
+    def _pv_names(prim):
+        return {a.GetName() for a in prim.GetAttributes() if a.GetName().startswith("pv:")}
+
+    assert _pv_names(slow) == _pv_names(fast)
+
+
+def test_batched_and_unbatched_builds_agree_on_every_panel(tmp_path):
+    """End to end: the shipped builder (batched) against one with instancing off.
+
+    The `pv:` contract, the fault assignment and the panel transforms must be
+    identical — only the GEOMETRY representation differs (shared prototype vs
+    per-panel cells), which is `IF-09` working as intended.
+    """
+    farm = dict(FARM, faults={"rate": 0.4, "states": ["hotspot", "soiled"]})
+    fast_path, slow_path = tmp_path / "fast.usd", tmp_path / "slow.usd"
+    farm_builder.build(dict(farm), str(fast_path))
+    farm_builder.build(dict(farm, render={"instancing": False}), str(slow_path))
+
+    fast = Usd.Stage.Open(str(fast_path))
+    slow = Usd.Stage.Open(str(slow_path))
+    fp = {p.GetName(): p for p in fast.GetPrimAtPath("/World/Farm").GetChildren()}
+    sp = {p.GetName(): p for p in slow.GetPrimAtPath("/World/Farm").GetChildren()}
+    assert set(fp) == set(sp), f"panel sets differ: {sorted(set(fp) ^ set(sp))}"
+    assert fp, "no panels built"
+
+    for name, a in fp.items():
+        b = sp[name]
+        for attr in _PV_ATTRS:
+            va, vb = a.GetAttribute(attr), b.GetAttribute(attr)
+            assert bool(va) == bool(vb), f"{name}/{attr} present on one stage only"
+            if va:
+                assert va.Get() == vb.Get(), f"{name}/{attr} differs"
+        # Transforms must match exactly — the batched path writes xformOp specs by
+        # hand instead of going through XformCommonAPI, so this is the assertion
+        # that the hand-authored ops mean the same thing.
+        ta = UsdGeom.XformCommonAPI(a).GetXformVectors(Usd.TimeCode.Default())
+        tb = UsdGeom.XformCommonAPI(b).GetXformVectors(Usd.TimeCode.Default())
+        for i, lbl in enumerate(("translate", "rotate", "scale", "pivot", "rotOrder")):
+            assert str(ta[i]) == str(tb[i]), f"{name} xform {lbl}: {ta[i]} != {tb[i]}"
+
+
+def test_batched_panels_are_instanced_labelled_and_carry_geometry(tmp_path):
+    """A healthy panel off the fast path must be a real instance of the prototype,
+    resolve renderable geometry, and keep its semantic label.
+
+    The label matters beyond tidiness: it is what Replicator and the confirm-drone
+    read, and the batched path writes `SemanticsLabelsAPI` as raw specs rather than
+    through `UsdSemantics.LabelsAPI`, so it could silently stop being applied.
+    """
+    stage = _build(tmp_path)  # FARM has faults rate 0.0 -> every panel is healthy
+    panels = _panels(stage)
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    for prim in panels:
+        assert prim.IsInstanceable(), f"{prim.GetPath()} is not instanceable"
+        assert prim.HasAuthoredReferences(), f"{prim.GetPath()} has no prototype ref"
+        assert not cache.ComputeWorldBound(prim).ComputeAlignedRange().IsEmpty()
+        labels = prim.GetAttribute("semantics:labels:class")
+        assert labels and labels.Get(), f"{prim.GetPath()} lost its semantic label"
+        assert "panel" in list(labels.Get())

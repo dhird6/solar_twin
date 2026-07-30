@@ -250,6 +250,61 @@ def create_panel(
     return prim
 
 
+def author_panel_spec(
+    parent_spec,
+    name: str,
+    pid: str,
+    row: int,
+    col: int,
+    geo_position: Optional[tuple[float, float, float]] = None,
+):
+    """Author a panel as an **Sdf PrimSpec** and return it — the bulk-build twin of
+    `create_panel`, stamping the identical ``pv:`` contract.
+
+    Why this exists, measured rather than assumed
+    ---------------------------------------------
+    `create_panel` goes through `UsdStage`, and every `UsdStage::DefinePrim` fires a
+    change notification that recomposes the parent's children. Authoring N panels
+    one at a time under one parent is therefore **quadratic**, and it was: profiled
+    on this build, plain `Xform.Define` + these attributes scaled **n^1.70** — before
+    any reference or instancing — and the whole `farm_builder` measured **n^2.39**,
+    which put the 679,616-panel S05b plot at ~55 hours.
+
+    Authoring `Sdf.PrimSpec`s straight into the layer inside one `Sdf.ChangeBlock`
+    defers composition to the end, so the stage composes once instead of N times.
+    Measured on the same profile: **n^1.03, and 60x faster at 32k panels** (1.63 s
+    against 98.28 s).
+
+    ⚠ `UsdStage::DefinePrim` CANNOT be used inside a `ChangeBlock` — the stage never
+    recomposes, so the prim is not there to return and it raises. That is why this
+    is an Sdf-level function and not a flag on `create_panel`.
+
+    ⚠ Keep this in lockstep with `create_panel`. Two authoring paths for one contract
+    is a real hazard; `tests/test_schema_usd.py` asserts the two produce identical
+    prims, which is the only thing making the duplication safe.
+    """
+    from pxr import Gf, Sdf  # noqa: PLC0415 — lazy Isaac import
+
+    spec = Sdf.PrimSpec(parent_spec, name, Sdf.SpecifierDef, "Xform")
+    # Same explicit Gf types as `create_panel`: a bare tuple makes USD infer double
+    # vectors and mismatch the declared Int2 (GfVec2i) / Double3 (GfVec3d) types.
+    for attr_name, type_name, value in (
+        (ATTR_PANEL_ID, Sdf.ValueTypeNames.String, pid),
+        (ATTR_GRID_INDEX, Sdf.ValueTypeNames.Int2, Gf.Vec2i(int(row), int(col))),
+        (ATTR_STATE, Sdf.ValueTypeNames.Token, PanelState.HEALTHY.value),
+        (ATTR_IV_YIELD, Sdf.ValueTypeNames.Float, 1.0),
+        (ATTR_RUL_DAYS, Sdf.ValueTypeNames.Int, -1),
+        (ATTR_LAST_INSPECTED, Sdf.ValueTypeNames.String, ""),
+        (ATTR_INSPECTION_LOG, Sdf.ValueTypeNames.StringArray, []),
+    ):
+        Sdf.AttributeSpec(spec, attr_name, type_name).default = value
+    if geo_position is not None:
+        Sdf.AttributeSpec(spec, ATTR_GEO_POSITION, Sdf.ValueTypeNames.Double3).default = (
+            Gf.Vec3d(*(float(v) for v in geo_position))
+        )
+    return spec
+
+
 def read_panel(prim) -> PanelRecord:
     """Read a panel prim's ``pv:`` attributes into a :class:`PanelRecord`."""
 

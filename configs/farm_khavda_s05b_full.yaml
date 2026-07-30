@@ -7,24 +7,25 @@
 #
 # Measured: 6,213 tables -> 679,616 modules over 4.84 x 1.97 km, ~680k prims.
 #
-# ⚠⚠ **THIS CONFIG DOES NOT BUILD IN PRACTICAL TIME, AND THE REASON IS NOT PRIM
-# COUNT.** `farm_builder` is superlinear in panel count — measured on this box, with
-# nothing else competing:
+# ⚠ IT BUILDS IN **176 s** — but only since the authoring path was fixed. Read this
+# before changing anything in that path:
+#
+# `farm_builder` USED to be superlinear, measured on this box:
 #
 #     200 tables /  22,064 panels ->   55 s
 #     500 tables /  55,328 panels ->  495 s     (2.5x the panels, 9x the time)
 #
-# That is **n^2.39**, which puts this plot at roughly **55 HOURS**. A first attempt
-# ran 1h16m and was killed. Scaling BLOCK-02's 85 s linearly predicts 32 min and is
-# wrong by a factor of ~100 — do not repeat that estimate.
+# That is n^2.39, which put this plot at ~55 HOURS; a first attempt ran 1h16m and was
+# killed. The cause was NOT prim count and NOT instancing: profiled, plain
+# `Xform.Define` plus the pv: attributes alone scaled n^1.70, because every
+# `UsdStage::DefinePrim` fires a change notification that recomposes the parent's
+# children. Healthy panels are now authored as `Sdf.PrimSpec`s inside ONE
+# `Sdf.ChangeBlock` (see `schema/pv_module.author_panel_spec`), so the stage composes
+# once instead of 679,616 times: n^1.03, and the same subsets now take 6.9 s / 14.0 s.
 #
-# Prime suspect is `prim.SetInstanceable(True)` re-resolving the instance master as
-# the instance set grows. UNVERIFIED: profile it before attempting this again.
-#
-# Until that is fixed, the largest honest "whole plant" is a COMPLETE DC BLOCK:
-# `configs/farm_khavda_block02.yaml` builds all 273 tables / 30,016 modules in
-# **96.75 s**, faults included. Use that for a plant video. The measured ceiling
-# here is ~110k panels in ~43 min.
+# ⚠ Anything that reverts to per-panel UsdStage authoring silently reintroduces the
+# quadratic. `tests/test_panel_visibility_usd.py` guards the two paths' equivalence,
+# not their speed — so a regression here fails as a TIMEOUT, not as a red test.
 #
 # ⚠ `faults.rate` IS DELIBERATELY 0.0, AND THAT IS WHAT MAKES THIS BUILDABLE.
 # A healthy panel is ONE instanced prim; a faulted one is ~75, because a hotspot
@@ -37,6 +38,12 @@
 # false-fault rate are both undefined here — do not quote either from it. Use
 # `configs/farm_khavda_s05b.yaml` with `--subset N` for anything measured
 # (`NFR-07`). This file is the wide shot, and nothing more.
+#
+# ⚠ And raising the rate is still NOT free, for a different reason than the build
+# time: faulted panels take the per-prim path (unique cell geometry + dust film), so
+# they are both slower to author AND ~75 prims each. At 2% that is 13,592 faulted
+# panels -> ~1M extra prims. The batched fix makes the HEALTHY bulk linear; it does
+# not make a fault-heavy 680k-panel plot cheap.
 
 seed: 20260727
 
