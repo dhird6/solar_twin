@@ -29,6 +29,47 @@ def test_create_read_roundtrip():
     assert rec.geo_position == (33.4, -112.0, 331.0)
 
 
+def test_grid_id_roundtrips_through_usd():
+    """`grid:id` is a contract addition and gets the same round-trip guard `pv:`
+    got. Written as a side store during sim it would violate USD-as-source-of-truth,
+    so it has to survive the prim."""
+    stage = _stage()
+    prim = pv.create_panel(
+        stage, "/World/Farm/P", "R12-C047", 12, 47, cell_id="G-0012"
+    )
+    assert prim.GetAttribute(pv.ATTR_GRID_ID).Get() == "G-0012"
+    assert pv.read_panel(prim).cell_id == "G-0012"
+
+
+def test_grid_id_is_absent_when_not_requested():
+    """Omitting it must author NO attribute, so a stage built without the grid
+    layer is byte-identical to one built before the namespace existed."""
+    prim = pv.create_panel(_stage(), "/World/Farm/P", "R12-C047", 12, 47)
+    assert not prim.HasAttribute(pv.ATTR_GRID_ID)
+    assert pv.read_panel(prim).cell_id == ""
+
+
+def test_grid_id_matches_across_both_authoring_paths():
+    """`author_panel_spec` is the bulk path that actually builds 30k panels; the
+    two paths must stay in lockstep on this attribute like every other."""
+    from pxr import Sdf
+
+    stage = _stage()
+    UsdGeom.Xform.Define(stage, "/World/Farm")
+    with Sdf.ChangeBlock():
+        pv.author_panel_spec(
+            stage.GetRootLayer().GetPrimAtPath("/World/Farm"),
+            "P", "R12-C047", 12, 47, None, cell_id="G-0012",
+        )
+    fast = stage.GetPrimAtPath("/World/Farm/P")
+    slow = pv.create_panel(stage, "/World/Farm/Q", "R12-C047", 12, 47, cell_id="G-0012")
+    assert (
+        fast.GetAttribute(pv.ATTR_GRID_ID).Get()
+        == slow.GetAttribute(pv.ATTR_GRID_ID).Get()
+        == "G-0012"
+    )
+
+
 def test_grid_index_is_vec2i_not_double():
     st = _stage()
     prim = pv.create_panel(st, "/World/P", "R00-C000", 3, 9)
