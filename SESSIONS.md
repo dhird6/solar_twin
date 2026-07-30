@@ -131,11 +131,44 @@ in its message and should be read with this note beside it. The measured noise f
 ~1.0 point (control R243 reads 17.0% in one capture and 16.0% in another of the same
 nominal condition), and the original claimed shift was 2.4 points.
 
-**⇢ The fix, and it is now the top of the queue:** give `verify_shade` a mask that cannot
-be fooled by sky-lit ground — a brightness floor, a saturation/hue test, or best, a mask
-derived from the panel geometry the builder already knows. Then re-derive every row of
-this table under the fixed rule. Until then the only defensible statement about SC-11's
-stimulus is that the legacy +12.5 was measured under a mask that was doing real work.
+### 3b. ⭐ RESOLVED, same session: the mask is fixed and the stimulus re-derived
+
+Swept the blue-over-red threshold across all three stages' saved frames. The rule is
+**1.15 → 2.0**, and it now lives in `kpi/glass.py` which both tools *import* — the
+"these two must not disagree" comment became a test.
+
+| | legacy sky | Preetham sky (correctly-lit ground) |
+|---|---|---|
+| mask share at `blue > 1.15 x red` | ~24% | **99.2 / 99.5 / 99.4 / 99.3%** ✗ |
+| mask share at `blue > 2.00 x red` | ~22% | **23.2 / 24.9 / 32.2 / 33.9%** ✓ |
+
+**Re-derived differentials, and the artifact vanishes:**
+
+| SC-11 stage | old rule (1.15) | **fixed rule (2.0)** |
+|---|---|---|
+| legacy sky | +13.5 | **+13.8** |
+| physical sky, **PBR on** (black ground) | +10.1 | **+10.9** |
+| physical sky, **PBR off** | +23.7 ← artifact | **+12.6** |
+
+⭐ **So SC-11's stimulus on the current twin is INTACT at +12.6 points**, close to the
+legacy stage's +13.8. The +23.7 that briefly looked like a doubling was *entirely* mask
+artifact. The black ground does suppress the differential slightly (+10.9 vs +12.6) —
+a real but small effect, and **not** the mechanism I claimed twice.
+
+**Why 2.0 and not something between.** The PV cell's own diffuse is `(0.02, 0.04, 0.13)`,
+i.e. blue/red ≈ 6.5, so 2.0 has enormous margin on the glass side. On the other side the
+shoulder is real, not a cliff — **1.8 still admitted 39–45% of some frames** — so the
+threshold sits past the shoulder rather than on it. `tests/test_glass_mask.py` models
+shadowed sand as the ground albedo times the *measured* SC-11 zenith `(70, 105, 168)`,
+gets blue/red ≈ 1.5, and asserts that fools 1.15 and not 2.0 — the regression is
+executable rather than described.
+
+⚠ **Numbers measured under the old rule are not comparable to numbers measured under this
+one.** Anything quoted from before 2026-07-31 carries the 1.15 rule.
+
+⚠ The KPI-03 re-run in flight was launched with the OLD rule's stimulus check, so its
+`STIMULUS` provenance is stale even though its verdicts are unaffected (the mask is a
+measurement tool, not a render input). Re-state its stimulus as **+12.6** when reporting.
 
 **What survives, and it is the important part:** a KPI is only quotable against the stage
 *and the instrument* it was measured with. The stimulus check is itself an instrument, and
