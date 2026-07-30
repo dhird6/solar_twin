@@ -15,7 +15,7 @@ diagnosis is wrong and cropping would waste a day.
 So this reports, per panel and per pass, the **glass share** of the frame and what
 the remaining pixels look like, and saves the PNG so the frame can simply be
 looked at. Glass is selected the same way `tools/verify_shade.py` does it —
-`blue > 1.15 x red`, which PV cells have and the tan desert floor does not — so the
+`blue > 2.0 x red`, which PV cells have and the tan desert floor does not — so the
 two tools cannot disagree about what counts as a panel.
 
     ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
@@ -36,7 +36,10 @@ import sys
 from pathlib import Path
 
 #: Same constant as `verify_shade.py`, deliberately — one definition of "glass".
-GLASS_BLUE_OVER_RED = 1.15
+# ⚠ Imported, not redefined: this rule must be identical in every tool that
+# scores glass, and 1.15 was measurably broken by a physically-based sky
+# (shadowed sand is sky-lit, so it goes blue). See kpi/glass.py.
+from solar_twin.kpi.glass import GLASS_BLUE_OVER_RED  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -14,7 +14,7 @@ So this does two things the run itself cannot:
 1. Captures the **exact frames at the exact waypoints** the mission will send to
    the VLM (same `SimRuntime`, same standoffs, same camera).
 2. Scores only **PV-glass pixels** — selected by the cell's blue cast
-   (`blue > 1.15 x red`), which the tan desert floor and grey hardware do not
+   (`blue > 2.0 x red`), which the tan desert floor and grey hardware do not
    have — so ground, sky and structure cannot be mistaken for a shaded module.
    Whole-frame statistics are also printed, precisely so the two can be compared
    and the trap stays visible rather than being quietly avoided.
@@ -36,7 +36,10 @@ import sys
 from pathlib import Path
 
 #: PV cells read blue relative to the desert floor; this ratio isolates glass.
-GLASS_BLUE_OVER_RED = 1.15
+# ⚠ Imported, not redefined: this rule must be identical in every tool that
+# scores glass, and 1.15 was measurably broken by a physically-based sky
+# (shadowed sand is sky-lit, so it goes blue). See kpi/glass.py.
+from solar_twin.kpi.glass import GLASS_BLUE_OVER_RED  # noqa: E402
 #: A pixel is "dark" below this fraction of the *masked* bright reference, so the
 #: threshold follows the panel's own illumination instead of the frame's.
 DARK_FRACTION_OF_BRIGHT = 0.55
