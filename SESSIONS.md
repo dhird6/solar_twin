@@ -18,6 +18,155 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 ---
 
 
+## 2026-07-31 — Session 17: ran the render gate Session 16 declared, and it failed — three bugs, and a KPI that landed
+
+**The one-line version: Session 16's PBR/sky work was committed with its own render
+gate unrun. Running it found three real defects, one of which meant the farm builder
+could not build ANY stage at all. The Preetham sky survives; the textured-PBR layer is
+now OFF by default. And the KPI-03 n=5 run that Session 16 left "still open" had in fact
+finished — the answer is 0.00 as a range.**
+
+Session 16 ended with: "⚠⚠ NOT YET VERIFIED ON THE GPU, and therefore NOT COMMITTED …
+10c's lesson is precisely that a sky can look right and be wrong, so the render gate
+stands." It was then committed anyway (`1fe0eb6`, `6905578`) and the gate was never run.
+This session ran it. **3 for 3: every attempt to exercise the committed code found a
+defect the 654-test green suite could not see.**
+
+### 1. ⭐ KPI-03 landed: 0.00 holds as a range (N=5), not a point estimate
+
+The n=5 job finished at **20:04 on Jul 30**, after Session 16's entry was written.
+`runs/20260730T145823/` — 560 panels × 5 repeats = 2,800 verdicts, live Cosmos Reason.
+
+| | result |
+|---|---|
+| `false_fault_rate` (**KPI-03**) | **0.000** — min 0.0, median 0.0, **mean 0.0, stdev 0.0**, max 0.0 |
+| `false_alarm_rate` / `abstention_rate` | 0.000 / 0.000, **0 abstentions** |
+| `detection_rate` | 1.00 |
+| per-panel verdict agreement across repeats | **1.0** (560/560) |
+| gates | **PASS**, 3 declared, basis **worst-of-5** |
+
+So the answer to Session 16's open question is **yes** — it holds, with zero spread.
+
+⚠ **The caveat that was sitting unread in `variance.json`.** Frames are **not
+bit-reproducible: 560/560 differ between repeats**, and **1 of 560 panels
+(`R258-C000`) shows a MATERIALLY different picture** — `variance.json`'s own verdict
+says "those panels are not comparing like with like". The verdict agreed anyway, so it
+does not move the 0.00; but a false-fault rate quoted from this run must carry it,
+because for that one panel the model was not shown the same thing twice.
+
+⚠ **And this number is now stage-specific.** It was measured on the **legacy-ramp-sky**
+stage (the run started 14:58; the sky commits landed 17:02). §3 below shows the sky
+change moves the stimulus, so **KPI-03 must be re-measured on the current twin** before
+being quoted against it. That re-measurement is running.
+
+### 2. ⚠⚠ The farm builder could not build a single stage
+
+First attempt to build SC-11 with the new code:
+
+    AttributeError: 'str' object has no attribute 'write_all'
+
+`build()` assigned the generated sky texture's path to a local `tex` — which is the
+module alias from `from solar_twin.world import textures as tex` at line 37. The sky
+lines worked; 27 lines later `tex.write_all(...)` got a `str` and the build died before
+authoring a single panel. **Every PBR-enabled build was broken from the moment it was
+committed.** Fixed in `3a8c5e2`.
+
+⭐ **Guarded as a class, not a typo.** A new AST test walks every module, collects the
+names its top-level imports *bind* (alias-aware — `import x as y` binds `y`), and fails
+if a function body rebinds one, skipping names declared `global`. **Verified
+non-vacuous** against the pre-fix file: it reports exactly `farm_builder.py:1370 'tex'
+shadows the import at line 37`, and nothing else in the package. It is a pure property
+of the source, so it guards the Isaac-bound half **without a GPU** — which is the whole
+problem this session is about.
+
+### 3. The sky is GOOD — and it still moved the KPI stimulus
+
+`tools/verify_shade.py`, both scenarios, on freshly built stages (new `--out` stems, so
+nothing a running job had open was clobbered):
+
+| | shaded rows (% dark glass) | control | differential |
+|---|---|---|---|
+| **SC-11**, Session 16, legacy ramp | 22.3 / 29.7 / 23.5 / 30.8 | 14.1 | **+12.5 pts** |
+| **SC-11**, Preetham sky + PBR | 23.0 / 30.2 / 23.7 / 31.6 | **17.0** | **+10.1 pts** |
+| **SC-12**, Preetham sky + PBR | 39.1 / 45.9 / 38.9 / 47.3 | 17.3 | **+25.5 pts** |
+
+The stimulus is intact on both — SC-12 emphatically so. But note *how* SC-11 changed:
+**every shaded row got slightly darker, and the unshaded control darkened more**
+(14.1 → 17.0), compressing the differential by ~19%.
+
+⭐ **This is the Session 16 invariant leaking, and it is worth stating precisely.** The
+physical sky was normalised to hold the legacy ramp's **solid-angle-weighted hemisphere
+mean** — and it did, to within 8-bit quantisation. But holding a *mean* does not hold a
+*distribution*: a Preetham sky concentrates radiance in the aureole and darkens the
+zenith, so how much light a given panel receives depends on which part of the sky it
+sees. "Fill held constant" is true of the hemisphere and false of any individual panel.
+**A KPI measured under one sky does not transfer to another sky for free.** ⚠ Part of
+the SC-11 shift is *also* §4's black ground — the two were measured together, and
+`--pbr off` is the arm that separates them.
+
+### 4. ⚠⚠ The textured-PBR layer renders the desert BLACK — now off by default
+
+The gate Session 16 named for itself ("ground R−B before/after") is the one that failed.
+Non-glass (ground) mean RGB on SC-11's control panel, same panel, same camera:
+
+| | mean RGB | R−B | |
+|---|---|---|---|
+| legacy, no PBR | (77.6, 68.0, 54.1) | **+23.5** | warm/sandy ✓ |
+| Preetham + PBR | (1.1, 1.2, 1.2) | **−0.1** | achromatic, near-black ✗ |
+
+A ~70× brightness collapse and a total loss of hue. **R−B is the exact quantity Session
+10c used to catch an emissive dome lighting the desert floor blue**, so this inverts a
+standing invariant. And a black ground bounces no light onto the modules, which is the
+mechanism behind §3's control panel darkening — **one bug, two symptoms, neither of
+which required anyone to touch a KPI.**
+
+**Bisected** with a new `--pbr {on,off,albedo,primvar}` flag, added so the layer can be
+A/B'd without editing a config:
+
+| mode | what is bound | R−B | |
+|---|---|---|---|
+| `off` | flat materials | **+24.1** | warm ✓ — **the sky alone is fine** |
+| `albedo` | albedo+roughness, **no normal map** | −0.1 | black ✗ |
+| `primvar` | vertex-colour diffuse, **no albedo** | −0.0 | black ✗ |
+| `on` | everything | −0.1 | black ✗ |
+
+⭐ **`albedo` and `primvar` render IDENTICALLY** — 1.2 and 29.6 in both, on two
+completely different diffuse sources. Identical output from different inputs means the
+diffuse input is **ignored outright**, not mis-sampled. So it is neither the normal map
+nor the diffuse source.
+
+What was **eliminated by measurement**, not by argument:
+- **The generated maps are correct.** Ground albedo mean RGB (76.49, 63.75, 48.44),
+  **R−B +28.04** — precisely the figure Session 16 quoted. The texture-generation unit
+  tests were right; they just never tested the *binding*.
+- **Every texture path resolves to a file that exists**, checked through the USD asset
+  resolver rather than assumed (a relative-path theory, tested and refuted).
+- The ground mesh really does carry both an `st` primvar and a `displayColor` primvar,
+  vertex-interpolated.
+
+⚠ **Root cause still OPEN.** What is closed is that it cannot ship: `pbr.enabled` now
+defaults to **False**, with a source-level test asserting it (scoped to the pbr gate, so
+the sky's own correct `.get("enabled", True)` is not caught by it). Re-enabling requires
+a render measurement putting ground R−B back above +20 — not a re-read of the unit tests.
+
+### 5. ⚠ 42 tests had never run — and one of them was failing
+
+`tests/test_schema_usd.py` and friends are `pytest.importorskip("pxr")`. **pxr is absent
+from both the aarch64 system Python and the Isaac-free CI job**, so those tests SKIP
+everywhere the suite normally runs. Under Isaac's bundled Python: **693 passed, 1
+failed.** The green 654-test suite was structurally incapable of seeing it.
+
+The failure: `test_grid_id_is_absent_when_not_requested` passed `_stage()` inline, so the
+only reference to the in-memory stage died with the call expression, USD collected the
+layer, and the assertion touched a dead prim (`RuntimeError: Accessed invalid expired
+'Xform' prim`). Every sibling test in the file binds the stage to a local; this one was
+the outlier. Fixed in `b3131fb`.
+
+**⇢ The standing lesson from §2 + §4 + §5 together:** this codebase's Isaac-free
+discipline is a genuine strength, but it has a matching blind spot — **a green suite here
+is evidence about the pure half only.** Three defects, three different mechanisms, one
+shared cause: nobody ran the thing.
+
 ## 2026-07-30 — Session 16: KPI-03 as a range, PBR split along the fault-signature risk line, and suspicion-first dispatch
 
 **⚠ NOTHING IN THIS ENTRY IS COMMITTED YET.** The KPI-03 n=5 run still holds the GPU, and
