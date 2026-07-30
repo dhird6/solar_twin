@@ -91,8 +91,29 @@ def test_both_tools_import_the_same_definition():
     carry their own copy with a note saying they must agree."""
     from pathlib import Path
 
+    import ast
+    from pathlib import Path
+
     root = Path(__file__).resolve().parents[1]
     for name in ("verify_shade.py", "inspect_frame.py"):
-        src = (root / "tools" / name).read_text(encoding="utf-8")
-        assert "from solar_twin.kpi.glass import GLASS_BLUE_OVER_RED" in src, name
-        assert "GLASS_BLUE_OVER_RED = " not in src, f"{name} redefines the rule"
+        path = root / "tools" / name
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "solar_twin.kpi.glass"
+            for alias in node.names
+        }
+        assert "GLASS_BLUE_OVER_RED" in imported, f"{name} does not import the rule"
+
+        # ...and does not then shadow it with a local copy, which is what both
+        # files used to carry.
+        assigned = {
+            t.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        assert "GLASS_BLUE_OVER_RED" not in assigned, f"{name} redefines the rule"
