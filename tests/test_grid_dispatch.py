@@ -343,10 +343,38 @@ class TestRoutePlan:
 
     def test_requesting_cuopt_explicitly_refuses_to_fall_back(self):
         cells, recs, targets = self._cells()
-        with pytest.raises(RuntimeError, match="false provenance"):
+        with pytest.raises(NotImplementedError, match="no cuOpt route path"):
             gd.plan_route(
                 cells, gd._centroids_from_targets(targets, recs), solver="cuopt"
             )
+
+    def test_installing_cuopt_cannot_relabel_a_greedy_plan(self):
+        """⚠ The regression this replaced. `plan_route` used to probe `import cuopt`
+        and, on success, stamp the plan `solver="cuopt"` -- while `_greedy_route`
+        still computed it unconditionally.
+
+        The bug's trigger was INSTALLING A DEPENDENCY, not changing code, so it
+        would have arrived silently the day cuOpt landed on the Spark. Simulated
+        here by injecting a stub module: the provenance must stay `greedy-stub`,
+        and `auto` must not become `cuopt` just because the import resolves.
+        """
+        import sys
+        import types
+
+        cells, recs, targets = self._cells()
+        cen = gd._centroids_from_targets(targets, recs)
+        baseline = gd.plan_route(cells, cen, solver="auto")
+
+        sys.modules["cuopt"] = types.ModuleType("cuopt")
+        try:
+            with_stub = gd.plan_route(cells, cen, solver="auto")
+        finally:
+            del sys.modules["cuopt"]
+
+        assert with_stub.solver == "greedy-stub"
+        # ...and it really is the same route, i.e. the label would have been a lie.
+        assert with_stub.cell_order == baseline.cell_order
+        assert with_stub.travel_m == pytest.approx(baseline.travel_m)
 
     def test_kpi09_is_suspicion_per_metre_not_per_battery_hour(self):
         cells, recs, targets = self._cells()

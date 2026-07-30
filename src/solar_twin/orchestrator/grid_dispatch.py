@@ -143,19 +143,25 @@ def plan_route(
             f"escalation_arm={escalation_arm!r} not in {ESCALATION_ARMS}. Both arms "
             "exist because the ordering is an assumption to measure, not a default."
         )
+    # ⚠⚠ There is NO cuOpt code path in this module — `_greedy_route` below runs
+    # unconditionally. This used to probe `import cuopt` and, on success, stamp the
+    # plan `solver="cuopt"` while still returning the greedy route. Verified by
+    # injecting a stub module: the plan came back labelled `cuopt` with a
+    # byte-identical greedy order and travel distance.
+    #
+    # That is exactly the false provenance the refusal below exists to prevent, and
+    # it would have started happening silently the day cuOpt was installed — the
+    # failure mode arrives with the dependency, not with a code change. So the label
+    # is now a constant, and asking for cuOpt raises whether or not it imports:
+    # what is missing is the INTEGRATION, not the package.
     used = "greedy-stub"
-    if solver in ("auto", "cuopt"):
-        try:  # pragma: no cover — cuOpt is not installed on this box
-            import cuopt  # noqa: F401
-
-            used = "cuopt"
-        except ImportError:
-            if solver == "cuopt":
-                raise RuntimeError(
-                    "solver='cuopt' requested but cuOpt is not installed. Refusing "
-                    "to silently fall back — a greedy result labelled cuopt would "
-                    "be a false provenance."
-                ) from None
+    if solver == "cuopt":
+        raise NotImplementedError(
+            "solver='cuopt' requested, but this module has no cuOpt route path — "
+            "`_greedy_route` is the only implementation. Refusing to return a "
+            "greedy result labelled cuopt. Installing the package will not change "
+            "this; wiring a real solver here will."
+        )
     order, travel, dropped = _greedy_route(cells, centroids, start, max_cells)
     by_id = {c.cell_id: c for c in cells}
     return RoutePlan(
