@@ -14,6 +14,8 @@ from solar_twin.orchestrator.mission import (
     Fleet,
     InspectionTarget,
     Mission,
+    MissionResult,
+    PanelResult,
 )
 from solar_twin.perception.ground_truth import GroundTruthPerception
 from solar_twin.schema.pv_module import PanelRecord, PanelState, panel_id
@@ -181,3 +183,96 @@ def test_on_phase_is_optional():
     backend = FakeSimBackend(panels)
     mission = Mission(backend, backend, GroundTruthPerception(), FLEET)
     assert mission.run(_targets(panels)).panels_inspected == 1
+
+
+class TestDetectionRateFlattersAndRecallDoesNot:
+    """⚠⚠ `detection_rate` (KPI-01) is ACCURACY over EVERY panel, healthy included.
+
+    Measured over 20 archived Cosmos Reason runs on 2026-07-31: `nominal_calm_vlm`
+    is 82.5% healthy and gates on `detection_rate_min: 0.80`, so a model that calls
+    every panel healthy scores 0.825 and PASSES while detecting nothing. The null
+    model clears that gate in 13 of the 20 runs, and in 3 of them it scores at or
+    above what the real model managed.
+
+    These pin the metrics that cannot be gamed that way, and pin the null baseline
+    so a gate can always be compared against it.
+    """
+
+    @staticmethod
+    def _res(pairs):
+        """pairs = [(injected, detected), ...] -> a MissionResult."""
+        return MissionResult(
+            results=[
+                PanelResult(
+                    panel_id=f"R00-C{i:03d}",
+                    injected_state=inj,
+                    screen_status="suspect" if det != "healthy" else "clean",
+                    escalated=det != "healthy",
+                    detected_state=det,
+                    note="",
+                )
+                for i, (inj, det) in enumerate(pairs)
+            ]
+        )
+
+    def test_a_null_model_passes_the_gate_that_detection_rate_defines(self):
+        """The finding, as an executable demonstration rather than a claim.
+
+        33 healthy + 7 faulted, every panel called healthy: nothing is detected,
+        yet `detection_rate` is 0.825 and clears the scenario's 0.80 gate.
+        """
+        pairs = [("healthy", "healthy")] * 33 + [("soiled", "healthy")] * 7
+        r = self._res(pairs)
+
+        assert r.detection_rate == pytest.approx(0.825)
+        assert r.detection_rate > 0.80  # the real gate in nominal_calm_vlm.yaml
+
+        # ...and the honest metrics correctly report that it found nothing.
+        assert r.fault_recall == 0.0
+        assert r.fault_flagged_rate == 0.0
+        # The null baseline equals the score, which is the tell.
+        assert r.healthy_fraction == pytest.approx(r.detection_rate)
+
+    def test_recall_denominator_excludes_healthy_panels(self):
+        """Healthy panels must not be able to inflate recall — that is the whole
+        difference from `detection_rate`."""
+        pairs = [("healthy", "healthy")] * 90 + [
+            ("hotspot", "hotspot"),
+            ("hotspot", "healthy"),
+        ]
+        r = self._res(pairs)
+        assert r.detection_rate == pytest.approx(91 / 92)  # flattering
+        assert r.fault_recall == pytest.approx(0.5)  # honest
+
+    def test_flagged_and_named_separate_sensitivity_from_discrimination(self):
+        """A fault seen but MISLABELLED is flagged and not named. The gap between
+        the two is taxonomy confusion, and it has a different fix from a miss."""
+        pairs = [
+            ("soiled", "hotspot"),  # noticed, wrong name
+            ("soiled", "soiled"),  # noticed, right name
+            ("hotspot", "healthy"),  # missed outright
+            ("hotspot", "healthy"),  # missed outright
+        ]
+        r = self._res(pairs)
+        assert r.fault_flagged_rate == pytest.approx(0.5)  # 2 of 4 noticed
+        assert r.fault_recall == pytest.approx(0.25)  # 1 of 4 named
+
+    def test_recall_by_state_shows_a_split_the_pooled_number_hides(self):
+        """The measured shape: soiling is caught, hotspots are not. A pooled
+        recall of 0.5 here would report neither."""
+        pairs = [("soiled", "soiled")] * 4 + [("hotspot", "healthy")] * 4
+        by = self._res(pairs).recall_by_state()
+
+        assert by["soiled"]["recall"] == pytest.approx(1.0)
+        assert by["hotspot"]["recall"] == pytest.approx(0.0)
+        assert by["soiled"]["n"] == 4 and by["hotspot"]["n"] == 4
+
+    def test_a_run_with_no_seeded_faults_reports_no_recall(self):
+        """A scenario with nothing to find has no recall to report -- it must not
+        read as a perfect score. `khavda_selfshade` is exactly this: all-healthy
+        by design, and it reported detection_rate 1.00 across all 5 repeats."""
+        r = self._res([("healthy", "healthy")] * 10)
+        assert r.detection_rate == pytest.approx(1.0)  # ...which means nothing here
+        assert r.fault_recall == 0.0
+        assert r.fault_flagged_rate == 0.0
+        assert r.recall_by_state() == {}

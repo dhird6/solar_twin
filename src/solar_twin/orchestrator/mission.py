@@ -105,10 +105,96 @@ class MissionResult:
 
     @property
     def detection_rate(self) -> float:
-        """Fraction of panels whose detected state matches ground truth."""
+        """Fraction of panels whose detected state matches ground truth.
+
+        ⚠⚠ **This is ACCURACY, not recall, and its denominator is EVERY panel —
+        healthy ones included.** On a scenario that is mostly healthy it is
+        dominated by healthy panels being correctly left alone, so it flatters any
+        model that under-reports. Measured on the archived runs (2026-07-31):
+
+            `nominal_calm_vlm` is 82.5% healthy, and its gate is
+            `detection_rate_min: 0.80`. A model that calls EVERY panel healthy
+            therefore scores **0.825 and passes the gate** while detecting nothing.
+            Across 20 archived VLM runs the null model clears that gate in **13**,
+            and in **3** it scores at or above what the real model managed.
+
+        Kept exactly as-is because it is on record in every run ever written and
+        redefining it would make those numbers non-comparable — the same reasoning
+        that locked `false_fault_rate`. Use `fault_recall` / `fault_flagged_rate`
+        below for "did it actually find the faults", and quote the null baseline
+        (`healthy_fraction`) beside this number whenever it is used as a gate.
+        """
         if not self.results:
             return 0.0
         return sum(1 for r in self.results if r.correct) / len(self.results)
+
+    @property
+    def healthy_fraction(self) -> float:
+        """The null baseline: what `detection_rate` scores by calling everything
+        healthy. A `detection_rate` at or below this is worth nothing."""
+        if not self.results:
+            return 0.0
+        healthy = sum(1 for r in self.results if r.injected_state == "healthy")
+        return healthy / len(self.results)
+
+    @property
+    def fault_recall(self) -> float:
+        """Fraction of genuinely faulted panels whose fault was NAMED correctly.
+
+        The strict reading of KPI-01 and the one a maintenance loop needs, because
+        the work order depends on which fault it is. Denominator is faulted panels
+        only, so healthy panels cannot inflate it. Returns 0.0 when the scenario
+        seeds no faults — a run with nothing to find has no recall to report.
+        """
+        faulted = [r for r in self.results if r.injected_state != "healthy"]
+        if not faulted:
+            return 0.0
+        return sum(1 for r in faulted if r.correct) / len(faulted)
+
+    @property
+    def fault_flagged_rate(self) -> float:
+        """Fraction of faulted panels flagged as faulty AT ALL, whatever the label.
+
+        The lenient reading: "did we notice something was wrong here". Reported
+        beside `fault_recall` because the gap between them is pure taxonomy
+        confusion, and the two have completely different fixes — a low
+        `fault_flagged_rate` is a sensitivity problem, while a low `fault_recall`
+        with a high `fault_flagged_rate` is a discrimination problem.
+
+        Measured pooled over the archived VLM runs (2026-07-31): soiled panels are
+        flagged 0.984 of the time but named right only 0.516; hotspots are flagged
+        0.621 and named right 0.379. Injected soiling was called "hotspot" 29 times
+        out of 62 — so the taxonomy, not the sensitivity, is the weaker half.
+        """
+        faulted = [r for r in self.results if r.injected_state != "healthy"]
+        if not faulted:
+            return 0.0
+        return sum(1 for r in faulted if r.detected_state != "healthy") / len(faulted)
+
+    def recall_by_state(self) -> dict[str, dict[str, float]]:
+        """Per-injected-state breakdown, because the pooled number hides the split.
+
+        Returns ``{state: {"n", "named", "flagged", "recall", "flagged_rate"}}``.
+        Measured: a pooled 0.875 `detection_rate` on `nominal_calm_vlm` sat on top
+        of hotspot recall near 0.4 — the aggregate could not show that, and the
+        fix (framing/standoff for hotspots) is state-specific.
+        """
+        out: dict[str, dict[str, float]] = {}
+        for r in self.results:
+            if r.injected_state == "healthy":
+                continue
+            s = out.setdefault(
+                r.injected_state,
+                {"n": 0.0, "named": 0.0, "flagged": 0.0, "recall": 0.0,
+                 "flagged_rate": 0.0},
+            )
+            s["n"] += 1
+            s["named"] += 1 if r.correct else 0
+            s["flagged"] += 1 if r.detected_state != "healthy" else 0
+        for s in out.values():
+            s["recall"] = s["named"] / s["n"]
+            s["flagged_rate"] = s["flagged"] / s["n"]
+        return out
 
     @property
     def false_fault_rate(self) -> float:

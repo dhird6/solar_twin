@@ -468,6 +468,15 @@ def run(
                 "panels_inspected": result.panels_inspected,
                 "faults_detected": result.faults_detected,
                 "detection_rate": result.detection_rate,
+                # ⚠ `detection_rate` is ACCURACY over every panel, so on a mostly
+                # healthy scenario it flatters a model that finds nothing. These
+                # four make that impossible to miss in a run record: the null
+                # baseline it must beat, recall on faulted panels only (named and
+                # flagged), and the per-state split the pooled number hides.
+                "healthy_fraction": result.healthy_fraction,
+                "fault_recall": result.fault_recall,
+                "fault_flagged_rate": result.fault_flagged_rate,
+                "recall_by_state": result.recall_by_state(),
                 "false_fault_rate": result.false_fault_rate,  # KPI-03
                 # KPI-03's two halves, reported so "called a fault that isn't
                 # there" and "we lost the answer" stop being one number with

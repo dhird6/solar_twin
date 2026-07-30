@@ -91,32 +91,57 @@ nothing a running job had open was clobbered):
 | **SC-11**, Preetham sky, **PBR OFF** ⭐ *the real one* | 78.9 / 74.6 / 72.2 / 75.3 | **51.5** | **+23.7 pts** |
 | **SC-12**, Preetham sky, PBR ON (black ground) | 39.1 / 45.9 / 38.9 / 47.3 | 17.3 | **+25.5 pts** |
 
-⚠⚠ **CORRECTION to my own first reading.** I initially reported the SC-11 differential as
-*compressed* (+12.5 → +10.1) and attributed it to the sky redistributing radiance. Running
-the `--pbr off` arm — the whole point of the bisect — shows that was **wrong**. On the
-correctly-lit stage the differential is **+23.7 points, nearly double the legacy figure**,
-and every absolute number roughly triples (control 14.1 → 51.5%).
+⚠⚠⚠ **RETRACTED — the `+23.7` row must not be quoted, and neither may the two causal
+stories I built on it.** An adversarial re-check of my own numbers caught this, and I
+reproduced it independently before retracting.
 
-**The mechanism, and it is the opposite of what I first said.** `verify_shade` scores a
-pixel dark relative to *that panel's own* bright reference, so it measures **contrast
-within the glass**, not absolute brightness. A warm, bright desert floor bounces light up
-onto the modules unevenly, which *creates* that contrast. The black ground removed the
-bounce, flattened the illumination, and therefore **suppressed the measured dark fraction
-on shaded and control panels alike** — which is why the +10.1 arm looked like a weakened
-stimulus when it was really a broken renderer.
+**The `--pbr off` arm defeats `verify_shade`'s own glass mask.** The tool selects glass by
+`blue > 1.15 x red` precisely so tan desert cannot be mistaken for a shaded module.
+Measured on the saved frames:
 
-⚠ Two things this does NOT establish, stated so nobody over-reads the table:
-- The legacy +12.5 row was measured on the **Jul 27 stage**, which predates the DEM, the
-  graded pad and the OSM geography. It differs from the new rows in more than the sky, so
-  "the sky doubled the stimulus" is **not** a supported claim — only "the current twin's
-  stimulus is +23.7" is.
-- The +23.7 vs +10.1 comparison *is* clean: same scenario, same subset, both freshly
-  built, differing only in `--pbr`.
+| stage | mask share, 4 shaded rows | mask, control | glass_dark% vs frame_dark% |
+|---|---|---|---|
+| legacy (Jul 27) | ~24% | 24.3% | genuinely different |
+| Preetham + **PBR on** | 26–36% | 36.0% | **43–56 points apart** — mask works |
+| Preetham + **PBR off** | **99.2 / 99.5 / 99.4 / 99.3%** | 61.4% | **0.4–0.6 points apart** ✗ |
 
-**What survives as the operational rule:** a KPI is only quotable against the stage it was
-measured on, and the stimulus must be re-proved whenever the lighting changes. That is why
-the KPI-03 re-measurement is running against `khavda_selfshade_sky.usd` and not against
-the older number.
+At a 99% mask the "% dark glass" statistic **is** the whole-frame statistic. That is
+*exactly* the confound `verify_shade` exists to prevent — its own docstring: *"the second
+near-miss came from scoring whole-frame brightness, where dark desert in frame separated
+'shaded' from 'unshaded' while the panels were identically lit."* It has now happened a
+third time, on the arm I had starred as the real one.
+
+⭐ **The mechanism, and it is a genuine finding about the tool rather than the stage.**
+The ground on that stage is correctly warm — non-glass R−B **+24.04** — so this is not the
+black-ground bug. It is that **shadowed desert is lit only by the sky dome, so under a
+physically-based blue sky it goes blue and passes the glass test.** The control frame,
+whose ground is in direct sun, masks at 61%; the shaded frames, whose ground is in shadow,
+mask at 99%. **The Preetham sky broke the glass mask**, and it did so in the one direction
+that manufactures a large fake differential: the shaded arm gains the whole frame, the
+control does not.
+
+**Therefore, honestly stated: SC-11's shading stimulus on the current twin is UNMEASURED.**
+Not weakened, not doubled — unmeasured, pending a mask that survives a blue sky.
+
+⚠ **Both causal claims are withdrawn.** I first said the sky compressed the stimulus by
+redistributing radiance; I then said the black ground suppressed it by removing bounce
+light. Those are opposite mechanisms asserted from the same two N=1 measurements — the
+data did not choose between them, I did. Commit `e3c0e2f` still carries the first version
+in its message and should be read with this note beside it. The measured noise floor is
+~1.0 point (control R243 reads 17.0% in one capture and 16.0% in another of the same
+nominal condition), and the original claimed shift was 2.4 points.
+
+**⇢ The fix, and it is now the top of the queue:** give `verify_shade` a mask that cannot
+be fooled by sky-lit ground — a brightness floor, a saturation/hue test, or best, a mask
+derived from the panel geometry the builder already knows. Then re-derive every row of
+this table under the fixed rule. Until then the only defensible statement about SC-11's
+stimulus is that the legacy +12.5 was measured under a mask that was doing real work.
+
+**What survives, and it is the important part:** a KPI is only quotable against the stage
+*and the instrument* it was measured with. The stimulus check is itself an instrument, and
+it needed re-verifying when the lighting changed. The KPI-03 re-measurement now running
+against `khavda_selfshade_sky.usd` therefore has **an unproven stimulus**, and its result
+must be reported that way whatever it says.
 
 ### 6. ⭐⭐ The mission video — and the real brain missing what the stub catches
 
@@ -147,10 +172,31 @@ A fluent, confident, **wrong** paragraph about a panel carrying an injected hots
 ⭐ **Why this matters more than the video does.** `false_fault_rate` is 0.000 on both cuts
 — KPI-03 is a *false-positive* rate and it cannot see this at all. The failure is a **false
 negative**, and the only reason we know is that the stub arm was run against the same
-scenario. **A 0.00 KPI-03 says nothing about whether the brain finds anything.** The
-orchestration is not the weak link; the perception is. ⚠ Note this is a single panel at
-one standoff on one scenario — it is a flag to go measure recall properly (`KPI-01`), not
-a recall number.
+scenario. **A 0.00 KPI-03 says nothing about whether the brain finds anything.**
+
+⚠⚠ **CORRECTION — I first wrote that this was "a flag to go measure recall properly".
+It is not: recall is already measured, and I should have checked before writing that.**
+`KPI-01` (detection rate) on `SC-01` is **0.875–0.9167 across repeats** (`nominal_calm_vlm`,
+gate `detection_rate_min: 0.80`, passing; the crop variant records 0.900 median,
+0.875–0.900). So the brain has a **known ~10-12% miss rate**, and tonight's miss is one
+draw from it — *not* a new discovery, and not evidence of a regression.
+
+What the demo cut therefore does and does not show:
+- ✅ It is a **fair, unlucky-but-representative sample.** One fault in the zone, ~12%
+  chance of missing it, and it missed. Presenting the stub cut as "the system works" while
+  quietly not mentioning this would be dishonest.
+- ✅ It makes concrete a thing the session log already names at line 1620: **"KPI-01 = 0.875
+  is a discrimination problem before it is a variance problem."** The failure mode is the
+  model producing a fluent, confident, wrong description — not the model wavering.
+- ⚠ It is a **presentation risk**: with the real brain, a single-fault demo has a ~1-in-8
+  chance of containing no escalation at all, which is exactly what happened. A demo whose
+  narrative depends on one stochastic detection is a badly designed demo. Either seed more
+  faults in the zone, or show the stub cut for choreography and quote `KPI-01` for recall.
+- ⚠ Relevant and not yet followed up: `SC-11`'s crop work found that **cropping kills the
+  confound but hotspot recall pays for it**, and the panel missed tonight was a
+  **hotspot** at `crop_fraction: 1.0`. Whether hotspot recall specifically is the weak
+  half of that 0.875 is a real, cheap question — a per-state breakdown of `KPI-01` would
+  answer it and nobody has run one.
 
 ### 7. From the parallel audit: two more real defects
 
