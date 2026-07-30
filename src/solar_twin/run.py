@@ -28,6 +28,7 @@ from solar_twin.control.safe import SafeControl
 from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
+from solar_twin.orchestrator import grid_dispatch
 from solar_twin.orchestrator.mission import Fleet, Mission
 from solar_twin.orchestrator.scout_dispatch import BEAT_LABELS, ScoutDispatchMission
 from solar_twin.world.keepout import build_keepouts
@@ -170,6 +171,81 @@ def _perception(name: str, opts: dict | None = None):
     )
 
 
+def _dispatch(layout: FarmLayout, farm_cfg: dict, mission_cfg: dict, targets: list):
+    """Apply the suspicion-first prioritisation layer. Returns (targets, result).
+
+    ⚠⚠ **The prior is SIMULATED and circular by construction.** There is no SCADA
+    feed on this project: `kpi/simulated_scada.rank_cells_simulated` derives a
+    cell's "measured" output from the twin's own `pv:state`/`pv:iv_yield` — the
+    very ground truth the mission is sent out to discover. A run with this on
+    therefore says nothing about a real plant, and `dispatch.scada_source` /
+    `dispatch.caveat` in the run record say so in words.
+
+    **Off by default, and off is the identity.** `order_targets` returns `targets`
+    itself when disabled (see its docstring and
+    `test_disabled_reproduces_layout_order_exactly`), so a run with
+    `grid_dispatch.enabled` unset is byte-identical to one from before this layer
+    existed — every recorded KPI stays reproducible. `panel_records()` is not even
+    built in that case: on the full plot that is 30k records, and a disabled run
+    must cost what it costs today.
+
+    ⚠ Cell membership comes from the LAYOUT/STAGE (`farm.yaml`'s `grid:` block,
+    via `layout.cell_id_for`), never from the mission. `grid_dispatch.
+    modules_per_cell` is a stub reserved for a real string map and is *not* read
+    by `order_targets`, so a mission that sets it is warned rather than silently
+    ranked against a different grouping than the stage was authored with.
+
+    ⚠ **Why the input is `layout.panel_records()` and not `transport.read_panel`,
+    given that the USD stage is the source of truth (golden rule 3).** That rule
+    governs panel state *during* sim — the FSM still reads and writes every verdict
+    through the Transport, untouched. This runs strictly BEFORE the mission starts,
+    and it needs the same seeded layout the builder authored the stage from:
+    `layout.cell_id_for` is the single derivation both use, so the `cell_id` here
+    and the `grid:id` on the prim are the same string by construction. Reading it
+    back off the stage instead would be N USD attribute reads (30k on the full
+    plot) to recover what the config already determines. If the ranker ever needs
+    *live* panel state — a mid-mission re-rank from accumulated verdicts — that
+    must come through the Transport, and this is the line to revisit.
+    """
+    cfg = grid_dispatch.DispatchConfig.from_mission_cfg(mission_cfg)
+    if not cfg.enabled:
+        return grid_dispatch.order_targets(targets, {}, cfg)
+
+    farm_grouping = int((farm_cfg.get("grid", {}) or {}).get("modules_per_cell", 0))
+    mission_grouping = int(
+        ((mission_cfg or {}).get("grid_dispatch", {}) or {}).get("modules_per_cell", 0)
+    )
+    if mission_grouping and mission_grouping != farm_grouping:
+        print(
+            f"  [warn] mission grid_dispatch.modules_per_cell={mission_grouping} is "
+            f"IGNORED: cells come from the stage (farm.yaml grid.modules_per_cell="
+            f"{farm_grouping}), so the ranker and the authored grid:id agree. Change "
+            "it in farm.yaml and rebuild the stage.",
+            flush=True,
+        )
+
+    records_by_panel = {r.panel_id: r for r in layout.panel_records()}
+    ordered, result = grid_dispatch.order_targets(targets, records_by_panel, cfg)
+    print(
+        "  [note] grid_dispatch enabled: "
+        f"{result.reason}. ⚠ The prior is SIMULATED — derived from the twin's own "
+        "pv:state/pv:iv_yield, i.e. from the ground truth being sought. Circular by "
+        "construction; do NOT read KPI-09 from this as a claim about a plant.",
+        flush=True,
+    )
+    if result.plan is not None:
+        print(
+            f"  [note] dispatch plan: solver={result.plan.solver} "
+            f"cells={len(result.plan.cell_order)} dropped={len(result.plan.dropped)} "
+            f"travel={result.plan.travel_m:.1f} m "
+            f"suspicion/m={result.plan.suspicion_per_m:.6f} (KPI-09, SIMULATED). "
+            f"escalation_arm={result.plan.escalation_arm} is RECORDED, not enacted — "
+            "the FSM's ADVANCE->SCREEN->CONFIRM is ground-first by construction.",
+            flush=True,
+        )
+    return ordered, result
+
+
 def _perception_provenance(name: str, perception) -> dict:
     """What judged the panels, stamped into every run record. A KPI whose
     decoding config is not recorded cannot be reproduced or defended."""
@@ -219,6 +295,14 @@ def run(
 
     targets = layout.inspection_targets(mission_cfg)
     faults = layout.seeded_faults()
+
+    # Prioritisation, strictly UPSTREAM of the FSM: it only decides which panels in
+    # what order. Placed BEFORE --max-panels on purpose — `docs/specs/06` requires
+    # KPI-09's ranker-ON and ranker-OFF arms to be compared at the same seed and
+    # the same *panel budget*, so the budget must bite after the ranking, not
+    # before it. Disabled (the default) this is the identity, so the truncation
+    # below sees exactly the list it sees today.
+    targets, dispatch = _dispatch(layout, farm_cfg, mission_cfg, targets)
 
     sim_opts = sim_opts or {}
     max_panels = int(sim_opts.get("max_panels") or 0)
@@ -463,6 +547,10 @@ def run(
             # Stated explicitly: with --max-panels the stage holds more panels than
             # the mission visited, so `n_panels` is NOT the metric denominator.
             "panels_targeted": len(targets),
+            # What decided the visit ORDER. Present on every record, including
+            # disabled runs (`scada_source: "none"`), so no record is ambiguous
+            # about whether a simulated prior influenced what got inspected first.
+            "dispatch": dispatch.to_dict(),
             "injected_faults": {pid: s.value for pid, s in faults.items()},
             "metrics": {
                 "panels_inspected": result.panels_inspected,
@@ -687,6 +775,26 @@ def main(argv: list[str] | None = None) -> int:
         "⚠ changes what the run measures (denominator = panels VISITED).",
     )
     ap.add_argument(
+        "--grid-dispatch",
+        action="store_true",
+        help="order panels suspicion-first instead of in layout order: rank "
+        "`grid:id` cells by PR anomaly, then sweep the worst cells first. "
+        "⚠⚠ THE RANKING IS SIMULATED — derived from the twin's own "
+        "pv:state/pv:iv_yield, i.e. from the ground truth being sought — so it is "
+        "circular by construction and proves nothing about a real plant. OFF by "
+        "default; off is the identity, so every recorded KPI stays reproducible. "
+        "Needs a stage built with `grid.enabled: true` in farm.yaml. "
+        "Overrides mission.yaml's `grid_dispatch.enabled`.",
+    )
+    ap.add_argument(
+        "--dispatch-max-cells",
+        type=int,
+        default=0,
+        help="--grid-dispatch only: visit at most N cells (0 = all). Dropped cells "
+        "are NAMED in the run record, never silently truncated. This is the panel "
+        "budget KPI-09's ranker-ON/ranker-OFF arms must share.",
+    )
+    ap.add_argument(
         "--max-panels",
         type=int,
         default=0,
@@ -750,6 +858,29 @@ def main(argv: list[str] | None = None) -> int:
         mission_cfg = {**mission_cfg, **route_overrides}
         print(f"  route: {mission_cfg.get('route', 'linear')} "
               f"stride={mission_cfg.get('panel_stride', 1)}", flush=True)
+
+    # Suspicion-first ordering, same CLI-overrides-config shape as `route`. Merged
+    # ONTO the mission's own `grid_dispatch` block rather than replacing it, so a
+    # mission that pins `min_anomaly`/`escalation_arm`/`solver` keeps them when the
+    # flag turns the layer on. Nothing is written unless a flag was actually
+    # passed — a run without them must not gain a `grid_dispatch` key it did not
+    # have, since the mission config is copied verbatim into the run dir.
+    if args.grid_dispatch or args.dispatch_max_cells:
+        if mission_cfg is None:
+            mission_cfg = _load_yaml(args.mission)
+        dispatch_cfg = dict(mission_cfg.get("grid_dispatch") or {})
+        if args.grid_dispatch:
+            dispatch_cfg["enabled"] = True
+        if args.dispatch_max_cells:
+            dispatch_cfg["max_cells"] = args.dispatch_max_cells
+        mission_cfg = {**mission_cfg, "grid_dispatch": dispatch_cfg}
+        if args.dispatch_max_cells and not dispatch_cfg.get("enabled"):
+            print(
+                "  [warn] --dispatch-max-cells without --grid-dispatch (and no "
+                "`grid_dispatch.enabled` in the mission): the ranker is off, so the "
+                "cell budget does nothing.",
+                flush=True,
+            )
 
     if args.subset:
         # Must mirror farm_builder's --subset: the mission may only target panels

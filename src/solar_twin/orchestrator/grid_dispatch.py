@@ -39,7 +39,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from solar_twin.kpi.simulated_scada import SimulatedCellScore
+from solar_twin.kpi.simulated_scada import SIMULATED_CAVEAT, SimulatedCellScore
 
 #: Which robot enters a suspect cell first. Both arms exist so the ordering can be
 #: MEASURED rather than asserted; see the module header.
@@ -207,7 +207,7 @@ class DispatchResult:
     cells: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "enabled": self.enabled,
             "reason": self.reason,
             # Stamped even when disabled, so no run record is ambiguous about
@@ -218,6 +218,12 @@ class DispatchResult:
             "plan": self.plan.to_dict() if self.plan else None,
             "cells": self.cells,
         }
+        if self.enabled:
+            # A label alone ("simulated") is too easy to read as a detail of the
+            # plumbing. Whenever a ranking actually influenced the run, the record
+            # states in words that the prior is circular by construction.
+            out["caveat"] = SIMULATED_CAVEAT
+        return out
 
 
 def order_targets(
