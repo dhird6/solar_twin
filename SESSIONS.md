@@ -18,6 +18,386 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 ---
 
 
+## 2026-07-30 — Session 16: KPI-03 as a range, PBR split along the fault-signature risk line, and suspicion-first dispatch
+
+**⚠ NOTHING IN THIS ENTRY IS COMMITTED YET.** The KPI-03 n=5 run still holds the GPU, and
+the PBR/sky work is gated on a render measurement that needs it. Seven threads below;
+sections 3, 4 and 6 are findings that *stopped* work rather than shipping it.
+
+Two threads, deliberately kept apart because one of them was allowed to touch the
+fault-signature machinery and the other was not.
+
+### 1. KPI-03 with a confidence range, not a point estimate (⚠ IN PROGRESS)
+
+Session 10b found the VLM is not deterministic (vLLM clamps `temperature: 0.0` to
+0.01; GPU batching is not bit-reproducible), so `SC-11`'s **0.00 on 560 panels was a
+single run**. The repeat-and-aggregate harness for this **already existed** —
+`run.py --repeat N` + `kpi/variance.py`, with per-repeat `results.json`, `variance.json`
+and per-panel flip attribution (`model` / `render` / `both` / `unknown`). What was
+genuinely missing was **mean and sample stdev**, now added to `MetricSpread`.
+
+**`stdev` returns `None` at N=1, not 0.0.** Undefined is not "measured, no variance" —
+reporting zero there is the exact misreading the module exists to prevent. Mean±sd is
+printed as a *second* line under the median+range headline, and the gates still judge
+**worst-of-N**. ⚠ Deliberately NOT turned into a normal-theory confidence interval: a
+false-fault rate is a proportion bounded at 0, quantised in units of
+1/n_healthy_panels, and piled up on 0.00. If a real interval on a near-zero rate is
+wanted, the instrument is a binomial/Wilson one-sided upper bound on the verdict
+count, not sd over 5 run-level numbers.
+
+**Two traps caught before spending the wall-clock:**
+- **`--max-panels 40` would have destroyed the scenario.** The first 40 panels all sit
+  on **one table** (easting 1.1); the scenario's built-in unshaded **control** table is
+  the eastmost (23.1). Truncating would have silently dropped the control — so the run
+  is the full 560. This is the "a KPI is only as quotable as its scenario" rule biting
+  in a new place.
+- **Stimulus re-verified first** (`tools/verify_shade.py`, `SC-11`): shaded rows
+  22.3 / 29.7 / 23.5 / 30.8% dark glass vs the control's 14.1% — **+12.5 points**.
+- **Cost measured, not assumed:** **7.62 s/panel**, not Session 10's ~12 s — this
+  scenario is all-healthy so almost nothing escalates to CONFIRM. 71 min/repeat,
+  ~5 h 56 m for n=5.
+
+Run in flight (`--repeats 5`, 560 panels, 2,800 verdicts), `runs/20260730T145823/`.
+
+**Interim — repeat 1 of 5 only, NOT a result:**
+
+| | repeat 1 |
+|---|---|
+| panels | 560 |
+| `false_fault_rate` (KPI-03) | **0.000** |
+| `false_alarm_rate` / abstentions | 0.000 / **0** |
+| `detection_rate` | 1.00 |
+| gates | PASS (3 declared) |
+
+⚠ **One repeat is exactly the thing this work exists to stop quoting.** It says nothing
+about spread; `variance.json` is not written until all five finish. **Result and whether
+0.00 holds up as a range are still open** — to be filled in when it lands.
+
+### 2. PBR + sky: the split, and why
+
+Asked for textured PBR on the balance of plant *and* the panels, plus an HDRI sky.
+Both of those were cut, for reasons that are findings rather than preferences.
+
+**⚠⚠ Panel glass + frame PBR: DEFERRED, and it is not a scheduling call.** The soiling
+film's translucency is **baked in Python** against `_LOOKS["cell_healthy"][0]` and
+`_LOOKS["frame"][0]` — the *diffuse constants* — with alpha clamped to **0.72–0.94**
+specifically so the 0.62-albedo aluminium rail is muted along with the cells. Texturing
+those two materials means the bake blends against values that no longer describe what
+renders underneath, and the failure mode is the documented one: bright frame lines
+survive inside the dust patch and Cosmos Reason reads "a cluster of bright pixels …
+characteristic of a hotspot". Compounding it, the frame is already **`metallic=0.9`**;
+under a high-dynamic-range sky a metallic rail becomes a mirror and manufactures
+exactly those bright pixels. The current smooth generated sky is quietly doing the work
+of *not* producing them. **Revisit only once KPI-03 is landed and stable, and treat any
+alpha/threshold change as a flagged decision with a measurement, never a re-tune.**
+
+**⚠ The premise "replace flat UsdPreviewSurface materials" was inaccurate.** `_LOOKS`
+already carries per-material roughness and metallic (glass 0.22/0.35, frame 0.3/0.9,
+ground 1.0/0.0…). The real gap was **texture maps**, not PBR parameters.
+
+**⚠ The fence could not be textured without texturing the panel frame — so the material
+was split.** Fence posts *and* wires were bound to `looks["frame"]`, the *same* material
+as the panel aluminium rail, which put "add PBR to fencing" in direct conflict with
+"defer the panel frame". `_LOOKS["frame"]` is now **`panel_frame`** (panel bodies + the
+soiling bake's substrate colour, values untouched) and **`fence_frame`** (fence posts,
+wires, and the transformer radiator). The two carry **identical values on purpose**, so
+the split alone is visually a no-op and only the fence's new texture changes anything —
+verified: the tinted `fence_frame` albedo's channel means reproduce the shared
+`(0.62, 0.63, 0.66)`. `textures.DEFERRED_SURFACES` now asserts, as a test rather than a
+comment, that `panel_frame` and the `cell_*` looks can never become textured surfaces.
+The fence-post prototype became a UV'd Mesh; it is still referenced + instanceable, so
+**IF-09 holds**. The 2 cm wires stay untextured Cubes — any sample of a mean-1.0
+modulation at that scale is the base colour, so texturing them would be
+indistinguishable.
+
+**⚠ HDRI sky: rejected in favour of a physically-based procedural sky.** The DomeLight
+already carries *both* the fill and the visible sky, and its texture is **generated from
+the same `elev`/`azim` that rotate `/World/Sun`** — that consistency-by-construction IS
+the Session 10c fix. A fixed HDRI has its own sun baked in wherever it was shot, so it
+would reintroduce "two things disagreeing about the sky" one level up, and it cannot
+serve two sun angles (`SC-11` 17.2°, `SC-12` 10.7°) at once. Also a 10–100 MB binary,
+which `CLAUDE.md` forbids committing.
+
+### What was actually built
+
+**`world/sky.py` (new, pure, Isaac-free)** — **Preetham 1999** (Perez formula, Kittler
+zenith luminance, Preetham zenith chromaticity), replacing the four-stop colour ramp.
+Chosen over Hosek-Wilkie because HW needs an embedded radiance dataset; ⚠ **stated
+limit: Preetham degrades below ~10° sun elevation, which is where `SC-12` sits (10.7°)**
+— HW was motivated by that very weakness. It does not affect the shading *geometry*:
+the shadow is cast by `/World/Sun`, whose direction comes from `world/solar.py`,
+untouched.
+
+**⭐ The invariant that makes the sky swap KPI-safe.** The dome is the ambient fill, the
+fill sets how far shadows fill in, and KPI-03's stimulus *is* a shadow contrast. So the
+physical sky is **normalised to the legacy ramp's own solid-angle-weighted hemisphere
+mean** — the ramp is retained as the *photometric anchor*, not as a fallback look, and
+the exposure is solved **per sun angle** rather than calibrated once. Measured:
+
+| | fill | anchor | Δ | zenith RGB | horizon RGB | blown px |
+|---|---|---|---|---|---|---|
+| `SC-11` 02:00Z | 0.5455 | 0.5475 | **−0.0020** | 70/105/168 | 176/147/111 | 0.000% |
+| `SC-12` 01:30Z | 0.5414 | 0.5433 | **−0.0020** | 71/101/149 | 182/151/95 | 0.000% |
+
+The residual is 8-bit quantisation. The sky is now genuinely *different* between the two
+timestamps (zenith blue 168 → 149, horizon warmer) — the ramp rendered them nearly
+identically, which was the reason to swap.
+
+**Two bugs found by measuring instead of eyeballing**, both the same shape as 10c's:
+1. **The equator seam.** Blending the below-horizon band from the *legacy* ramp's
+   horizon stop, now that the upper hemisphere is physical, put a **32 LSB red jump**
+   at the equator row — the "dark band above the terrain horizon" 10c already fixed
+   once. Fixed by blending from the physical sky's own tone-mapped horizon row.
+2. **Hard clipping silently ate the fill.** A physically-based sky at 10–17° runs well
+   past 1.0 near the aureole; the horizon row measured **201/255 pre-clip vs 168/255
+   post-clip**. A hard clip therefore both blew the aureole into a flat disc *and* put
+   the rendered hemisphere mean below the anchor — i.e. it would have lightened
+   shadows and weakened KPI-03's stimulus without anyone editing a KPI. Fixed with a
+   soft highlight knee plus solving the exposure against the **tone-mapped** image, not
+   the analytic model.
+
+**`world/textures.py` (new, pure, Isaac-free)** — procedural tileable albedo /
+roughness / normal maps for **ground, road, concrete, equipment, structure,
+fence_frame**, generated beside the USD, never committed. Panel glass and the panel
+frame are pointedly absent, and now assertedly so.
+
+**⭐ The albedo invariant.** Each albedo map is an **achromatic modulation with mean
+forced to exactly 1.0**, tinted by the material's existing diffuse constant. So mean
+albedo *and* hue are preserved by construction: measured ground `R−B = +28.04` against
+the flat material's `+28.05`. That matters because R−B is the exact quantity 10c used
+to catch the emissive dome lighting the desert floor blue — keeping the texture
+achromatic means that measurement stays a test of the **lighting**, and the texture
+cannot alias into it. Modulation means came out `1.0000` for all five surfaces.
+
+**Builder wiring.** `_textured_material()` (UsdUVTexture + primvar reader, with the
+normal map's `scale`/`bias` −1..1 remap and `sourceColorSpace: raw` on the non-colour
+maps), world-space **planar** UVs (per-quad 0..1 would reset the texture at every road
+segment seam), and `_box` gaining an **opt-in** UV'd Mesh mode — without the flag it
+stays a `UsdGeom.Cube`, byte-identical, so the **instanced** fence posts and OSM
+building boxes are untouched (**IF-09 intact**). The ground keeps its **vertex-colour
+diffuse** and gains only roughness+normal, because its `displayColor` carries both the
+three-octave grading variation and the aerial-perspective fade that melts the mesh rim
+into the horizon haze — a flat albedo texture would discard both.
+
+**Tests: 651 Isaac-free passing, 6 skipped** (was 547) — `test_sky.py`, `test_textures.py`,
+`test_grid_dispatch.py`, plus new cases in `test_kpi_variance.py` and `test_schema_usd.py`.
+
+⚠⚠ **NOT YET VERIFIED ON THE GPU, and therefore NOT COMMITTED.** The ground R−B
+before/after render measurement and `verify_shade.py` on both timestamps both need
+Isaac, and the box is running the 6-hour KPI-03 job — which must not share the GPU,
+since renderer contention would perturb the very frame-stability attribution that run
+is measuring. Everything above is pure-module evidence. 10c's lesson is precisely that
+a sky can look right and be wrong, so the render gate stands.
+
+### 3. Terrain: nothing to rebuild — 10d already shipped it
+
+Asked to replace the flat ground with a real DEM. **It has not been flat since Session
+10d.** The `flat` line in 10c's Scope paragraph was being read as current, so that
+paragraph now carries an explicit **SUPERSEDED** marker pointing at 10d. Confirmed
+against the code rather than the log: Copernicus GLO-30 baked at
+`assets/dem/khavda_block02.*` (EPSG:32642, 20 m grid, 58x74, elev 3.26-5.44 m),
+`terrain: kind: dem` live in the Khavda config, `layout.terrain_height()` dispatching
+`flat`/`heightfield`/`dem` **plus** a `graded` civil pad, and one shared terrain
+function feeding the ground mesh, the panel mounts and the waypoints alike (build log:
+"torque tubes are STRAIGHT lines through the grade; worst deviation 0.154 m on T0244").
+`panel_top_z` still respects tilt and has since become **axis-aware** (tracker chord =
+module X, fixed-tilt chord = Y), so the Session 9/10 class of bug is not back.
+
+Isaac Lab's `convert_heightfield_to_trimesh` is deliberately unused: its generators
+produce *synthetic* grades, and the research doc's own advice for a real site is to
+import a DEM mesh — which is what this does.
+
+**`docs/specs` HAZ-04 left untouched by decision** — it is a hazard definition with
+mitigations, not a flat-terrain scope caveat, so there was nothing to retire. The
+caveats that *are* still live are different ones: GLO-30 is a pre-grading DSM (hence
+`graded`), and slope-aware traversability remains unbuilt because the ground bot has no
+physics.
+
+**⚠ The one real gap, deliberately NOT filled here: the ground has no collider.**
+`_add_collision` reaches only the turbine tower/nacelle/blades; a `PhysicsScene` exists
+but only when turbines do, and is inert under kinematic teleport. `world/robot_builder.py`
+has **zero** physics references — no rigid bodies, no mass, no collision — so there is
+nothing dynamic to fall through, and a trimesh-cooking check against issue #2323 needs
+exactly the dynamic body that does not exist. Writing an inert collider blind was
+rejected; it is now the **first step of the Pegasus/PX4 smoke test**, where a dropped
+rigid body makes the cooking validation real.
+
+### 4. Cosmos Transfer scenario factory — BLOCKED ON ACCESS (burst-out / off-box work)
+
+**Nothing was generated, and Transfer was NOT attempted on-box** (`NFR-05` locks that;
+sm_121/GB10 is confirmed unsupported). Asked to check off-box compute first and stop if
+none exists — **none exists.** Measured rather than assumed: AWS profile
+`cctech-simulationhub` is present but its credentials are **expired STS tokens**
+(`ExpiredToken`); no GCP, Azure, Kubernetes, Run:ai or OSMO CLI; no `~/.ssh/config`, so
+no RTX PRO 6000 / DGX host is configured as a target; Docker exists but the only GPU
+here is the GB10.
+
+⚠ **NGC has a key but a broken CLI.** `~/.ngc/config` carries an API key (`org = nvidia`),
+but `~/.local/bin/ngc` is `exec ~/.local/ngc-cli/ngc` **with no `"$@"`** — it drops every
+argument, so all subcommands including `ngc --version` return "Incomplete command
+received". One-line fix; I was **blocked by the sandbox from applying it**, so whether
+the key is live and whether the org carries NVCF entitlement is **untested**. Worth
+fixing regardless — without it there is no registry access for containers or weights.
+Even fixed, NGC is a registry, not compute.
+
+So `docs/COSMOS_TRANSFER_PLAN.md` is the deliverable. Two findings in it are worth
+surfacing here because they change the architecture, not just the schedule:
+
+**⭐ The Evaluator already exists and its calibration is a pipeline conclusion.**
+`wfm/evaluator.py` was calibrated against six real Cosmos3-Edge generations and proved
+**no-reference image statistics cannot separate good frames from bad** — `edge_try2` was
+photorealistic and *not a PV module at all* yet scored the highest grid-periodicity of
+the set, and the good frames carried MORE high-frequency energy than the noise frame
+(a real cell lattice is high-frequency, so "less noise is better" is backwards). The
+gate is therefore **reference-based**: `edge_retention(seed, generated) >= 0.60`, and a
+frame with no seed is **rejected as unverifiable however good it looks**. That single
+rule makes **Transfer-class structure-conditioned generation the only admissible
+source** — which is precisely why **Cosmos3-Edge, the one generator that DOES serve
+on-box, is the wrong tool**: unconditioned output can never clear a gate that measures
+retention against a seed. The seed must travel with every variant or the batch is dead
+weight.
+
+**⚠ The control-branch inputs are not being captured.** `sim_runtime.py` registers only
+the `"rgb"` annotator; Transfer wants edge/blur/segmentation/depth. Edge and blur derive
+from the seed RGB (the evaluator's `_edge_map` already does it), but **depth and
+segmentation need Replicator annotators wiring** — and we can emit both as *ground
+truth* rather than estimates, because `_label()` already authors `UsdSemantics` labels on
+panels. That is on-box, testable now, and the real prerequisite for conditioning, so it
+is the movable work while access is blocked. ⚠ Any new annotator needs the same
+frame-pump treatment `rgb` gets, or it returns the previous pose's buffer and silently
+mis-pairs a depth map with an RGB frame.
+
+### 5. Grid-level fault localization + staged dispatch (`SLICE-4b`) — built, and ⚠⚠ SIMULATED
+
+**⚠⚠ STATE THIS FIRST, EVERY TIME: there is no SCADA feed. The "measured" string output
+is derived from the twin's own `pv:state` / `pv:iv_yield` — the very ground truth the
+mission is trying to discover — so the ranker is CIRCULAR BY CONSTRUCTION and will score
+near-perfectly for free. It tests that the dispatch machinery works as specified. It is
+NOT evidence that suspicion-first dispatch beats a sweep on real hardware.** The label is
+enforced, not just documented: `SCADA_SOURCE = "simulated"` on every score row, the entry
+point is `rank_cells_simulated`, the module is `kpi/simulated_scada.py`, and
+`DispatchResult` stamps `scada_source` (`"simulated"` when on, `"none"` when off) so no
+run record is ambiguous. A real feed is a commercial/access question.
+
+**⭐ The KPI was defined BEFORE the ranker, because the research doc says building it the
+other way makes the benefit asserted rather than demonstrated** — the same failure mode as
+quoting `KPI-01` from `demo_video.yaml`. `KPI-09` (suspicion retired per unit travel) and
+`KPI-09a` (confirmed faults per unit travel — the honest half, since `KPI-09` can be
+maximised by chasing a wrong prior) are now in `docs/specs/06`, measured as a **paired
+ranker-on/ranker-off comparison at the same seed** — the claim is the delta; an absolute
+value is uninterpretable because it scales with whatever the prior happens to be.
+
+**⚠ The denominator is metres, not battery-hours, and it is named that way.**
+`fleet_specs.py` carries geometry only — **no endurance, capacity or power draw** — and
+`wall_seconds` on a VLM run is ~7-12 s/panel of blocking inference, i.e. a *perception*
+cost masquerading as a flight cost. Route distance is available today as a pure,
+deterministic function of the waypoints. Battery-hours stays the target denominator; do
+not silently rename the metric before the energy model exists.
+
+**⚠⚠ A cell is a TABLE, and a table is NOT a string — the design's stated requirement
+cannot be met with our data.** It asks for cells aligned to electrical topology. The
+vendor DWG is DC *hardware geometry* only: `TableSpec` has `table_id`, `modules`,
+`module_rows`, `layer` and **no string map, no combiner grouping, no inverter
+assignment** (even the 5 inverter stations are our own capacity-derived inference). The
+finest real unit is the table — 112 modules at Khavda against a real string's ~20-30, so
+one table ≈ 4-5 strings. **Subdividing a table into N equal groups to look string-shaped
+was rejected**: that invents the topology we were told not to invent. `modules_per_cell`
+exists for a real string map; its default `0` means "the whole table".
+
+**`grid:id` landed the way `pv:` did** — `GRID_PREFIX`/`ATTR_GRID_ID` constants,
+`grid_id()`/`cell_for_panel()`, `PanelRecord.cell_id`, both authoring paths
+(`create_panel` **and** the bulk `author_panel_spec` that actually builds 30k panels),
+round-trip tests under the pxr guard, and a `PROJECT_BIBLE` §6.1 note. Stamped by
+`farm_builder._cell_id_for()` from `(site.row, site.col)` = `(table index, module index)`,
+i.e. from the layout's own structure. **Off unless `grid.enabled`**, and when off it
+authors **no attribute at all**, so an existing stage is byte-identical.
+
+**⭐ The acceptance test is an assertion, not a claim.**
+`test_disabled_reproduces_layout_order_exactly` asserts `order_targets(...)` with
+`enabled=False` returns **`targets` itself** — same object, same order — and builds no
+plan. The FSM, `Perception`, `Transport`, `RobotControl` and `FaultReport` are untouched;
+this layer only decides which panels in what order. 33 new tests.
+
+**⚠ cuOpt is NOT installed** (`import cuopt` → ModuleNotFoundError), so `_greedy_route` is
+a documented nearest-neighbour stub maximising `posterior / (1 + distance)`. Provenance is
+recorded on the plan (`solver="greedy-stub"`), and asking for `solver="cuopt"` explicitly
+**raises rather than falling back** — a greedy result labelled cuopt would be a false
+provenance. Budget truncation names the dropped cells rather than silently covering less.
+
+**⚠ Ground-first vs drone-first is left as an unmeasured assumption**, per the doc:
+ground-first wins when travel dominates, and loses when the fault is only visible from
+above (soiling gradients, string-dropout patterns) and the bot's trip is pure overhead.
+Both arms exist, neither is hard-coded, and passing anything else raises.
+
+⚠ Also provisional and *uncalibratable on simulated data*: `PR_UNEXPLAINED_MIN = 0.02`
+and the per-state output factors in `STATE_OUTPUT_FACTOR` — the simulation's assumption
+about how a fault shows up electrically. Nothing here can detect that they are wrong,
+because there is no independent signal to check them against.
+
+### 6. Versions pinned down: BOTH Isaac layers are pre-release
+
+Asked to stand up an Isaac Lab RL station-keeping policy. **Stopped before building it** —
+it depends on Pegasus/PX4 working, `docs/PEGASUS_SMOKE_TEST.md` does not exist, and that
+task is still gated behind this KPI-03 run. Building a wind-rejection policy against
+kinematic teleport is meaningless: teleport has no dynamics to hold station against.
+
+The version check was independent, so it was done and `docs/ENVIRONMENT.md` (which said
+"Isaac Lab: not yet verified") now records it:
+
+| | real value | what the docs said |
+|---|---|---|
+| **Isaac Lab** | git tag **`v3.0.0-beta2.patch1`** (`ffff603eaf`) | CLAUDE.md "Isaac Lab 3.0" |
+| **Isaac Sim** | **`6.0.1-rc.7`** (`045ca8b`) — a release *candidate* | CLAUDE.md "6.0.1" |
+
+⚠⚠ **`IsaacLab/VERSION` reads a bare `3.0.0`, which hides the beta.** Anything quoting
+that file reports a stable release; only the git tag reveals `beta2.patch1`. The research
+doc predicted exactly this ("CLAUDE.md may say 3.0 but point at the beta").
+
+⚠ **And it cannot simply be downgraded.** Isaac Lab **2.3.0** is the stable line but is
+built on **Isaac Sim 5.1**, while `_isaac_sim` symlinks to the 6.0.1-rc.7 build. So on
+this box the only Isaac Lab that pairs with the installed Isaac Sim is a beta — **any RL
+result from here carries two pre-release dependencies at once** and must be reported that
+way. Three risks stack before Slice 2: Pegasus targets Isaac 5.1 (a major behind),
+aarch64/GB10 is unproven for it (validated on x86_64 + driver 550), and both Isaac layers
+are pre-release.
+
+### 7. ⭐ Running the dispatch layer on real data found a bug 37 tests missed
+
+Asked to actually exercise the session's work. The GPU-free half ran: the Preetham skies
+and all 18 texture maps were generated and **looked at** (`runs/preview/`), and the
+dispatch layer was run end-to-end on the real 560-panel Khavda block — 5 `grid:id` cells
+from the CAD's own tables, simulated PR ranking, `KPI-09`, and the ranker-OFF arm
+reproducing layout order exactly.
+
+**It crashed on the first real target: `AttributeError: 'Waypoint' object has no attribute
+'position'`.** `control.base.Waypoint` is flat `x/y/z/yaw`; the unit tests used a
+hand-rolled `_WP` stand-in that **invented** `.position`. So all 33 tests passed while
+`order_targets` could not process a single real mission target.
+
+**The lesson is about the test double, not the typo:** a hand-rolled stand-in cannot catch
+a contract mismatch with the thing it is doubling. Fixed with a `_wp_xy` helper as the one
+place that knows the waypoint's shape, plus 4 tests that use the **real dataclass**.
+
+⚠ Two honest gaps from the same exercise: `grid_dispatch.order_targets` is **not wired
+into `run.py`** — it is a tested library, not something a mission invokes yet — and
+`layout.panel_records()` does not stamp `cell_id`, so the demo had to set it.
+
+⚠ **A livestream would currently show the PRE-PBR twin.** `assets/khavda_selfshade.usd`
+is from Jul 27; the PBR/sky work is from Jul 30. And `tools/run_livestream.sh` detects the
+stale USD and **auto-rebuilds** — over the exact file the running measurement has open.
+That is the documented clobber (a full-plot build overwrote `sky_44_80.png` mid-tour and
+RTX logged "Failed to read texture file" for the rest of the run), so it waits. Building
+to a different `--out` stem is the safe path, since the sky filename already carries the
+stage stem for precisely this reason.
+
+**⇢ NEXT:** (1) finish the KPI-03 n=5 aggregate and say whether 0.00 holds as a range;
+(2) then, on the free GPU, ground R−B before/after + `verify_shade` on `SC-11`/`SC-12`
++ the pxr-guarded tests, and only then commit the PBR/sky work; (3) Pegasus/PX4
+feasibility investigation, starting with the ground collider + a rigid-body drop test
+(`docs/PEGASUS_SMOKE_TEST.md`); (4) panel glass/frame PBR as its own gated decision,
+once KPI-03 is landed and stable; (5) resolve off-box compute access (a commercial
+question) and meanwhile wire the depth/segmentation annotators.
+
 ## 2026-07-30 — Session 15: the turbines move INSIDE the plant, and "inside" turned out to mean two different things
 
 Asked to put the windmills between the panels rather than outside them. Khavda is a
@@ -106,12 +486,29 @@ reproducibility, wake spacing still holding between interspersed machines, the
 candidate lattice not becoming a grid, `_Occupancy` agreeing with a naive count, and
 `table_footprints` hulling to `table_extent`.
 
+**The pre-crash run finished by itself.** VS Code died; the sim on `pts/2` did not.
+It completed at 12:15 and wrote `runs/20260730T120137/results.json` — 12 panels,
+846 s, `ground_truth` perception. Nothing was lost, and the editor crashing turned
+out to be unrelated to the run. Worth remembering before killing a survivor process
+on the assumption it is wedged: check whether it is still making progress first.
+
 **⚠ Still not done — carried into the next session:**
 - **The whole-plot video.** `assets/khavda_s05b_full.usd` (679,616 modules) has
   existed since the quadratic fix landed this morning and **nothing has been rendered
-  from it**. That video is the deliverable the fix was for.
-- The interspersed field has been verified numerically but **never seen** — no stage
-  has been built with it, so "it looks right" is unproven.
+  from it**. That video is the deliverable the fix was for, and it is now also the
+  only way to see the new turbine layout.
+- **The interspersed field is verified numerically but has never been SEEN.** 7/7
+  enclosure, 86-476 m clearances and 971 candidate positions are all measurements on
+  the layout, not on a built stage. Until a render exists, "it looks right" is
+  unproven — and this session is itself the argument for not trusting that gap: the
+  first implementation satisfied every number I had thought to check and still
+  produced a wind farm parked beside a solar farm.
+- ⚠ The rebuild was blocked by tooling, not by the code: Claude Code's Bash safety
+  classifier was unavailable for the whole back half of the session, so any command
+  needing classification was refused. Trivial commands passed, which made it look
+  like a repo problem for a while. The build command itself is unchanged:
+  `PYTHONPATH=src $ISAACSIM_PYTHON_EXE -m solar_twin.world.farm_builder
+  configs/farm_khavda_s05b_full.yaml --out assets/khavda_s05b_full.usd`.
 - `tools/run_livestream.sh` was untracked; committed here.
 
 
@@ -1405,6 +1802,14 @@ wall of `TfNotice wrapper has not been created yet` errors.
 **Scope:** terrain is still deliberately `flat` (no real DEM), and there is no substation,
 control room, or module-level torque-tube/pile geometry yet. 137 Isaac-free tests
 (was 123).
+
+> ⚠ **SUPERSEDED — do not read the `flat` line above as current.** Terrain has been
+> real since **Session 10d**: Copernicus DEM GLO-30 (`world/dem.py`,
+> `tools/dem_fetch.py`, `assets/dem/khavda_block02.*`), active via `terrain: kind: dem`
+> in `configs/farm_khavda_block02.yaml`, with a `terrain.graded` civil pad on top
+> because GLO-30 is a pre-grading DSM. **Session 10d is the source of truth for
+> terrain**; `flat` survives only as a fast-build option and the synthetic
+> `heightfield` only for the procedural test farm. Re-confirmed 2026-07-30.
 
 ## 2026-07-28 — Session 10b: a demo video you can watch ✅ + the VLM is NOT deterministic ⚠
 **`--video` makes the twin show its work.** `runs/20260728T115737/inspection.mp4` —
