@@ -195,10 +195,22 @@ Subdividing a table into N equal groups to look string-shaped was **rejected**: 
 invents electrical topology. `modules_per_cell` exists so a real string map can
 refine the cell later; its default of `0` means "the whole table".
 
-Stamped at build time by `farm_builder._cell_id_for()` from `(site.row, site.col)`
-= `(table index, module index)`, i.e. from the layout's own structure. **Off unless
-`grid.enabled`** is set in `farm.yaml`, so a stage built without it authors no
-attribute and stays byte-identical to one built before the namespace existed.
+Derived in **exactly one place — `world/layout.py::cell_id_for()`** — from
+`(site.row, site.col)` = `(table index, module index)`, i.e. from the layout's own
+structure. Two callers, one convention:
+
+- `farm_builder._cell_id_for()` writes it onto the prim as `grid:id` at build time
+  (a one-line forward to `cell_id_for`, deliberately not a copy).
+- `FarmLayout.panel_records()` stamps the same value onto `PanelRecord.cell_id`,
+  which is what the mission's ranker buckets panels by.
+
+They must agree — a join key with two derivations is not a join key. (It briefly
+had one: `panel_records()` left `cell_id` blank, so the first suspicion-first demo
+had to set it by hand.)
+
+**Off unless `grid.enabled`** is set in `farm.yaml`, so a stage built without it
+authors no attribute, every `PanelRecord.cell_id` is `""`, and behaviour is
+byte-identical to before the namespace existed.
 
 Consumers: `kpi/simulated_scada.py` (⚠ **simulated** PR-anomaly ranking) and
 `orchestrator/grid_dispatch.py` (prioritisation, strictly upstream of the FSM).

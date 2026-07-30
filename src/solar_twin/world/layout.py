@@ -19,6 +19,7 @@ from solar_twin.schema.pv_module import (
     GeoAnchor,
     PanelRecord,
     PanelState,
+    cell_for_panel,
     coerce_state,
     local_to_geo,
     panel_id,
@@ -174,6 +175,32 @@ def terrain_feature_step(cfg: dict) -> float:
         # would alias a hump into a straight line at the wrong height.
         return float(spec.get("wavelength", 12.0) or 12.0) / 4.0
     return 0.0  # flat: no detail to lose at any spacing
+
+
+def cell_id_for(site, farm_cfg: dict) -> str:
+    """`grid:id` — the dispatch cell a panel site rolls up to, or `""` when off.
+
+    **The one place this is derived.** `farm_builder._cell_id_for` delegates here
+    and `FarmLayout.panel_records` calls it, so the USD stage and the in-memory
+    records the mission ranks can never disagree about which cell a panel is in.
+    Two implementations of this would be two conventions, and a join key with two
+    conventions is not a join key.
+
+    `(site.row, site.col)` is `(table index, module index)` — set by
+    `layout_import.expand_sites`, and the procedural grid's own (row, col) — so
+    the cell falls out of the layout's OWN structure. Nothing is invented here:
+    no geometric grid is imposed, and the table is used because it is the finest
+    unit the vendor DWG actually carries (see `schema.pv_module`'s `grid:`
+    namespace note — a cell is a table, and a table is NOT a string).
+
+    Off unless `grid.enabled` is set in `farm.yaml`, so a stage built without it
+    is byte-identical to one built before the namespace existed, and a mission
+    over such a stage sees `cell_id == ""` on every record.
+    """
+    g = farm_cfg.get("grid", {}) or {}
+    if not g.get("enabled", False):
+        return ""
+    return cell_for_panel((site.row, site.col), int(g.get("modules_per_cell", 0)))
 
 
 def fault_cells(
@@ -427,7 +454,16 @@ class FarmLayout:
         return {site.panel_id: rng.choice(states) for site in chosen}
 
     def panel_records(self) -> list[PanelRecord]:
-        """Panels as records with seeded faults applied (for the fake backend)."""
+        """Panels as records with seeded faults applied (for the fake backend).
+
+        `cell_id` is stamped from `cell_id_for` — the SAME derivation
+        `farm_builder` writes onto the prim as `grid:id` — so the ranker that
+        reads these records buckets panels exactly the way the stage does. It was
+        left blank here at first and the suspicion-first demo had to set it by
+        hand, which is precisely how the mission and the stage would drift apart.
+
+        Empty (and behaviour byte-identical to before) unless `grid.enabled`.
+        """
         faults = self.seeded_faults()
         return [
             PanelRecord(
@@ -435,6 +471,7 @@ class FarmLayout:
                 grid_index=(s.row, s.col),
                 state=faults.get(s.panel_id, PanelState.HEALTHY),
                 geo_position=s.geo_position,
+                cell_id=cell_id_for(s, self.cfg),
             )
             for s in self.sites
         ]

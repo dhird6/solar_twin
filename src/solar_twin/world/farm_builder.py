@@ -27,6 +27,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 from solar_twin.schema import pv_module as pv
 from solar_twin.world.layout import (
     FarmLayout,
+    cell_id_for,
     fault_cells,
     soiling_field,
     soiling_mask,
@@ -1265,23 +1266,15 @@ def _build_turbine(stage, path, spec, ground_z, looks) -> str:
 
 
 def _cell_id_for(site, farm_cfg: dict) -> str:
-    """`grid:id` for a panel, derived from the layout's OWN table structure.
+    """`grid:id` for a panel — delegated to `world.layout.cell_id_for`.
 
-    `(site.row, site.col)` is `(table index, module index)` — set by
-    `layout_import.expand_sites` — so the cell falls out of the CAD's real table
-    grouping. Nothing new is invented here: no geometric grid is imposed, and the
-    table is used because it is the finest unit the vendor DWG actually carries
-    (there is no string map; see `schema.pv_module`'s `grid:` namespace note).
-
-    Off unless `grid.enabled` is set, so a stage built without it is byte-identical
-    to one built before the namespace existed.
+    Deliberately a one-line forward, not a copy. `layout.panel_records()` stamps
+    the same field onto the records the mission's ranker reads, and the stage and
+    the mission agreeing about which cell a panel is in is the *entire* value of a
+    join key. Keeping the derivation here as well would be a second convention
+    waiting to drift.
     """
-    g = (farm_cfg.get("grid", {}) or {})
-    if not g.get("enabled", False):
-        return ""
-    return pv.cell_for_panel(
-        (site.row, site.col), int(g.get("modules_per_cell", 0))
-    )
+    return cell_id_for(site, farm_cfg)
 
 
 def _label(prim, *labels: str) -> None:
