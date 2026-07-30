@@ -16,7 +16,18 @@
   paths differ — **verify every Isaac snippet against 6.0, not 5.1**, and treat
   the bible's 5.1-specific paths as hints, not truth. (Decide whether to update
   the 5.1 references in CLAUDE.md/bible to 6.0.1.)
-- **Isaac Lab:** not yet verified (symlink `_isaac_sim`).
+- **Isaac Lab:** `/home/simulationhub/IsaacLab`, **git tag `v3.0.0-beta2.patch1`**
+  (commit `ffff603eaf`), with `_isaac_sim` →
+  `/home/simulationhub/IsaacSim/_build/linux-aarch64/release`, i.e. paired with the
+  **6.0.1-rc.7** build above. Verified 2026-07-30.
+  ⚠⚠ **IT IS A BETA, AND `VERSION` HIDES THAT.** The `IsaacLab/VERSION` file reads a
+  bare **`3.0.0`**, so anything quoting that file — including CLAUDE.md's "Isaac Lab
+  3.0" — reads as a stable release. The git tag is the truth: `3.0.0-beta2.patch1`.
+  ⚠ **And it cannot simply be downgraded.** Isaac Lab **2.3.0** is the current stable
+  line but is built on **Isaac Sim 5.1**, while this box runs Isaac Sim 6.0.1-rc.7.
+  So on this machine the only Isaac Lab that pairs with the installed Isaac Sim is a
+  beta — an RL result from here carries *two* pre-release dependencies (Isaac Sim RC
+  + Isaac Lab beta) and must be reported as such.
 - **PyTorch (cu13):** lives in Isaac's bundled Python — not yet captured.
 - **Isaac Sim build commit:** `045ca8b` ("Isaac Sim Update 6.0.1", 2026-06-22).
 - **ROS 2 bridge extension:** `isaacsim.ros2.bridge-5.1.2` (loads system rclpy).
@@ -207,6 +218,53 @@ Notes, each of which was a real trap:
   per this build's `standalone_examples/api/isaacsim.simulation_app/livestream.py`.
   Ports come from `apps/isaacsim.exp.full.streaming.kit`: signal **49100**,
   stream **47998**.
+- **A clean zone shows you one robot.** Measured 2026-07-30: a 12-panel run of
+  BLOCK-02 escalated **0 of 12** (`--max-panels` takes the first N panels, and at
+  `faults.rate: 0.02` R00-C000…C011 are all healthy), so the `CONFIRM` phase never
+  ran and the confirm drone never moved. Nothing was broken — the sweep FSM only
+  moves drone 2 on a suspect verdict. To watch the full ground-bot-then-drones
+  choreography use `mission_mode: scout_dispatch` (below), not a longer sweep.
+- **`mission_mode: scout_dispatch`** (added 2026-07-30,
+  `orchestrator/scout_dispatch.py`) is the watchable mission, in four beats:
+  SCOUT (one drone surveys the zone and flags suspects) → DISPATCH (ground bot
+  drives to a flagged panel) → CONVERGE (both drones take station) → INSPECT
+  (close pass, `diagnose`, verdict written). `mission_mode: sweep` is the default
+  and is the measurement FSM — unchanged, because every recorded KPI came from it.
+  ```bash
+  tools/run_livestream.sh 24 mission \
+      --scenario configs/scenarios/fault_response_demo.yaml
+  ```
+  ⚠ **Not a measurement.** It pairs with `route: fault_zone`, which centres the
+  survey window on a seeded fault *using ground truth*, and it judges a flagged
+  panel twice (survey standoff + close standoff). Both break the denominators
+  `KPI-01`/`KPI-03` are defined over. Measurement stays `nominal_calm` (SC-01) and
+  `khavda_selfshade{,_lowsun}` (SC-11/SC-12).
+- **A scenario that overrides `faults.rate` or `turbine_scatter` needs its OWN
+  USD.** Both are baked in at build time. `fault_response_demo` raises the whole
+  plot's rate from 0.0 to 5e-4, so it builds `assets/fault_response_demo.usd` —
+  **measured 2026-07-30: 679,616 panels (340 faulted), 8 turbines, 712,795 prims
+  on stage, ~5 min**. Two corrections to what was assumed: the faulted panels cost
+  ~33k prims (~97 each, not ~75), and the build is longer than the wide shot's
+  documented **176 s** because that figure is for `rate: 0.0` and faulted panels
+  take the slow per-prim path. Pointed at `assets/khavda_s05b_full.usd`
+  instead, the survey flies a stage with zero faults and flags nothing — which
+  looks exactly like a broken escalation path. `tools/run_livestream.sh` derives
+  the USD name from the scenario to make this unmissable.
+- **`cruise_speeds` was dead in the real path** (fixed 2026-07-30). `run.py` built
+  `KinematicControl` without it, so every commute ran at inspection speed and only
+  the tests ever exercised cruise. That is a distance ceiling, not just a slow
+  transit: one `move_to` reaches `max_ticks * dt * speed`, so at 1.0 m/s and
+  dt 0.1 the ground bot could cover **400 m** before the "did not reach" warning
+  fired and it snapped to the waypoint — against a ~490 m first commute on
+  BLOCK-02, and a 4.84 × 1.97 km whole plot. `bot_cruise`/`drone_cruise`/
+  `max_ticks` are now read from `kinematics`.
+- **A stale farm USD makes a code change look like a no-op.** `--farm-usd` loads
+  whatever is on disk; it does not check that the stage is newer than the code
+  that authored it. This bit: the interspersed turbine field was committed while
+  every USD on disk predated it, so a run would have shown the old layout and
+  "disproved" a working change. `tools/run_livestream.sh` now compares the USD's
+  mtime against the farm config *and* `world/`+`schema/` sources, rebuilds when
+  stale, and takes `--farm block02|s05b_full|s05b` / `--no-build`.
 - **The client is not in the build.** This build ships only the *server*
   (`omni.kit.livestream.webrtc`, "Kit Livestream WebRTC Server"). There is no
   browser client and nothing on port 8211 — a plain `GET :49100` returns 501

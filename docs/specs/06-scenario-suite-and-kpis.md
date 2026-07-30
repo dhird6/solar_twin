@@ -19,6 +19,47 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 | `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count). Earned its keep twice: it separated a VLM parse bug from a real false alarm, and it distinguished "vLLM server down" (10/10 abstentions, `false_fault_rate` 1.000) from a model collapse |
 | `KPI-03c` | False-alarm attributable share | fraction of a run's false alarms whose **neighbouring** panel was seeded faulty — an upper bound on how much of `KPI-03` is the panel next door | `SLICE-3`, alongside `KPI-03` | **Implemented**: `kpi/confound.py`, written to every run record's `confound` block. Measured 1.00 on `SC-01` — see the caveat below |
 
+| `KPI-09` | Suspicion retired per unit travel | Σ of the **simulated** prior fault-probability of every cell inspected, ÷ fleet route distance (m). What a suspicion-first dispatcher is trying to maximise | `SLICE-4b` | New — `kpi/dispatch.py`; **must** be reported against a same-seed ranker-OFF baseline arm or it means nothing |
+| `KPI-09a` | Confirmed faults per unit travel | count of panels whose `detected_state != healthy` ÷ fleet route distance (m) — the *actual yield*, not the predicted yield | `SLICE-4b`, alongside `KPI-09` | New — same module. This is the honest half: `KPI-09` can be maximised by chasing a wrong prior |
+
+### `KPI-09` — defined BEFORE the ranker, on purpose
+
+The research doc (`DIGITAL_TWIN_VISION_AND_RESEARCH.md`, "Grid-Level Fault
+Localization & Staged Dispatch") warns explicitly that *"fault-probability per
+battery-hour" is the objective, but nothing currently measures it*, and that
+building the optimisation layer first would make its benefit **asserted rather
+than demonstrated** — the same failure mode as quoting `KPI-01` from
+`demo_video.yaml`. So the metric is written down here first.
+
+**The denominator is travel distance, not battery-hours — because there is no
+battery model.** `world/fleet_specs.py` carries geometry (diagonals, widths,
+heights) and **no endurance, capacity or power draw**; `MissionResult` carries
+`steps` and the run record carries `wall_seconds`, which on a VLM run is
+dominated by ~7-12 s/panel of blocking inference and is therefore a *perception*
+cost, not a *flight* cost. Using it would measure the wrong thing. Route distance
+in metres is available today as a pure, deterministic, seed-stable function of the
+waypoint sequence, and it is genuinely proportional to energy for a fixed
+platform.
+
+⚠ **Battery-hours remains the target denominator.** Converting needs a per-platform
+cruise speed and energy model (`m350`-class endurance, hover-vs-translate draw).
+Until that exists, quote `KPI-09` in **per-metre** units and do not silently
+rename it to per-battery-hour.
+
+**Measured as a paired comparison, never as a single number.** One arm with the
+ranker on, one arm with it off (serpentine layout order), **same scenario, same
+seed, same panel budget**. The claim is the *delta*; an absolute `KPI-09` is
+uninterpretable because it scales with whatever the prior happens to be.
+
+⚠⚠ **On simulated SCADA this pair is CIRCULAR and cannot validate anything about a
+real plant.** The simulated prior is a deterministic function of `pv:state` /
+`pv:iv_yield` — the very ground truth the mission is trying to discover — so a
+ranker fed by it will score near-perfectly *by construction*. That makes `KPI-09`
+a **test that the dispatch machinery works as specified**, and emphatically **not**
+evidence that suspicion-first dispatch would beat a sweep on real hardware. Every
+run record carries `dispatch.scada_source`, which is `simulated` today; a number
+from a `simulated` run must never be quoted as a real-plant result.
+
 **Note on `KPI-01` vs `KPI-03`:** these are deliberately distinct. `KPI-01` is
 overall accuracy across all injected states (including real faults); `KPI-03`
 isolates the specific "swept blade shadow → false hotspot" failure mode this

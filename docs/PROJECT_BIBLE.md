@@ -161,6 +161,49 @@ Attribute set (namespaced under `pv:` to avoid collisions):
 | `pv:last_inspected` | `string` | ISO timestamp |
 | `pv:inspection_log` | `string[]` | append-only history |
 
+#### The `grid:` namespace — dispatch cells (added 2026-07-30, `SLICE-4b`)
+
+One attribute, in its **own** namespace *above* `pv:`, so the panel contract is
+untouched:
+
+| Attribute | USD type | Meaning |
+|---|---|---|
+| `grid:id` | `string` | the dispatch cell this panel rolls up to, e.g. `G-0258` |
+
+It is a **join key**, nothing more: it lets coarse cell-level telemetry and fine
+panel-level verdicts meet on the same object. Roll-up runs both ways — simulated
+SCADA gives a cell a **prior**, the fleet's `FaultReport`s give it a **posterior**,
+and a cell whose panels were just cleared stops ranking highly even if its PR stays
+depressed (that discrepancy is itself a finding: soiling and inter-row shading
+depress PR without any module being faulty).
+
+Separate namespace on purpose: `grid:id` describes a panel's place in an
+**electrical/dispatch grouping**, not its own physical condition, and a future real
+string map must be able to replace it without touching `pv:`. Written on the prim,
+never to a side store — a side store during sim would violate USD-as-source-of-truth
+(golden rule 3).
+
+**⚠⚠ A cell is a TABLE, and a table is NOT a string.** The design calls for cells
+aligned to electrical topology, because the coarse signal is electrical and a cell
+straddling two strings cannot be scored cleanly. **The available data cannot support
+that.** The vendor DWG is DC *hardware geometry* only: `TableSpec` carries
+`table_id`, `modules`, `module_rows`, `layer` — **no string map, no combiner
+grouping, no inverter assignment** (even the 5 inverter stations are our own
+capacity-derived inference, `world/site.py`). So the cell is the **table** — 112
+modules at Khavda, against a real string's ~20–30, i.e. one table ≈ 4–5 strings.
+Subdividing a table into N equal groups to look string-shaped was **rejected**: that
+invents electrical topology. `modules_per_cell` exists so a real string map can
+refine the cell later; its default of `0` means "the whole table".
+
+Stamped at build time by `farm_builder._cell_id_for()` from `(site.row, site.col)`
+= `(table index, module index)`, i.e. from the layout's own structure. **Off unless
+`grid.enabled`** is set in `farm.yaml`, so a stage built without it authors no
+attribute and stays byte-identical to one built before the namespace existed.
+
+Consumers: `kpi/simulated_scada.py` (⚠ **simulated** PR-anomaly ranking) and
+`orchestrator/grid_dispatch.py` (prioritisation, strictly upstream of the FSM).
+See `docs/specs/06` for `KPI-09` and why the simulated arm is circular.
+
 Read/write helper sketch (**⚠ verify pxr calls against your build**):
 
 ```python
