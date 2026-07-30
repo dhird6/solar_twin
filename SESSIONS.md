@@ -207,12 +207,18 @@ A fluent, confident, **wrong** paragraph about a panel carrying an injected hots
 negative**, and the only reason we know is that the stub arm was run against the same
 scenario. **A 0.00 KPI-03 says nothing about whether the brain finds anything.**
 
-⚠⚠ **CORRECTION — I first wrote that this was "a flag to go measure recall properly".
-It is not: recall is already measured, and I should have checked before writing that.**
-`KPI-01` (detection rate) on `SC-01` is **0.875–0.9167 across repeats** (`nominal_calm_vlm`,
-gate `detection_rate_min: 0.80`, passing; the crop variant records 0.900 median,
-0.875–0.900). So the brain has a **known ~10-12% miss rate**, and tonight's miss is one
-draw from it — *not* a new discovery, and not evidence of a regression.
+⚠⚠ **DOUBLE CORRECTION, and the second one is the finding of the night.**
+
+*First* I wrote this was "a flag to go measure recall properly", then corrected myself:
+recall looked already measured — `KPI-01` on `SC-01` reads **0.875–0.9167** across repeats,
+gate `detection_rate_min: 0.80`, passing. So tonight's miss looked like one draw from a
+known ~10-12% miss rate.
+
+**That correction was also wrong, because `KPI-01` is not recall.** It is
+`detection_rate` = *"fraction of panels whose detected state matches ground truth"* —
+**accuracy over EVERY panel, healthy ones included** (`mission.py`, and its docstring
+always said so). On a 20%-fault scenario that denominator is 80% healthy panels being
+correctly left alone. The real recall underneath those runs is **0.143–0.857**. See §8.
 
 What the demo cut therefore does and does not show:
 - ✅ It is a **fair, unlucky-but-representative sample.** One fault in the zone, ~12%
@@ -230,6 +236,55 @@ What the demo cut therefore does and does not show:
   **hotspot** at `crop_fraction: 1.0`. Whether hotspot recall specifically is the weak
   half of that 0.875 is a real, cheap question — a per-state breakdown of `KPI-01` would
   answer it and nobody has run one.
+
+### 8. ⭐⭐ THE FINDING: our detection gate can be passed by a model that detects nothing
+
+Chasing "did the VLM really miss that hotspot" led to the most important thing in this
+session. `tools/kpi_recall.py` (new, pure-python) reproduces all of it from archived
+records, so none of this is asserted.
+
+**`KPI-01` (`detection_rate`) is ACCURACY over every panel, healthy included.** Its
+docstring always said so; it is nonetheless *gated* and *quoted* as though it measured
+detection. Consequences, measured over the 20 archived Cosmos Reason runs:
+
+- `nominal_calm_vlm` is **82.5% healthy** and declares `detection_rate_min: 0.80`.
+  **A model that calls every panel healthy scores 0.825 and PASSES the gate**, having
+  found nothing at all.
+- The null model clears that gate in **13 of 20** runs.
+- In **3 of 20**, the real model scored **at or below** the null baseline.
+- Exact recall on faulted panels only: **0.143–0.857**, against a `detection_rate`
+  reading 0.80–0.925 on the very same runs.
+
+**⭐ And the aggregate was hiding a split with two different fixes:**
+
+| injected | n | flagged at all | named correctly |
+|---|---|---|---|
+| `soiled` | 62 | **0.984** | 0.516 |
+| `hotspot` | 58 | **0.397** | 0.379 |
+
+| injected → diagnosed | n | |
+|---|---|---|
+| `hotspot` → `healthy` | **35** | missed outright |
+| `soiled` → `soiled` | 32 | correct |
+| `soiled` → `hotspot` | **29** | mislabelled |
+| `hotspot` → `hotspot` | 22 | correct |
+
+So **soiling is a discrimination problem** (nearly always noticed, named wrong half the
+time) and **hotspots are a sensitivity problem** (simply not seen). Chasing "recall" as
+one number would have optimised the wrong half. This is the quantified form of the note
+already in this log at Session 11c — *"KPI-01 = 0.875 is a discrimination problem before
+it is a variance problem"* — which turns out to have been righter than it knew.
+
+**Shipped, without breaking the record.** `detection_rate` is left **exactly as-is** — it
+appears in every run record ever written and redefining it would make those
+non-comparable, the same reasoning that locked `false_fault_rate`. Added beside it, all
+four in the run record: `healthy_fraction` (the null baseline a gate must beat),
+`fault_recall`, `fault_flagged_rate`, `recall_by_state()`. Specced as `KPI-01a`/`01b`/`01n`
+in `docs/specs/06`, with the rule: **never gate on `KPI-01` alone.**
+
+⚠ A `detection_rate` of 1.00 on an all-healthy scenario is **vacuous** — with no faults
+seeded it is arithmetically the same fact as `KPI-03 = 0`, restated. `khavda_selfshade`
+is exactly that, so §1's table should not be read as "detects faults perfectly".
 
 ### 7. From the parallel audit: two more real defects
 
