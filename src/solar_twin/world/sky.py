@@ -412,7 +412,18 @@ def sky_image(
         t = np.clip(np.degrees(-elevs[down]) / 25.0, 0.0, 1.0)[:, None]
         img[down] = (haze[None, :] + (gnd - haze)[None, :] * t)[:, None, :]
 
-    return (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    # ROUND, do not truncate. `.astype(np.uint8)` truncates toward zero, so the
+    # quantisation error is uniform in [-1, 0] LSB with mean -0.5 -- a systematic
+    # bias, not noise. Measured: it put the delivered hemisphere mean 0.00196
+    # BELOW the exposure `_solve_scale` bisected for (SC-11 anchor 0.547490,
+    # truncated 0.545529), identical at widths 128/256/512/1024 -- so it is not
+    # the "finite row count" it was blamed on, and it is the entire residual that
+    # commit 1fe0eb6 records as unavoidable "8-bit quantisation".
+    #
+    # It always darkens, and being one-directional it can never average out across
+    # `--repeat N`. `textures.py` already rounds at all four of its conversion
+    # sites; this was the outlier. Decoding at the bin centre leaves <2.2e-5.
+    return np.clip(np.rint(np.clip(img, 0.0, 1.0) * 255.0), 0, 255).astype(np.uint8)
 
 
 def write_sky_texture(
