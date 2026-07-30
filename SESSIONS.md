@@ -129,7 +129,60 @@ the stage before and after the fix is byte-identical; that is precisely why
 `OSM_POWER_AREAS` lives in the Isaac-free module and the test asserts against the
 **bake** rather than a built stage.
 
-### ⭐⭐ `farm_builder` is O(n^2.4) in panel count — the whole-plot video is INFEASIBLE, not slow
+### ⭐⭐⭐ FIXED: the quadratic build. The WHOLE PLOT now authors in 176 s (was ~55 h)
+
+**679,616 modules / 6,213 tables / 687,457 prims, in 175.77 s**, on
+`assets/khavda_s05b_full.usd` (86 MB, opens in 8.6 s).
+
+⚠ **And my own diagnosis of the cause was wrong — profiling contradicted it.** I had
+named `SetInstanceable(True)` the prime suspect (flagged unverified, which is the only
+reason it did no damage). Timing each per-panel op separately:
+
+| variant | 2,000 | 8,000 | 32,000 | scaling |
+|---|---|---|---|---|
+| 1 xform + `pv:` attrs only | 0.20s | 1.71s | 22.46s | **n^1.70** |
+| 2 + internal reference | 0.78s | 5.30s | 67.35s | n^1.61 |
+| 3 + `SetInstanceable` | 2.19s | 6.72s | 100.25s | n^1.38 |
+| 4 + semantic label | 1.04s | 6.94s | 98.28s | n^1.64 |
+| **6 Sdf specs in one ChangeBlock** | **0.09s** | **0.39s** | **1.63s** | **n^1.03** |
+
+**Variant 1 is already n^1.70** — plain `Xform.Define` plus the attributes, no
+reference and no instancing. So the cause is `UsdStage::DefinePrim` firing a change
+notification that recomposes the parent's children: authoring N panels under one
+parent is quadratic whatever else you do to them. **Instancing was a passenger.**
+
+The fix is USD's documented bulk path — `Sdf.PrimSpec`s written straight into the
+layer inside one `Sdf.ChangeBlock`, so the stage composes once instead of 679,616
+times. ⚠ `UsdStage::DefinePrim` **cannot** be used inside a ChangeBlock (the stage
+never recomposes, so the prim is not there to return and it raises), which is why this
+is an Sdf-level function rather than a flag on `create_panel`.
+
+| panels | before | after |
+|---|---|---|
+| 22,064 | 55 s | **6.9 s** |
+| 55,328 | 495 s | **14.0 s** |
+| 110,096 | ~43 min | **27.1 s** |
+| 679,616 | ~55 h | **176 s** |
+
+**The cost is a SECOND authoring path for one contract**, which is exactly the kind of
+duplication that rots, so three tests pin them together: field-by-field equality
+*including USD types* (a bare tuple infers a double vector and silently mismatches the
+declared Int2/Double3 — reads back fine in Python, breaks a typed consumer), a
+whole-build diff of batched vs unbatched at 40% faults, and a check that batched panels
+stay instanced, labelled and renderable. The now-dead healthy-and-instanced branch in
+the old loop was deleted rather than left to drift.
+
+⚠ **A regression here fails as a TIMEOUT, not a red test** — the tests guard
+equivalence, not speed. The config header carries the measured curve and says so.
+
+⚠ **Faults are still not free, for a different reason.** Faulted panels keep the
+per-prim path (unique cell geometry + dust film) and cost ~75 prims each, so 2% of
+680k is 13,592 faulted panels and ~1M extra prims. The fix makes the HEALTHY bulk
+linear; it does not make a fault-heavy 680k-panel plot cheap.
+
+### The earlier, WRONG conclusion — kept because the process matters
+
+#### `farm_builder` is O(n^2.4) — "the whole-plot video is INFEASIBLE" (superseded above)
 
 Asked for a whole-plant video, I started the full 6,213-table S05b plot and estimated
 32 min by scaling BLOCK-02's 85 s linearly. **It ran 1h16m with no end in sight**, so I
@@ -144,14 +197,19 @@ stopped guessing and measured two clean points:
 **~55 HOURS**, not 32 minutes. I killed the build. The estimate was wrong by a factor of
 100 because it assumed a linear cost that this code does not have.
 
-⚠ **So `configs/farm_khavda_s05b_full.yaml`'s "~680k prims" blocker was the wrong
-blocker.** The prim count is real but it is not what stops you: the AUTHORING TIME is,
-and it is superlinear, so no fault-rate trick helps. Prime suspect is
-`prim.SetInstanceable(True)` re-resolving the instance master as the instance set grows
-— unverified, and worth profiling before anyone attempts a multi-block plot again.
+**The measurement above was right; the conclusion drawn from it was not.** "Infeasible"
+was only true of the code as written — one `Sdf.ChangeBlock` later the same plot builds
+in 176 s. Measuring the SYMPTOM (n^2.39) and stopping there cost a whole-plant video and
+sent me to a smaller deliverable; measuring the CAUSE took one profile script and fixed
+it. Worth remembering: a scaling curve tells you something is wrong, never what.
 
-**Practical ceiling on this box, from the measured curve:** ~30k panels in ~1.6 min,
-~110k in ~43 min. So a plant video means a COMPLETE BLOCK, not a complete plot.
+⚠ **So the config's "~680k prims" blocker was the wrong blocker.** The prim count is
+real but it is not what stops you: the AUTHORING TIME was.
+
+⚠ **And the prime suspect I named — `SetInstanceable(True)` re-resolving the instance
+master — was WRONG.** I flagged it unverified, which is the only reason it did no
+damage. Profiling showed plain `Xform.Define` + attributes was already n^1.70 with no
+instancing anywhere near it. **Do not let a plausible suspect stand in for a profile.**
 
 ### The full-plant video: the complete BLOCK-02, all 273 tables
 
