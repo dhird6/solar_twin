@@ -158,6 +158,7 @@ def _textured_material(
     tex_paths: dict,
     metallic: float,
     diffuse_from_primvar: bool = False,
+    use_normal: bool = True,
 ) -> UsdShade.Material:
     """A `UsdPreviewSurface` driven by generated albedo / roughness / normal maps.
 
@@ -209,16 +210,17 @@ def _textured_material(
     _, r_out = _tex("roughness", Sdf.ValueTypeNames.Float, "r")
     shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(r_out)
 
-    _, n_out = _tex("normal", Sdf.ValueTypeNames.Float3, "rgb")
-    ntex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/NormalTex"))
-    # A normal map is stored 0..1 but read as -1..1; without this bias/scale the
-    # surface is lit as if every normal pointed into the +XYZ octant.
-    ntex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
-    ntex.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
-    # Normal maps are non-colour data; letting the renderer sRGB-decode them
-    # bends the normals.
-    ntex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
-    shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(n_out)
+    if use_normal:
+        _, n_out = _tex("normal", Sdf.ValueTypeNames.Float3, "rgb")
+        ntex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/NormalTex"))
+        # A normal map is stored 0..1 but read as -1..1; without this bias/scale the
+        # surface is lit as if every normal pointed into the +XYZ octant.
+        ntex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
+        ntex.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
+        # Normal maps are non-colour data; letting the renderer sRGB-decode them
+        # bends the normals.
+        ntex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+        shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(n_out)
 
     rtex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/RoughnessTex"))
     rtex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
@@ -1395,14 +1397,34 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # NOT in `textures.SURFACES`: their look feeds the soiling bake and the hotspot
     # emissive, and texturing them re-opens the bright-frame-as-hotspot failure.
     # That is a separate, flagged decision — see SESSIONS.md.
+    # ⚠⚠ DEFAULT OFF, and that is a MEASURED regression guard, not a preference.
+    # With the textured materials bound, the desert ground renders near-black and
+    # achromatic: non-glass mean RGB went (77.6, 68.0, 54.1) -> (1.1, 1.2, 1.2),
+    # i.e. R-B +23.5 -> -0.1, on SC-11's control panel. That kills the Session 10c
+    # invariant (ground must read WARM, R-B > 0) which exists to catch the sky
+    # lighting the desert wrongly -- and it silently weakened KPI-03's stimulus,
+    # because a black ground bounces no light up onto the modules (SC-11
+    # differential +12.5 -> +10.1 points).
+    #
+    # Bisected with --pbr (see main()): `albedo` (no normal map) and `primvar`
+    # (vertex-colour diffuse) render IDENTICALLY dark, so it is neither the normal
+    # map nor the diffuse source -- the diffuse input is being ignored outright.
+    # The generated maps are correct (ground albedo R-B +28.04) and every texture
+    # path resolves and exists, so the fault is in how this network is consumed,
+    # not in the textures. Turn back on with `--pbr on` only once a render
+    # measurement puts the ground back above R-B +20.
     pbr_paths = {}
-    if (farm_cfg.get("pbr", {}) or {}).get("enabled", True):
+    if (farm_cfg.get("pbr", {}) or {}).get("enabled", False):
         tex_dir = Path(out).parent / f"tex_{Path(out).stem}"
         pbr_paths = tex.write_all(
             str(tex_dir),
             size=int((farm_cfg.get("pbr", {}) or {}).get("size", tex.DEFAULT_SIZE)),
             diffuse={n: _LOOKS[n][0] for n in tex.SURFACES if n in _LOOKS},
         )
+        # `mode` exists to bisect the black-ground regression; "on" is the shipped
+        # path. Only the GROUND carries a `displayColor` primvar, so "primvar" is a
+        # no-op elsewhere and those surfaces keep their albedo map.
+        mode = (farm_cfg.get("pbr", {}) or {}).get("mode", "on")
         for name, paths in pbr_paths.items():
             looks[name] = _textured_material(
                 stage,
@@ -1410,6 +1432,8 @@ def build(farm_cfg: dict, out_path: str) -> str:
                 name,
                 paths,
                 metallic=_LOOKS[name][3],
+                diffuse_from_primvar=(mode == "primvar" and name == "ground"),
+                use_normal=(mode != "albedo"),
             )
         print(
             f"  pbr: textured {len(pbr_paths)} surfaces "
@@ -1753,6 +1777,19 @@ def main(argv: list[str] | None = None) -> int:
         "SAME --subset to solar_twin.run, or the mission will target panels the "
         "stage lacks.",
     )
+    ap.add_argument(
+        "--pbr",
+        choices=("on", "off", "albedo", "primvar"),
+        default="",
+        help="override the config's `pbr.enabled` so the textured-PBR layer can be "
+        "A/B'd against the flat materials WITHOUT editing a config. `off` = flat "
+        "materials only; `albedo` = albedo+roughness but NO normal map; `primvar` = "
+        "keep the ground's vertex-colour diffuse (roughness+normal only). Added to "
+        "bisect a measured regression: with the full layer on, the desert ground "
+        "rendered near-black and achromatic (R-B +23.5 -> -0.1) even though the "
+        "GENERATED albedo map is correct (R-B +28.04) -- so the fault is in how the "
+        "maps are bound, not in how they are made, and that needs one knob to isolate.",
+    )
     args = ap.parse_args(argv)
     if args.scenario:
         from solar_twin.scenario import load_scenario
@@ -1768,6 +1805,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--subset only applies to layout.kind: file")
         layout_cfg["max_tables"] = args.subset
         farm_cfg = {**farm_cfg, "layout": layout_cfg}
+    if args.pbr:
+        pbr_cfg = dict(farm_cfg.get("pbr") or {})
+        pbr_cfg["enabled"] = args.pbr != "off"
+        pbr_cfg["mode"] = args.pbr
+        farm_cfg = {**farm_cfg, "pbr": pbr_cfg}
     build(farm_cfg, args.out)
     return 0
 

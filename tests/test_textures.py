@@ -214,3 +214,69 @@ class TestFrameSplit:
         f = T.make_texture_set(T.SURFACES["fence_frame"], size=64).roughness.mean()
         c = T.make_texture_set(T.SURFACES["concrete"], size=64).roughness.mean()
         assert f < c
+
+
+class TestPbrIsOffUntilItRendersCorrectly:
+    """⚠⚠ The textured-PBR layer is DISABLED by default because it was MEASURED to
+    break the render, and these pin that so it cannot come back silently.
+
+    With the textured materials bound, SC-11's control panel measured a non-glass
+    (ground) mean of (1.1, 1.2, 1.2) -- R-B -0.1, achromatic and near-black --
+    against (77.6, 68.0, 54.1) / R-B +23.5 with the layer off. That inverts the
+    Session 10c invariant (desert ground must read WARM) and, because a black
+    ground bounces no light onto the modules, it also compressed KPI-03's shading
+    stimulus from +12.5 to +10.1 points without anyone touching a KPI.
+
+    The maps themselves are fine -- `test_ground_albedo_keeps_its_warm_cast` below
+    passes and every texture path resolves -- so re-enabling needs a RENDER
+    measurement, not a re-read of these unit tests.
+    """
+
+    #: The ground must render warm. Session 10c used exactly this quantity to catch
+    #: an emissive dome lighting the desert floor blue.
+    MIN_GROUND_R_MINUS_B = 20.0
+
+    def test_the_builder_defaults_the_pbr_layer_to_off(self):
+        """A source-level assertion, deliberately: `build()` needs pxr, so the only
+        way to guard the DEFAULT without a GPU is to read it out of the source.
+        """
+        import ast
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "src/solar_twin/world/farm_builder.py"
+        source = src.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        # Scope to the PBR gate by reading the RECEIVER's own source: the sky has an
+        # `.get("enabled", True)` of its own, and that one is correct as-is.
+        defaults = [
+            node.args[1].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "enabled"
+            and isinstance(node.args[1], ast.Constant)
+            and "pbr" in (ast.get_source_segment(source, node.func.value) or "")
+        ]
+        assert defaults, "could not find the pbr `.get('enabled', ...)` gate"
+        assert all(d is False for d in defaults), (
+            "the PBR layer must stay OFF by default -- it renders the desert ground "
+            "near-black (R-B +23.5 -> -0.1). Re-enable only with a render "
+            "measurement showing ground R-B back above "
+            f"+{TestPbrIsOffUntilItRendersCorrectly.MIN_GROUND_R_MINUS_B:.0f}."
+        )
+
+    def test_ground_albedo_keeps_its_warm_cast(self):
+        """The generated map is NOT the bug: it carries the sandy cast correctly.
+        This is what makes the render failure a binding problem rather than a
+        texture-generation one.
+        """
+        ts = T.make_texture_set(T.SURFACES["ground"], size=256)
+        a = T.tinted_albedo(ts, (0.30, 0.25, 0.19)).astype(float)
+        r_minus_b = a[..., 0].mean() - a[..., 2].mean()
+        assert r_minus_b > self.MIN_GROUND_R_MINUS_B, (
+            f"ground albedo R-B is {r_minus_b:.2f}; the desert must stay warm"
+        )
