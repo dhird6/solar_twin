@@ -72,10 +72,61 @@ Each slice is **one thin end-to-end thread**, not a layer built in isolation. Th
 - **Slice 2 — physics that bites, one drone:** replace kinematic control with **Pegasus/PX4 SITL**; add `omni.physx.forcefields` wind + one **articulated turbine** with a swept-disk keep-out. Thread: drone flies a coverage pass under gust, holds station, avoids the keep-out, judges a panel. *Spark-local (⚠ Pegasus-on-aarch64 smoke test is a gating risk).*
 - **Slice 3 — the false-fault loop:** add **sweeping blade shadows** + motion blur through Sensor RTX/`ovrtx`; measure Reason's **false-fault rate** when a shadow crosses a healthy panel. Build the first graded scenario in `configs/`. *Spark-local rendering.*
 - **Slice 4 — scenario factory (first burst-out):** stand up the **Cosmos Transfer / Data Factory Blueprint + OSMO** pipeline off-box to fan the seeded scene into dust/haze/low-sun/blade-shadow/bird variants; Evaluator filters implausible frames; use the corpus to harden Reason. *Burst-out (RTX PRO 6000 / DGX / cloud); Spark seeds and consumes.*
+- **Slice 4b — Grid-Level Fault Localization & Staged Dispatch:** stop inspecting the plant panel-by-panel and start inspecting it *suspicion-first*. Divide the farm into a spatial grid of cells, score each cell's fault probability from **SCADA string-level performance-ratio anomalies**, and feed the ranked cells to **cuOpt** as a prioritized dispatch problem: ground bot to the suspect cell, then the drone for detailed Cosmos Reason inspection within it. **This is a new prioritization layer upstream of the existing interfaces — orchestration does not change.** *Spark-local; needs no new hardware, but see the SCADA caveat below.* Detail in "Grid-Level Fault Localization & Staged Dispatch" after this roadmap.
 - **Slice 5 — trained flight policy:** train an **Isaac Lab RL policy** for station-keeping + gust rejection under domain-randomized wind and procedural graded terrain; add birds + terrain grade + parametric turbine wake. Gate on closed-loop KPIs. *Training burst-out; closed loop runs on Spark.*
 - **Slice 6 — the real site:** **drone-survey → NuRec/3DGUT reconstruction → Cesium-georeferenced USD**, composited with kinematic turbines/birds and rendered through Sensor RTX. The twin now *looks like our site*. *Reconstruction burst-out (unless CUDA-13/aarch64 3dgrut verified); rendering Spark-local.*
 - **Slice 7 — fleet + coverage brain:** add the **ground bot**; **cuOpt** plans battery/time-window coverage across both robots; **Mission Dispatch/VDA5050** dispatches. *Spark for cuOpt + interactive loop (⚠ Mission Dispatch containers not yet Spark-supported — may need off-box or a Jetson).*
 - **Slice 8 — deploy bridge:** swap `Transport` to the ROS 2 bridge, `Perception` to **Isaac ROS + on-Thor Cosmos Reason**; validate against the same twin scenario suite; SIL→HIL before real flight. *Spark prototype → Jetson Thor/Orin on metal.*
+
+## Grid-Level Fault Localization & Staged Dispatch
+
+*(Slice 4b — sits between the scenario factory and the trained flight policy. It needs a hardened Reason from Slice 4 to be worth aiming, and it gives Slice 7's cuOpt something to optimise beyond raw coverage.)*
+
+**The problem it solves.** Today a mission sweeps panels in layout order and asks the VLM about each one. That is fine for 560 panels and absurd for 679,616: at the measured ~12 s per panel of blocking VLM inference, one pass over the real plot is **94 days of wall-clock** (679,616 × 12 s), and that is with perception as the *only* cost. Coverage is the wrong objective. The plant already knows roughly where its problems are — the job is to *use* that and spend expensive perception only where it pays.
+
+**The architecture, in one line:** a coarse, cheap, plant-wide signal ranks regions; an expensive, precise, per-panel one confirms within the top-ranked few.
+
+### The grid
+
+Divide the farm into a spatial grid of **cells**, each cell being a group of panel rows/strings — deliberately aligned to the **electrical** topology (a string, or a small set of strings on one combiner), not to a tidy geometric square. The reason is that the coarse signal is electrical: a string is the finest unit SCADA can talk about, so a cell that straddles two strings can never be scored cleanly.
+
+A new **`grid:id`** attribute sits *above* the existing `pv:` panel schema. Panels keep everything they have; `grid:id` is the join key that lets string-level telemetry and panel-level verdicts roll up to the same object:
+
+- `grid:id` — the cell a panel belongs to (e.g. `G-04-11`), stamped at build time by `farm_builder` from the layout's own block/string structure.
+- Roll-up direction is both ways: SCADA gives a cell a **prior**, the fleet's `FaultReport`s give it a **posterior**. A cell whose panels were just confirmed healthy should stop ranking highly even if its PR is still depressed — that discrepancy is itself a finding (soiling and shading depress PR without any panel being faulty).
+
+⚠ **`grid:id` is not in `schema/pv_module.py` today.** It is a contract addition and must land the way `pv:` did — schema constant, read/write helpers, round-trip test, and a note in `PROJECT_BIBLE.md` §6.1 — before anything depends on it. Writing it as a side store during sim would violate the USD-as-source-of-truth rule.
+
+### The coarse signal — SCADA performance-ratio anomaly (primary)
+
+Score each cell by comparing **actual** string output against **weather-normalized expected** output. Expected is a function of plane-of-array irradiance, module temperature, and the string's own nameplate; the residual — actual minus expected, normalized — is the anomaly score. Ranking cells by it gives a plant-wide fault-probability map for essentially free, refreshed as often as SCADA polls.
+
+This is the standard O&M method, and it is *coarse by nature*: it localizes to a string, tells you a string is underperforming, and cannot tell you whether that is soiling, a hotspot, a cracked module, a diode fault, or a shadow. That is precisely the division of labour — the twin already has something that can tell those apart, and it is expensive.
+
+⚠ **We have no SCADA feed, and this is the gating dependency, not a detail.** The vendor DWG is DC *hardware* geometry only — it carries no telemetry, no string map, and no historical generation. Nothing in the repo can produce a real PR today. Two honest paths: (a) simulate string output from the twin's own `pv:state` + `pv:iv_yield` and the scenario's sun, which makes the ranker *testable* but proves nothing about real-plant behaviour, and (b) obtain a real feed, which is a commercial/access question rather than an engineering one. **Do (a) first and label it a simulation everywhere it appears** — a fault-probability map derived from our own injected faults is a closed loop that will happily score 1.00 and mean nothing.
+
+### The coarse signal — high-altitude drone sweep (fallback)
+
+Where SCADA is unavailable, fall back to a **fast high-altitude thermal/RGB sweep**: one drone pass at altitude covering many cells per frame, scored for thermal or visual anomaly at cell granularity rather than panel granularity. Slower and dearer than telemetry, still far cheaper than per-panel inspection.
+
+⚠ **Isaac Sim does not render true thermal**, so the thermal channel is a *signature* (an emissive/temperature proxy), exactly as Phase 1 already does for the confirm-drone. A sweep that reads our own emissive proxy is a test of the dispatch logic, not evidence that a real thermal camera would find the same cells.
+
+### Staged dispatch through cuOpt
+
+Ranked suspect cells become the input to **cuOpt**, which already owns coverage/routing under battery and time-window constraints. The change is the objective: not "visit everything efficiently" but "retire the most fault-probability per unit of battery and time". Then, within a dispatched cell, the existing two-stage escalation runs unchanged:
+
+1. **Ground bot first** to the suspect cell — cheaper per metre, longer endurance, and it establishes what is actually there.
+2. **Drone second** for detailed **Cosmos Reason** inspection of the panels within that cell, which is where the per-panel verdict and the `pv:state` write-back happen.
+
+⚠ **The ordering is an assumption worth measuring, not a conclusion.** Ground-first is right when travel dominates and the bot can rule a cell out; it is wrong when the fault type is only visible from above (soiling gradients, string dropout patterns) and the bot's trip is pure overhead. Make it a config choice with both arms measured, the way `--route serpentine` was.
+
+### Why this does not change orchestration
+
+The escalation FSM in `orchestrator/mission.py` takes a list of panels to inspect and runs ADVANCE→SCREEN→CONFIRM→WRITEBACK over it. This layer only decides **which panels, in what order** — it sits upstream of that and hands the FSM the same shape it takes today. `Perception`, `Transport` and `RobotControl` are untouched; `FaultReport` is untouched; the USD stage stays authoritative. Concretely, the new surface is a ranking module (pure-python, Isaac-free, testable without a GPU) plus `grid:id` on the schema — and if the ranker is disabled, the mission behaves exactly as it does now.
+
+That is the test of whether this has been built correctly: **turning it off must reproduce current behaviour byte-for-byte.**
+
+⚠ **The KPI this needs, and does not yet have.** "Fault-probability per battery-hour" is the objective, but nothing currently measures it. Before building the ranker, define the metric and the scenario that scores it — otherwise this becomes a large optimisation layer whose benefit is asserted rather than demonstrated, which is the same failure mode as quoting `KPI-01` from `demo_video.yaml`.
 
 ## Honest constraints & risks
 

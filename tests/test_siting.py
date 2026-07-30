@@ -348,3 +348,285 @@ def test_every_scenario_claiming_no_turbines_actually_disables_the_scatter():
         "these scenarios resolve to a turbine-free stage in intent but build "
         "turbines because `turbine_scatter` is still enabled: " + ", ".join(offenders)
     )
+
+
+# --------------------------------------------------- interspersed placement
+# A co-located wind+solar park stands its machines AMONG the DC blocks rather
+# than around them. That is the truer layout for Khavda, and it is also the one
+# that can be physically impossible on a given plot — so these tests pin both the
+# geometry rule and the refusal to fake it.
+
+BLADE_TIP_D = 0.5
+
+
+def _grid_layout(n_x, n_y, table_w=4.3, table_len=128.0, pitch_x=11.8, pitch_y=200.0):
+    """Tables on one regular grid — a single DC block, all maintenance aisles."""
+    return [
+        (
+            i * pitch_x,
+            j * pitch_y,
+            i * pitch_x + table_w,
+            j * pitch_y + table_len,
+        )
+        for i in range(n_x)
+        for j in range(n_y)
+    ]
+
+
+def _block_layout(n_bx, n_by, per_block=8, gap_m=400.0):
+    """DC blocks separated by wide corridors — the multi-block plot shape.
+
+    This distinction is the whole subject of these tests: `_grid_layout` is one
+    block, whose gaps are 5-6 m aisles, and no utility turbine fits in it.
+    `_block_layout` is a plot, whose gaps BETWEEN blocks are where a co-located
+    park actually puts its machines. Measured on the real layouts (2026-07-30):
+    BLOCK-02's largest interior clearing is 25 m, the 24-block S05b plot's is
+    >=500 m.
+    """
+    table_w, table_len, pitch_x = 4.3, 128.0, 11.8
+    block_w = per_block * pitch_x
+    out = []
+    for bx in range(n_bx):
+        for by in range(n_by):
+            x0 = bx * (block_w + gap_m)
+            y0 = by * (table_len + gap_m)
+            for i in range(per_block):
+                out.append((x0 + i * pitch_x, y0, x0 + i * pitch_x + table_w, y0 + table_len))
+    return out
+
+
+def _extent_of(fp):
+    return (min(r[0] for r in fp), min(r[1] for r in fp),
+            max(r[2] for r in fp), max(r[3] for r in fp))
+
+
+def test_a_turbine_never_stands_within_a_blade_length_of_a_table():
+    """The rule that makes this placement legal at all: blades must sweep open
+    ground, not glass. A rotor of diameter D reaches D/2 from the tower axis."""
+    from solar_twin.world.siting import PLACEMENT_INTERSPERSED, scatter_turbines
+
+    fp = _block_layout(5, 5)
+    extent = _extent_of(fp)
+    sites = scatter_turbines(
+        extent, n=4, seed=7, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp, table_clearance_d=0.6,
+    )
+    assert sites, "this layout has room; siting nothing would be the other bug"
+    for s in sites:
+        for x0, y0, x1, y1 in fp:
+            # Distance from the point to the rectangle, 0 when inside.
+            dx = max(x0 - s.x, 0.0, s.x - x1)
+            dy = max(y0 - s.y, 0.0, s.y - y1)
+            assert math.hypot(dx, dy) >= BLADE_TIP_D * s.rotor_diameter_m, (
+                f"turbine at ({s.x:.1f}, {s.y:.1f}) sweeps blades over a table"
+            )
+
+
+def test_interspersed_turbines_land_inside_the_array_not_around_it():
+    """The whole point of the placement: they are IN the footprint. A ring would
+    pass the clearance test above trivially, so this is what distinguishes them."""
+    from solar_twin.world.siting import PLACEMENT_INTERSPERSED, scatter_turbines
+
+    fp = _block_layout(5, 5)
+    extent = _extent_of(fp)
+    sites = scatter_turbines(
+        extent, n=4, seed=7, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp,
+    )
+    assert sites
+    for s in sites:
+        assert extent[0] <= s.x <= extent[2] and extent[1] <= s.y <= extent[3]
+
+
+def test_a_clearance_inside_the_rotor_sweep_is_refused_not_clamped():
+    """Asking for less than the blade tip is a physical contradiction, so it
+    raises. Silently clamping it up would hide a config that means something
+    impossible."""
+    from solar_twin.world.siting import PLACEMENT_INTERSPERSED, scatter_turbines
+
+    fp = _grid_layout(4, 2)
+    with pytest.raises(ValueError, match="blade tip"):
+        scatter_turbines(
+            (0.0, 0.0, 100.0, 100.0), n=1, seed=1,
+            placement=PLACEMENT_INTERSPERSED, footprints=fp, table_clearance_d=0.4,
+        )
+
+
+def test_a_dense_single_block_sites_nothing_and_says_why():
+    """`NFR-07`, no silent caps. A block with only maintenance aisles cannot hold
+    a utility machine, and the honest output is zero turbines plus a reason — not
+    a quiet fallback to a ring, which would let the stage claim a hybrid layout it
+    does not have."""
+    from solar_twin.world.siting import PLACEMENT_INTERSPERSED, scatter_turbines
+
+    # 5.9 m aisles: the real spacing inside one Khavda DC block.
+    fp = _grid_layout(20, 1, pitch_x=10.2, pitch_y=200.0)
+    extent = (min(r[0] for r in fp), min(r[1] for r in fp),
+              max(r[2] for r in fp), max(r[3] for r in fp))
+    said = []
+    sites = scatter_turbines(
+        extent, n=5, seed=3, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp, log=said.append,
+    )
+    assert sites == []
+    assert any("no room BETWEEN its blocks" in m for m in said), said
+
+
+def test_interspersed_without_footprints_falls_back_and_says_so():
+    from solar_twin.world.siting import (
+        PLACEMENT_INTERSPERSED, buildable_ring, scatter_turbines,
+    )
+
+    said = []
+    sites = scatter_turbines(
+        EXTENT, n=3, seed=5, placement=PLACEMENT_INTERSPERSED, footprints=None,
+        ring_depth_d=6.0, log=said.append,
+    )
+    assert any("needs table footprints" in m for m in said), said
+    # ...and having fallen back, it really did use the perimeter ring.
+    zones = buildable_ring(EXTENT, 1.5 * 140.0, 6.0 * 140.0)
+    for s in sites:
+        assert any(x0 <= s.x <= x1 and y0 <= s.y <= y1 for x0, y0, x1, y1 in zones)
+
+
+def test_interspersed_is_seeded_and_reproducible():
+    from solar_twin.world.siting import PLACEMENT_INTERSPERSED, scatter_turbines
+
+    fp = _block_layout(5, 5)
+    extent = _extent_of(fp)
+    kw = dict(placement=PLACEMENT_INTERSPERSED, footprints=fp, rotor_diameter_m=140.0)
+    a = scatter_turbines(extent, n=4, seed=99, **kw)
+    b = scatter_turbines(extent, n=4, seed=99, **kw)
+    c = scatter_turbines(extent, n=4, seed=100, **kw)
+    assert len(a) >= 2
+    assert [(s.x, s.y) for s in a] == [(s.x, s.y) for s in b]
+    assert [(s.x, s.y) for s in a] != [(s.x, s.y) for s in c]
+
+
+def test_wake_spacing_still_holds_between_interspersed_machines():
+    """The placement changes where darts may land, not the physics that rejects
+    them. A turbine in another's wake is just as wrong inside the array."""
+    from solar_twin.world.siting import (
+        PLACEMENT_INTERSPERSED, min_spacing_ellipse, scatter_turbines,
+    )
+
+    fp = _block_layout(6, 6)
+    extent = _extent_of(fp)
+    sites = scatter_turbines(
+        extent, n=5, seed=11, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp,
+    )
+    assert len(sites) >= 2
+    for i, a in enumerate(sites):
+        for b in sites[i + 1:]:
+            assert min_spacing_ellipse(a.x, a.y, b.x, b.y, 250.0, 7 * 140.0, 4 * 140.0)
+
+
+def test_an_unknown_placement_is_rejected_rather_than_defaulted():
+    from solar_twin.world.siting import resolve_turbines
+
+    cfg = {"seed": 1, "turbine_scatter": {"enabled": True, "placement": "middle"}}
+    with pytest.raises(ValueError, match="placement"):
+        resolve_turbines(cfg, _FakeLayout())
+
+
+class _FakeLayout:
+    class site:
+        pass
+
+
+def test_table_footprints_agree_with_the_extent_they_are_measured_against():
+    """`table_extent` is the hull of `table_footprints`. They live in one module
+    precisely so this stays true; the northing and half-chord conventions are easy
+    to get right once and wrong twice."""
+    from solar_twin.world.site import table_extent, table_footprints
+
+    class T:
+        def __init__(self, e, n, ln):
+            self.easting, self.northing, self.length_m = e, n, ln
+
+    class S:
+        origin_easting = 100.0
+        origin_northing = 200.0
+        module_length_m = 4.3
+        tables = [T(100.0, 200.0, 128.0), T(140.0, 260.0, 96.0)]
+
+    fp = table_footprints(S)
+    hull = (min(r[0] for r in fp), min(r[1] for r in fp),
+            max(r[2] for r in fp), max(r[3] for r in fp))
+    assert hull == pytest.approx(table_extent(S))
+
+
+def test_interspersed_turbines_are_surrounded_by_panels_not_parked_in_a_void():
+    """The rule clearance alone does not give you.
+
+    A plot's bounding box is mostly air, and under a 980 x 560 m wake ellipse
+    uniform darts survive best in the biggest holes. Measured on the real S05b
+    plot before the enclosure rule existed: 1 of 8 machines had panels on all four
+    sides and one had none within 800 m — every one of them legally "inside the
+    array". This pins the difference between inside-the-hull and among-the-blocks.
+    """
+    from solar_twin.world.siting import (
+        MIN_OCCUPIED_QUADRANTS, PLACEMENT_INTERSPERSED, _Occupancy, scatter_turbines,
+    )
+
+    # An L of blocks: a large void in one corner, which is the trap.
+    fp = [r for r in _block_layout(6, 6) if not (r[0] > 2000.0 and r[1] > 1500.0)]
+    extent = _extent_of(fp)
+    sites = scatter_turbines(
+        extent, n=5, seed=17, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp,
+    )
+    assert sites
+    occ = _Occupancy(extent, fp, step_m=25.0)
+    for s in sites:
+        q = occ.occupied_quadrants(s.x, s.y, 4.0 * s.rotor_diameter_m)
+        assert q >= MIN_OCCUPIED_QUADRANTS, (
+            f"turbine at ({s.x:.0f}, {s.y:.0f}) has panels in only {q}/4 quadrants "
+            f"— it is beside the plant, not in it"
+        )
+
+
+def test_the_candidate_lattice_does_not_make_the_field_a_grid():
+    """`interior_candidates` enumerates on a 25 m lattice, and a lattice is the one
+    thing this module exists not to produce. The jitter is what keeps them apart,
+    so this fails if that jitter is ever dropped."""
+    from solar_twin.world.siting import (
+        PLACEMENT_INTERSPERSED, lattice_score, scatter_turbines,
+    )
+
+    fp = _block_layout(7, 7)
+    sites = scatter_turbines(
+        _extent_of(fp), n=6, seed=23, rotor_diameter_m=140.0,
+        placement=PLACEMENT_INTERSPERSED, footprints=fp,
+    )
+    assert len(sites) >= 3
+    assert lattice_score(sites) < 1.0
+    # ...and no coordinate sits exactly on the enumeration lattice.
+    assert not all(abs(s.x % 25.0) < 1e-9 for s in sites)
+
+
+def test_enclosure_uses_a_prefix_sum_that_agrees_with_the_naive_count():
+    """`_Occupancy` is an optimisation, and an optimisation that disagrees with the
+    obvious implementation is just a bug that runs fast."""
+    from solar_twin.world.siting import _Occupancy
+
+    fp = _block_layout(4, 4)
+    extent = _extent_of(fp)
+    occ = _Occupancy(extent, fp, step_m=25.0)
+    for x, y in [(200.0, 300.0), (900.0, 900.0), (1500.0, 200.0), (0.0, 0.0)]:
+        for r in (200.0, 560.0):
+            naive = sum(
+                any(
+                    not (x1 <= qx0 or x0 >= qx1 or y1 <= qy0 or y0 >= qy1)
+                    for x0, y0, x1, y1 in fp
+                )
+                for qx0, qy0, qx1, qy1 in (
+                    (x, y, x + r, y + r), (x - r, y, x, y + r),
+                    (x - r, y - r, x, y), (x, y - r, x + r, y),
+                )
+            )
+            fast = occ.occupied_quadrants(x, y, r)
+            # The grid rounds outward by up to one cell, so it may see a table the
+            # exact test misses — never the other way round.
+            assert fast >= naive, (x, y, r, fast, naive)

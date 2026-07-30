@@ -74,6 +74,25 @@ def table_extent(site) -> tuple[float, float, float, float]:
     return (min(xs0) - half, min(ys0), max(xs0) + half, max(ys1))
 
 
+def table_footprints(site) -> list[tuple[float, float, float, float]]:
+    """Every table's own rectangle `(x0, y0, x1, y1)` in stage-local metres.
+
+    `table_extent` is the bounding box of ALL the hardware, which says nothing
+    about where the hardware actually is: a 24-block plot's extent is 96% air.
+    Anything that needs to know whether a given *point* stands on panels — a
+    turbine sited inside the array, say — needs the per-table rectangles, not
+    their hull. Same northing and half-chord conventions as `table_extent`, and
+    deliberately in the same module so the two cannot drift apart.
+    """
+    half = site.module_length_m / 2.0
+    out = []
+    for t in site.tables:
+        x = t.easting - site.origin_easting
+        y = t.northing - site.origin_northing
+        out.append((x - half, y, x + half, y + t.length_m))
+    return out
+
+
 def derived_roads(site, min_width_m: float = ROAD_MIN_WIDTH_M) -> list[RoadStrip]:
     """North-south vehicle corridors the drawing itself contains.
 

@@ -17,6 +17,104 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 
 ---
 
+
+## 2026-07-30 — Session 15: the turbines move INSIDE the plant, and "inside" turned out to mean two different things
+
+Asked to put the windmills between the panels rather than outside them. Khavda is a
+genuinely co-located wind+solar park — the land is shared, not adjacent — so this is
+the truer layout, and `world/siting.py` only knew how to ring the array.
+
+**⭐ The interesting part is that the obvious implementation looked right and was
+wrong, and only a measurement said so.**
+
+`turbine_scatter.placement: interspersed` samples the panel footprint instead of a
+perimeter ring, rejecting any position closer than `table_clearance_d` to a table.
+That clearance is a hard physical rule, not a preference: a rotor of diameter D
+sweeps D/2 from the tower axis, so anything inside **0.5D is blades over glass**.
+`BLADE_TIP_CLEARANCE_D` is validated against, and asking for less raises rather than
+clamping.
+
+That version passed every test I had written and produced a bad plant. Measured on
+the real 24-block S05b plot: **1 of 8 machines had panels on all four sides, and one
+had no panel within 800 m.** Every one satisfied the clearance rule and sat legally
+inside the footprint. The cause is that a plot's hull is mostly air — S05b's is
+4,841 x 1,975 m holding 24 blocks — and under a 980 x 560 m wake ellipse darts
+survive best in the biggest voids. So the field drifted into the holes and rendered
+as a wind farm parked *beside* a solar farm: exactly the arrangement the change was
+meant to end.
+
+⚠ **"Inside the bounding box" is not "among the panels", and clearance cannot tell
+them apart.** The fix is an *enclosure* rule alongside the clearance one — panels in
+at least 3 of 4 quadrants within 4D — and a switch from rejection sampling to
+enumerating the buildable lattice (`interior_candidates`, 25 m pitch, jittered by
+half a cell so the lattice does not become the thing `lattice_score` exists to
+catch). Enclosure is answered by a prefix sum over a coarse occupancy grid
+(`_Occupancy`), so it is four lookups per candidate rather than a scan of 6,213
+tables.
+
+| S05b full plot | before | after |
+|---|---|---|
+| machines among the blocks | **1 of 8** | **7 of 7** |
+| nearest table | one at >800 m from any panel | 86-476 m |
+| buildable positions | not knowable without failing | **971**, reported directly |
+
+Enumerating the land also changed what a failure can say. The old loop could only
+answer "is there room?" by throwing 20,000 darts and placing nothing; now the count
+of candidates is the answer, and the shortfall message distinguishes *no room*
+from *room, but the wake rule caps it* — S05b sites **7 of the 8** requested and says
+it is the 7D x 4D ellipse doing it, not the layout.
+
+⚠ **BLOCK-02 cannot have this layout at all, and that is a fact about the plot, not
+a bug.** Its largest interior clearing is **25 m** against the **84 m** a 140 m rotor
+needs (`largest_interior_clearance`). Inside one DC block the gaps are 5-6 m
+maintenance aisles; the clearings a hybrid park actually uses are *between* blocks,
+and this stage contains exactly one block. So `interspersed` there sites zero and
+logs why — it does **not** silently fall back to a ring, which would let the stage
+claim a hybrid layout it does not have. The config carries the measured numbers.
+
+⚠ **This deliberately puts blade shadows on modules**, which is precisely what
+`ARRAY_SETBACK_D` was introduced to prevent (Session 10d). The trade is taken
+knowingly and written into both the module and the configs: **any turbine-shadow KPI
+becomes a property of this placement**, so KPI-03's false-fault numbers measured on a
+`perimeter` stage do not carry over and must be re-measured. The tracker
+self-shading stimulus is unaffected. Keep-outs need no change — `build_keepouts`
+resolves through the same `resolve_turbines`, verified to agree on both plots.
+
+**Also: `docs/DIGITAL_TWIN_VISION_AND_RESEARCH.md` gains Slice 4b — "Grid-Level Fault
+Localization & Staged Dispatch"**, between the scenario factory and the trained
+flight policy. Divide the farm into grid cells aligned to the *electrical* topology
+(a string is the finest unit SCADA can name); score each cell from string-level
+performance-ratio anomalies against weather-normalized expected output; fall back to
+a high-altitude thermal/RGB sweep where there is no telemetry; feed ranked cells to
+cuOpt so dispatch is suspicion-first rather than coverage-first — ground bot to the
+cell, drone for Cosmos Reason within it. A `grid:id` attribute above the `pv:` schema
+is the join key that lets string data and verdicts roll up to the same object.
+**Orchestration does not change**: this is a prioritization layer upstream of
+Perception/Transport/RobotControl, and the stated acceptance test is that disabling
+it reproduces current behaviour exactly. The section is honest about what blocks it —
+⚠ `grid:id` is not in `schema/pv_module.py` yet, ⚠ **we have no SCADA feed at all**
+(the vendor DWG is hardware geometry, no telemetry), so the near-term version scores
+cells from our own injected faults and must be labelled a simulation everywhere it
+appears, and ⚠ Isaac does not render true thermal so the sweep reads an emissive
+proxy. The motivating arithmetic: at ~12 s/panel, one VLM pass over 679,616 panels is
+**94 days**.
+
+**Tests: 509 Isaac-free (was 497) + 38 pxr = 547 passing.** New: blade-tip clearance
+against every table, enclosure (the bug above, pinned), refusal of a sub-blade-tip
+clearance, a dense single block siting nothing *and saying why*, seeded
+reproducibility, wake spacing still holding between interspersed machines, the
+candidate lattice not becoming a grid, `_Occupancy` agreeing with a naive count, and
+`table_footprints` hulling to `table_extent`.
+
+**⚠ Still not done — carried into the next session:**
+- **The whole-plot video.** `assets/khavda_s05b_full.usd` (679,616 modules) has
+  existed since the quadratic fix landed this morning and **nothing has been rendered
+  from it**. That video is the deliverable the fix was for.
+- The interspersed field has been verified numerically but **never seen** — no stage
+  has been built with it, so "it looks right" is unproven.
+- `tools/run_livestream.sh` was untracked; committed here.
+
+
 ## 2026-07-29 — Session 14: the panels were never broken, and the site now stands in real OSM geography
 
 Two parts. The first was a bug hunt whose answer was "not where you are looking".

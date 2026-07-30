@@ -157,12 +157,24 @@ faults:
 # are utility-class typical (~120 m hub, ~70 m blade, ~12 rpm) and the placement
 # is OURS — it must never be cited as survey.
 #
-# They stay OUTSIDE the panel footprint rather than among the rows. That is both
-# how a hybrid park is laid out and the honest choice here: a turbine standing
-# inside the array would throw blade shadows across panels and any KPI-03 number
-# measured against it would be an artefact of where WE put it. Blades spin at
-# runtime (sim_runtime turns each hub), and world/keepout.py authors the no-fly
-# volumes SafeControl clamps waypoints against (FR-09).
+# `turbine_scatter.placement` decides whether they stand AMONG the DC blocks
+# (`interspersed`) or ring the array (`perimeter`). Khavda is a real co-located
+# wind+solar park — the land is shared, not adjacent — so `interspersed` is the
+# truer layout and is what this plot uses. Blades spin at runtime (sim_runtime
+# turns each hub), and world/keepout.py authors the no-fly volumes SafeControl
+# clamps waypoints against (FR-09).
+#
+# ⚠ **`interspersed` puts blade shadows on modules, on purpose.** That is exactly
+# what `array_setback_d` was added to prevent, so the trade is explicit: any
+# turbine-shadow KPI (notably KPI-03's false-fault rate) becomes a property of
+# THIS placement and must be re-measured, never carried over from a `perimeter`
+# stage. The tracker self-shading stimulus is unaffected.
+#
+# ⚠ It needs room, and room is a property of the LAYOUT, not of this config.
+# Measured 2026-07-30: this 24-block plot has interior clearings of >=500 m, so a
+# 140 m rotor fits easily. Single-block `farm_khavda_block02.yaml` has a largest
+# clearing of **25 m** against the 84 m a machine needs, so `interspersed` sites
+# nothing there and says so — that block stays `perimeter`.
 #
 # `turbine_scatter` sites them the way a wind farm is actually laid out: seeded
 # dart-throwing under a WAKE constraint, which is an ellipse (7 rotor diameters
@@ -184,7 +196,9 @@ faults:
 # which is unaffected) must be re-measured rather than carried over.
 turbine_scatter:
   enabled: true
-  count: 5
+  count: 8
+  placement: interspersed   # among the DC blocks — see the note above
+  table_clearance_d: 0.6   # >= 0.5D is the blade tip; below that blades cross modules
   # Omitted `seed:` falls back to the farm seed above, so the field moves only
   # when the farm does.
   hub_height: 120.0

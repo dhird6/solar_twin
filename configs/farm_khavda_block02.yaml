@@ -113,6 +113,17 @@ faults:
 # runtime (sim_runtime turns each hub), and world/keepout.py authors the no-fly
 # volumes SafeControl clamps waypoints against (FR-09).
 #
+# ⚠ **`turbine_scatter.placement: interspersed` is not available on THIS layout,
+# and the reason is physical rather than editorial.** A real co-located park like
+# Khavda does stand its machines among the DC blocks, and the S05b configs use
+# that placement. But this file is ONE ~18 MWdc block: 273 tables in 321 x 647 m,
+# whose largest interior clearing is **25 m** (measured 2026-07-30,
+# `siting.largest_interior_clearance`) against the **84 m** a 140 m rotor needs to
+# keep its blade tips off the glass. The corridors inside a single block are
+# maintenance aisles, not turbine pads — the clearings a hybrid park uses are
+# BETWEEN blocks, and this stage contains no second block. Setting `interspersed`
+# here sites zero turbines and logs why; it does not silently fall back.
+#
 # `turbine_scatter` sites them the way a wind farm is actually laid out: seeded
 # dart-throwing under a WAKE constraint, which is an ellipse (7 rotor diameters
 # along the prevailing wind, 4 across) rather than a circle — see world/siting.py.
