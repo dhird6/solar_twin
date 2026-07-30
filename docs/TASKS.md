@@ -250,6 +250,19 @@ bitten by one.
   as a giant area light and turns the desert floor blue (R-B +16 → -38).
 
 **Known ⚠ to resolve, not to forget:**
+- ⚠⚠ **The TEXTURED-PBR layer (`world/textures.py`) is OFF by default and must stay
+  off until a render measurement clears it.** Distinct from the 10c work above,
+  which is flat materials + the generated sky and is fine. Measured 2026-07-31
+  (Session 17): with the textured materials bound, SC-11's ground rendered
+  **(1.1, 1.2, 1.2), R−B −0.1** — achromatic and near-black — against
+  **(77.6, 68.0, 54.1), R−B +23.5** with it off. **This is the SAME R−B invariant,
+  and the SAME class of failure, as the emissive-dome bug directly above — the
+  project has now been bitten by "the ground stopped reading warm" twice.**
+  Bisect (`farm_builder --pbr {on,off,albedo,primvar}`) shows it is neither the
+  normal map nor the diffuse source: `albedo` and `primvar` render *identically*,
+  so the diffuse input is ignored outright. The generated maps are correct
+  (ground albedo R−B +28.04) and every texture path resolves. **Root cause OPEN.**
+  Guarded by `tests/test_textures.py::TestPbrIsOffUntilItRendersCorrectly`.
 - `panel.mount_height: 1.5` in `configs/farm_khavda_block02.yaml` is a guess —
   needs the MMS/tracker datasheet.
 - Module width `1.134 m` is inferred from pitch minus a standard ~14 mm gap.
