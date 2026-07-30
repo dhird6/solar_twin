@@ -44,7 +44,12 @@ def test_grid_id_roundtrips_through_usd():
 def test_grid_id_is_absent_when_not_requested():
     """Omitting it must author NO attribute, so a stage built without the grid
     layer is byte-identical to one built before the namespace existed."""
-    prim = pv.create_panel(_stage(), "/World/Farm/P", "R12-C047", 12, 47)
+    # The stage MUST be bound to a local. Passing `_stage()` inline drops the
+    # only reference to it, USD collects the layer, and the prim we are holding
+    # expires -- `RuntimeError: Accessed invalid expired 'Xform' prim`. Under
+    # usd-core the timing happened to let it slide; under Isaac's pxr it does not.
+    stage = _stage()
+    prim = pv.create_panel(stage, "/World/Farm/P", "R12-C047", 12, 47)
     assert not prim.HasAttribute(pv.ATTR_GRID_ID)
     assert pv.read_panel(prim).cell_id == ""
 
