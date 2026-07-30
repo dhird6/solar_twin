@@ -29,6 +29,7 @@ from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
 from solar_twin.orchestrator.mission import Fleet, Mission
+from solar_twin.orchestrator.scout_dispatch import BEAT_LABELS, ScoutDispatchMission
 from solar_twin.world.keepout import build_keepouts
 from solar_twin.world.layout import FarmLayout
 
@@ -40,6 +41,9 @@ _PHASE_LABELS = {
     "SCREEN": "screening pass",
     "CONFIRM": "close confirm pass",
     "WRITEBACK": "writing verdict to USD",
+    # The scout->dispatch beats share this table so the overlay and the live
+    # narration caption either mission without knowing which one is running.
+    **BEAT_LABELS,
 }
 
 
@@ -100,13 +104,33 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
         # silently pick up the extra steps.
         kin = mission_cfg.get("kinematics", {}) or {}
         speeds = {}
+        cruise: dict[str, float] = {}
         if sim_opts.get("video") or sim_opts.get("live"):
             speeds = {
                 fleet["ground_bot"]: float(kin.get("bot_speed", 1.0)),
                 fleet["screen_drone"]: float(kin.get("drone_speed", 2.0)),
                 fleet["confirm_drone"]: float(kin.get("drone_speed", 2.0)),
             }
-        control = KinematicControl(runtime, speeds=speeds, dt=float(kin.get("dt", 0.1)))
+            # `cruise_speeds` existed in KinematicControl and was exercised only by
+            # tests — this call never passed it, so every commute ran at inspection
+            # speed. That is not a cosmetic loss: at 1.0 m/s and dt=0.1 the
+            # interpolator's `_MAX_TICKS` budget of 4000 covers just 400 m, while the
+            # first table of the full block sits ~490 m from the origin, so the ground
+            # bot burned the whole budget, warned, and snapped to the waypoint. On the
+            # whole plot (4.84 x 1.97 km) that failure is the normal case, not an edge.
+            cruise = {
+                fleet["ground_bot"]: float(kin.get("bot_cruise", 6.0)),
+                fleet["screen_drone"]: float(kin.get("drone_cruise", 18.0)),
+                fleet["confirm_drone"]: float(kin.get("drone_cruise", 18.0)),
+            }
+        control = KinematicControl(
+            runtime,
+            speeds=speeds,
+            cruise_speeds=cruise,
+            cruise_above_m=float(kin.get("cruise_above_m", 6.0)),
+            dt=float(kin.get("dt", 0.1)),
+            max_ticks=int(kin.get("max_ticks", 4000)),
+        )
         return SimNativeTransport(runtime, panel_paths), control
     raise ValueError(f"unknown backend: {name!r}")
 
@@ -228,9 +252,32 @@ def run(
                 "injected_state in the record is wrong."
             )
 
-    # --- optional demo video (chase view + drone camera, captioned) --------
     recorder = None
     runtime = getattr(transport, "runtime", None)
+
+    # Keep the viewport painting through a slow perception call. Only when a human is
+    # watching AND the backend is slow enough to matter: `cosmos_reason` blocks ~12 s
+    # per panel, and without a pump the window shows a stale/black surface and the WM
+    # reports Isaac Sim "not responding" for that whole time. A measurement run is
+    # untouched — headless has no interactive runtime, and the stub returns in
+    # microseconds. Placed HERE, not next to `_perception()`: `runtime` is resolved
+    # off the transport above and does not exist earlier in this function.
+    if (
+        runtime is not None
+        and getattr(runtime, "interactive", False)
+        and hasattr(runtime, "pump")
+        and mission_cfg.get("perception") == "cosmos_reason"
+    ):
+        from solar_twin.perception.pumped import PumpedPerception
+
+        perception = PumpedPerception(perception, pump=runtime.pump)
+        print(
+            "  [note] perception wrapped in PumpedPerception: the viewport keeps "
+            "repainting while each panel is judged.",
+            flush=True,
+        )
+
+    # --- optional demo video (chase view + drone camera, captioned) --------
     if sim_opts.get("video") and runtime is not None and hasattr(runtime, "capture_pair"):
         from solar_twin.world.recorder import Caption, RunRecorder
 
@@ -319,6 +366,18 @@ def run(
             if fr is not None:
                 frames.append(fr[..., :3])
 
+    def _surveyed(i: int, panel_id: str, suspect: bool) -> None:
+        """Progress during a scout_dispatch survey.
+
+        `_progress` cannot serve here: that mission files every result after the
+        whole survey and all responses are done, so without this the terminal is
+        silent for the entire sweep and then prints everything at once.
+        """
+        mark = "FLAGGED" if suspect else "clean"
+        print(f"  [scout {i + 1}/{len(targets)}] {panel_id}: {mark}", flush=True)
+        if live_view:
+            runtime.step(2)
+
     if recorder is not None and targets:
         # Deploy the fleet AT the first panel instead of flying it there from the
         # stage origin. On the full block that origin is ~490 m from the first
@@ -337,7 +396,24 @@ def run(
             fleet_cfg["confirm_drone"], first.confirm.x, first.confirm.y, first.confirm.z
         )
 
-    mission = Mission(transport, control, perception, fleet)
+    # Two mission shapes, chosen by config. `sweep` is the measurement FSM and the
+    # default — every KPI on record was produced by it, so it must stay reachable
+    # unchanged. `scout_dispatch` is the demonstration: survey, then send the fleet
+    # to what the survey found (see orchestrator/scout_dispatch.py).
+    mode = str(mission_cfg.get("mission_mode", "sweep"))
+    if mode == "scout_dispatch":
+        mission = ScoutDispatchMission(transport, control, perception, fleet)
+        print(
+            "  [note] mission_mode: scout_dispatch — survey sweep, then dispatch to "
+            "flagged panels. A demo shape: do NOT quote KPIs from this run.",
+            flush=True,
+        )
+    elif mode == "sweep":
+        mission = Mission(transport, control, perception, fleet)
+    else:
+        raise ValueError(
+            f"unknown mission_mode: {mode!r} (expected 'sweep' or 'scout_dispatch')"
+        )
     provenance = _perception_provenance(
         str(mission_cfg.get("perception", "ground_truth")), perception
     )
@@ -364,7 +440,10 @@ def run(
             if isinstance(control, SafeControl):
                 control.reset()  # per-repeat keep-out tally, not cumulative
         t0 = time.perf_counter()
-        result = mission.run(targets, on_result=_progress, on_phase=_on_phase)
+        run_kw = (
+            {"on_scouted": _surveyed} if isinstance(mission, ScoutDispatchMission) else {}
+        )
+        result = mission.run(targets, on_result=_progress, on_phase=_on_phase, **run_kw)
         wall_s = time.perf_counter() - t0
 
         # ---- run record ------------------------------------------------ #
@@ -593,10 +672,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
     ap.add_argument(
         "--route",
-        choices=["linear", "serpentine"],
+        choices=["linear", "serpentine", "fault_zone"],
         help="panel visit order. serpentine turns round at the end of each table "
-        "instead of deadheading 128 m back to the next row's start. Overrides "
-        "mission.yaml's `route`.",
+        "instead of deadheading 128 m back to the next row's start. fault_zone "
+        "surveys a compact window centred on a seeded fault (for "
+        "mission_mode: scout_dispatch) and is NOT a measurement route — it picks "
+        "the window using ground truth. Overrides mission.yaml's `route`.",
     )
     ap.add_argument(
         "--panel-stride",
@@ -614,6 +695,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--repeat",
+        "--repeats",
+        dest="repeat",
         type=int,
         default=1,
         help="run the SAME scenario N times and report the spread instead of one "

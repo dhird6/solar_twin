@@ -216,6 +216,17 @@ class SimRuntime:
             self._spin_rotors()
             self._app.update()
 
+    def pump(self) -> None:
+        """Draw one frame without advancing anything.
+
+        For `PumpedPerception`: while a VLM call blocks for ~12 s the window must
+        keep repainting or the compositor shows a stale/black surface and the WM
+        marks Isaac Sim "not responding". Deliberately NOT `step()` — turning the
+        rotors here would advance the world during an inspection, so the fleet
+        would drift while a panel is being judged.
+        """
+        self._app.update()
+
     def _spin_rotors(self) -> None:
         """Advance every drone rotor. Deliberately fast and NOT synced to thrust —
         a real prop is a blur, and a visibly slow disc reads as broken hardware.

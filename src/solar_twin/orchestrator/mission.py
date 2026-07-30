@@ -50,6 +50,14 @@ class InspectionTarget:
     approach: Waypoint  # ground bot
     screen: Waypoint  # screening drone
     confirm: Waypoint  # confirmation drone
+    #: High, wide pass used only by `ScoutDispatchMission`'s survey sweep. Optional
+    #: so the sweep FSM above and every recorded KPI are untouched by its addition;
+    #: when absent the scout falls back to `screen`.
+    scout: Optional[Waypoint] = None
+
+    @property
+    def scout_or_screen(self) -> Waypoint:
+        return self.scout if self.scout is not None else self.screen
 
 
 # --------------------------------------------------------------------------- #

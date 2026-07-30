@@ -1,0 +1,111 @@
+# fault_response_demo — the WATCHABLE mission. NOT A MEASUREMENT.
+#
+# What a viewer sees, in four beats (orchestrator/scout_dispatch.py):
+#
+#   1. SCOUT     one drone flies a high pass over a 24-panel zone, judging each
+#   2. DISPATCH  the ground bot drives to a panel the survey flagged
+#   3. CONVERGE  both drones arrive over that panel and take station
+#   4. INSPECT   the close pass diagnoses it; the verdict is written to the prim
+#
+# Run it:
+#   tools/run_livestream.sh 24 mission --farm s05b_full \
+#       --scenario configs/scenarios/fault_response_demo.yaml
+#
+# ⚠⚠ **DO NOT QUOTE A KPI FROM THIS FILE.** Three separate reasons, each
+# sufficient on its own — stated here because `demo_video.yaml` carried the same
+# warning and `KPI-01` was quoted off it for weeks anyway:
+#
+#   * `route: fault_zone` selects the surveyed window ON GROUND TRUTH. Fault
+#     prevalence here is a property of the window, not of the plant, so every rate
+#     (`KPI-01`, `KPI-03`) has a denominator we chose after knowing the answer.
+#   * `mission_mode: scout_dispatch` judges a flagged panel TWICE, from two
+#     standoffs. The sweep FSM judges each panel once. The numbers are not the
+#     same measurement.
+#   * `--live` interpolation and the 24-panel zone are demo settings; measurement
+#     scenarios are `nominal_calm` (SC-01) and `khavda_selfshade*` (SC-11/12).
+#
+# Why the fault rate is 5e-4 and not the plant's 2%: this is the 24-block plot,
+# 679,616 modules. Faulted panels cannot be instanced, so 2% would add ~1.02M prims
+# on top of ~680k and the stage would not build — the constraint
+# `farm_khavda_s05b_full.yaml` records in its own header. `fault_zone` is what makes
+# 340-in-679,616 findable: it centres the survey on one of them rather than flying
+# over healthy glass for an hour.
+#
+# MEASURED, this file, 2026-07-30 (not estimated — the estimate was ~25k prims):
+#   679,616 panels, 340 faulted, 8 turbines, terrain=dem
+#   679,276 instanced from 1 prototype -> 712,795 prims on stage
+#   i.e. the 340 faulted panels cost ~33k prims (~97 each, not the ~75 assumed)
+#   build ~5 min, LONGER than the wide shot's documented 176 s: that figure is for
+#   rate 0.0, and faulted panels take the slow per-prim authoring path.
+
+name: fault_response_demo
+seed: 20260730
+
+extends:
+  # The whole plot, because this is also the stage that stands its turbines AMONG
+  # the DC blocks (`turbine_scatter.placement: interspersed`, 8 machines). That
+  # placement is impossible on `farm_khavda_block02.yaml`: measured, its largest
+  # interior clearing is 25 m against the 84 m a 140 m rotor needs to keep blade
+  # tips off the glass, so `interspersed` there sites nothing at all.
+  farm: configs/farm_khavda_s05b_full.yaml
+  mission: configs/mission.yaml
+
+farm_overrides:
+  # ⚠⚠ **THE WHOLE PLOT DOES NOT FIT ON THIS BOX.** Measured 2026-07-30, twice:
+  # loading all 6,213 tables (712,795 prims) drove the Isaac process to
+  # **anon-rss 73.7 GB** and the kernel OOM-killed it —
+  #   NVRM: Out of memory [NV_ERR_NO_MEMORY] ... kgrctxAllocCtxBuffers
+  #   Out of memory: Killed process (python3) total-vm:321768256kB anon-rss:73738564kB
+  # on a 121 GB unified-memory GB10 that is also serving Cosmos Reason. The same
+  # exhaustion killed a WebRTC run one second earlier as
+  # `Failed to create video stream 0` — the encoder could not get a GPU buffer.
+  #
+  # 600 tables is the compromise, measured: 66,528 panels over 1,094 x 548 m, which
+  # still spans several DC blocks and so still sites turbines BETWEEN them (2 of
+  # them — the wake rule caps it, not the land). That is the property the whole plot
+  # was chosen for, kept at ~10% of its panel count and ~2.2x BLOCK-02's, which
+  # loads fine on this box.
+  #   subset  panels    interspersed turbines
+  #      300  33,264    1
+  #      600  66,528    2      <- here
+  #     1200 132,272    4
+  #      all 679,616    8      but OOM-killed
+  layout:
+    max_tables: 600
+  faults:
+    # Non-zero, unlike the wide-shot default of 0.0 — the fleet needs something to
+    # find. Kept tiny for the prim-count reason in the header above.
+    rate: 0.0005
+    states: [hotspot, soiled]   # the Slice-0 taxonomy subset (§6.5)
+  # Turbines stay ON and interspersed. ⚠ This means blade shadows fall on modules,
+  # which is precisely why no false-fault number from this run transfers anywhere.
+  turbine_scatter:
+    enabled: true
+    placement: interspersed
+
+mission_overrides:
+  mission_mode: scout_dispatch
+  route: fault_zone
+  zone_panels: 24    # one survey sweep the viewer can sit through
+  zone_index: 0      # which seeded fault to centre on; bump it for a different zone
+
+  kinematics:
+    # The survey flies HIGH so the scout frame holds a panel plus its neighbours;
+    # dropping to `screen_standoff` is what makes the CONVERGE beat legible. If
+    # these were equal the drone would appear not to react to its own finding.
+    scout_standoff: 12.0
+    screen_standoff: 2.5
+    confirm_standoff: 0.8
+    bot_speed: 1.0
+    drone_speed: 2.0
+    # ⚠ Cruise is load-bearing on this stage, not a nicety. `_MAX_TICKS` caps ONE
+    # move_to at `max_ticks * dt * cruise` metres; at inspection speed (1 m/s,
+    # dt 0.1) that is 400 m, and this plot is 4.84 x 1.97 km, so without cruise
+    # every commute ends in the "did not reach" warning and a teleport.
+    bot_cruise: 6.0
+    drone_cruise: 18.0
+    cruise_above_m: 6.0
+    max_ticks: 12000   # 12000 * 0.1 * 6 = 7.2 km of ground-bot reach
+
+# Deliberately absent: `kpi_gates`. A gate here would imply this run measures
+# something. It does not — see the header.

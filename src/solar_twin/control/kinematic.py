@@ -30,6 +30,12 @@ from solar_twin.control.kinematic_math import reached, step_towards
 #: Hard stop on the interpolation loop. A waypoint that is unreachable (zero
 #: speed, or a tolerance smaller than one step) must not spin forever; it should
 #: land the robot and move on, loudly rather than by hanging the mission.
+#:
+#: ⚠ It is also a **distance** ceiling, which is the non-obvious part: the reach of
+#: one `move_to` is `max_ticks * dt * cruise_speed`. At the defaults (4000, 0.1 s,
+#: 6 m/s ground) that is 2.4 km — fine inside one block, short of the 4.84 km whole
+#: plot. Raise `max_ticks` for a stage bigger than the budget rather than letting
+#: every long commute end in the "did not reach" warning and a snap.
 _MAX_TICKS = 4000
 
 
@@ -42,6 +48,7 @@ class KinematicControl(RobotControl):
         on_tick: Optional[Callable[[str], None]] = None,
         cruise_speeds: Optional[dict[str, float]] = None,
         cruise_above_m: float = 6.0,
+        max_ticks: int = _MAX_TICKS,
     ):
         """`runtime` exposes set_pose(id, x, y, z, yaw), get_pose(id) and
         (for interpolated motion) step(n).
@@ -66,6 +73,7 @@ class KinematicControl(RobotControl):
         self._cruise_above = float(cruise_above_m)
         self._dt = float(dt)
         self._on_tick = on_tick
+        self._max_ticks = int(max_ticks)
 
     def set_on_tick(self, callback: Optional[Callable[[str], None]]) -> None:
         """Set the per-tick observer after construction. The recorder needs the
@@ -82,7 +90,7 @@ class KinematicControl(RobotControl):
         cruise = float(self._cruise.get(robot_id, 0.0)) or speed
         x, y, z, yaw = self._rt.get_pose(robot_id)
         current = Waypoint(x, y, z, yaw)
-        for _ in range(_MAX_TICKS):
+        for _ in range(self._max_ticks):
             if reached(current, waypoint):
                 break
             remaining = math.dist(
@@ -99,8 +107,9 @@ class KinematicControl(RobotControl):
                 self._on_tick(robot_id)
         else:
             print(
-                f"  [warn] {robot_id} did not reach {waypoint} in {_MAX_TICKS} ticks; "
-                "placing it directly",
+                f"  [warn] {robot_id} did not reach {waypoint} in {self._max_ticks} "
+                f"ticks ({self._max_ticks * self._dt * (cruise or speed):.0f} m of "
+                "travel); placing it directly",
                 flush=True,
             )
         # Land exactly on the waypoint: the interpolation stops within `reached`'s

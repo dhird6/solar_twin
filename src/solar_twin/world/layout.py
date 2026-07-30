@@ -534,11 +534,27 @@ class FarmLayout:
         `stride` samples every Nth module — a coverage sweep rather than a census.
         ⚠ It changes what the run measures: the denominator is the panels VISITED,
         not the panels on site.
+
+        `route: fault_zone` returns a contiguous window of `zone_panels` panels
+        centred on a seeded fault, for `ScoutDispatchMission`. It exists because a
+        watchable survey and a sparse fault rate are otherwise incompatible: on the
+        whole plot at `faults.rate` 5e-4 a 24-panel window has a ~1% chance of
+        containing anything to find, so a sweep from panel 0 shows a drone flying
+        over healthy glass forever. Centring the window on a fault is the sim
+        standing in for the string-level telemetry a real plant uses to pick which
+        zone to survey — the drone still has to find the panel visually.
+
+        ⚠⚠ `fault_zone` is NOT a measurement route. It selects on ground truth, so
+        its fault prevalence is set by the window, not the site: every rate-style
+        KPI (`KPI-01`, `KPI-03`) is meaningless under it. It also ignores `stride`,
+        because subsampling can drop the very panel the window was built around.
         """
         route = str(mission_cfg.get("route", "linear"))
         stride = max(1, int(mission_cfg.get("panel_stride", 1)))
 
         sites = list(self.sites)
+        if route == "fault_zone":
+            return self._fault_zone_sites(mission_cfg, sites)
         if stride > 1:
             sites = sites[::stride]
         if route != "serpentine":
@@ -554,6 +570,43 @@ class FarmLayout:
             out.extend(reversed(group) if i % 2 else group)
         return out
 
+    def _fault_zone_sites(self, mission_cfg: dict, sites: list) -> list:
+        """A contiguous window of panels centred on the `zone_index`-th seeded fault.
+
+        Contiguous in `self.sites` order (table by table, module 0 upward) rather
+        than by euclidean distance, so the window is physically compact and the
+        fleet's commutes inside it stay short — which is the whole point of
+        surveying a zone instead of a plot.
+        """
+        zone = max(1, int(mission_cfg.get("zone_panels", 24)))
+        which = max(0, int(mission_cfg.get("zone_index", 0)))
+        faults = self.seeded_faults()
+
+        fault_positions = [i for i, s in enumerate(sites) if s.panel_id in faults]
+        if not fault_positions:
+            # Loud, not silent: without this the caller gets a plausible-looking
+            # window of healthy panels and concludes the escalation path is broken.
+            print(
+                f"  [warn] route: fault_zone but this stage has no seeded faults "
+                f"(faults.rate is 0?) — falling back to the first {zone} panels; "
+                "nothing will escalate",
+                flush=True,
+            )
+            return sites[:zone]
+
+        centre = fault_positions[min(which, len(fault_positions) - 1)]
+        start = max(0, min(centre - zone // 2, len(sites) - zone))
+        window = sites[start : start + zone]
+        in_window = sum(1 for s in window if s.panel_id in faults)
+        print(
+            f"  [note] route: fault_zone — {len(window)} panels around "
+            f"{sites[centre].panel_id} ({in_window} seeded fault"
+            f"{'' if in_window == 1 else 's'} inside; "
+            f"{len(fault_positions)} on the stage). Not a KPI route.",
+            flush=True,
+        )
+        return window
+
     def inspection_targets(self, mission_cfg: dict) -> list[InspectionTarget]:
         """Waypoints per panel derived from layout + mission kinematics.
 
@@ -562,6 +615,11 @@ class FarmLayout:
         kin = mission_cfg.get("kinematics", {})
         screen_z = float(kin.get("screen_standoff", 2.5))
         confirm_z = float(kin.get("confirm_standoff", 0.8))
+        # The survey pass flies higher than the screening pass so the scout sees a
+        # panel plus its neighbours; the drop to `screen_z` is what makes the
+        # converge beat visible. Defaults to the screening standoff, which makes the
+        # scout a no-op change for any config that does not set it.
+        scout_z = float(kin.get("scout_standoff", screen_z))
         approach_offset = self.row_pitch / 2.0
         targets: list[InspectionTarget] = []
         for s in self.route_sites(mission_cfg):
@@ -573,6 +631,7 @@ class FarmLayout:
                     approach=Waypoint(x, y - approach_offset, z),
                     screen=Waypoint(x, y, top + screen_z),
                     confirm=Waypoint(x, y, top + confirm_z),
+                    scout=Waypoint(x, y, top + scout_z),
                 )
             )
         return targets
