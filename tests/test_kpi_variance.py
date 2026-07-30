@@ -8,6 +8,8 @@ whether the renderer or the model moved.
 
 from __future__ import annotations
 
+import pytest
+
 from solar_twin.kpi import variance as V
 
 
@@ -64,6 +66,34 @@ def test_spread_is_quoted_with_a_range_when_it_varies():
     assert not spread.stable
     assert (spread.min, spread.max, spread.median) == (0.0, 0.02, 0.01)
     assert "range" in spread.quote()
+
+
+def test_mean_and_sample_stdev_are_reported():
+    spread = V.summarize(
+        [_run([_panel("R01-C001")], ffr=f) for f in (0.0, 0.02, 0.01)]
+    ).metrics["false_fault_rate"]
+    assert spread.mean == pytest.approx(0.01)
+    assert spread.stdev == pytest.approx(0.01)  # sample (n-1), not population
+    d = spread.to_dict()
+    assert d["mean"] == pytest.approx(0.01) and d["stdev"] == pytest.approx(0.01)
+
+
+def test_stdev_is_none_not_zero_for_a_single_run():
+    """A single run has no measured spread. Reporting 0.0 would read as
+    'measured, no variance' — the misreading this module exists to prevent."""
+    spread = V.summarize([_run([_panel("R01-C001")], ffr=0.05)]).metrics[
+        "false_fault_rate"
+    ]
+    assert spread.n == 1
+    assert spread.stdev is None
+    assert spread.to_dict()["stdev"] is None
+
+
+def test_describe_shows_mean_sd_only_when_the_metric_varies():
+    varies = V.summarize([_run([_panel("R01-C001")], ffr=f) for f in (0.0, 0.02)])
+    assert "mean" in varies.describe() and "sd" in varies.describe()
+    stable = V.summarize([_run([_panel("R01-C001")], ffr=0.0) for _ in range(2)])
+    assert "± " not in stable.describe()
 
 
 def test_identical_frames_but_different_verdicts_blames_the_model():
