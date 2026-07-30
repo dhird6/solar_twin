@@ -7,7 +7,10 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 
 | ID | Name | Formula | Gated by | Source today |
 |---|---|---|---|---|
-| `KPI-01` | Detection rate | fraction of panels where `detected_state == injected_state` | Every slice ≥ `SLICE-0` | **Already implemented**: `MissionResult.detection_rate` in `orchestrator/mission.py` |
+| `KPI-01` | Detection rate | fraction of panels where `detected_state == injected_state` | Every slice ≥ `SLICE-0` | **Already implemented**: `MissionResult.detection_rate` in `orchestrator/mission.py`. ⚠⚠ **This is ACCURACY over EVERY panel, healthy included — see the null-baseline warning below. Never gate on it alone.** |
+| `KPI-01a` | Fault recall | of **faulted** panels only, fraction where `detected_state == injected_state` | should gate wherever `KPI-01` does | `MissionResult.fault_recall` (2026-07-31). Healthy panels cannot inflate it |
+| `KPI-01b` | Fault flag rate | of **faulted** panels only, fraction where `detected_state != healthy` (noticed at all, whatever the label) | report beside `KPI-01a` | `MissionResult.fault_flagged_rate`. The gap between `01b` and `01a` is pure taxonomy confusion |
+| `KPI-01n` | Null baseline | the healthy fraction of the scenario — what `KPI-01` scores by calling everything healthy | quote beside any `KPI-01` gate | `MissionResult.healthy_fraction`. A `KPI-01` at or below this is worth nothing |
 | `KPI-02` | Coverage % | panels inspected / panels in scope, within the mission time budget | `SLICE-7` (fleet) | New — count from `MissionResult.panels_inspected` vs. `farm.yaml` grid size |
 | `KPI-03` | False-fault rate | fraction of **healthy** panels whose `detected_state != healthy` under an adversarial (shadow/blur/dust) scenario | `SLICE-3` (the central thesis metric — see `HAZ-07`) | New — filter `MissionResult.results` where `injected_state == healthy` and `not correct`. **Baseline harness demonstrated 2026-07-24**: live Cosmos Reason over a healthy panel under sweeping turbine-blade shadows returned 0/6 false faults (moderate shadow, not worst-case) — the `SC-05` harness starting point |
 | `KPI-04` | Collision-free-flight rate | fraction of scenario runs with zero collisions and zero keep-out-volume intrusions | `SLICE-2` | **Partial** — keep-out intrusions already captured in the run-record `keepout` block (`waypoints_clamped`, `min_clearance_m`) via `SafeControl` (`IF-07`); physics-contact events pending the articulation/Pegasus work |
@@ -66,6 +69,38 @@ isolates the specific "swept blade shadow → false hotspot" failure mode this
 project exists to prevent. A system can have decent `KPI-01` and still be
 unsafe to deploy if `KPI-03` is high on adversarial scenarios — report both,
 always.
+
+**⚠⚠ `KPI-01`'s denominator is mostly healthy panels, so a do-nothing model passes
+its gate. Measured 2026-07-31 over the 20 archived Cosmos Reason runs
+(`tools/kpi_recall.py` reproduces all of it):**
+
+- `nominal_calm_vlm` is **82.5% healthy** and declares `detection_rate_min: 0.80`.
+  **A model that calls every panel healthy scores 0.825 and PASSES**, having found
+  nothing. The null model clears that gate in **13 of 20** runs, and in **3** it
+  scored at or above what the real model managed.
+- Exact recall on faulted panels only ranged **0.143–0.857** across those same runs,
+  against a `detection_rate` reading 0.80–0.925.
+- Pooled by injected state — the split the aggregate structurally cannot show:
+
+  | injected | n | flagged at all (`KPI-01b`) | named right (`KPI-01a`) |
+  |---|---|---|---|
+  | `soiled` | 62 | **0.984** | 0.516 |
+  | `hotspot` | 58 | **0.397** | 0.379 |
+
+  Injected soiling was diagnosed `hotspot` **29 times in 62**; injected hotspots were
+  called `healthy` **35 times in 58**. So the two failures are different and have
+  different fixes: **soiling is a discrimination problem, hotspots are a sensitivity
+  problem.** Chase them separately.
+
+**Rule from here: never gate on `KPI-01` alone.** Gate on `KPI-01a` (recall), and
+quote `KPI-01n` (the null baseline) beside any `KPI-01` figure so a reader can see
+what it beat. `KPI-01` itself is **deliberately unchanged** — it appears in every
+run record ever written, and redefining it would make those non-comparable, the same
+reasoning that locked `KPI-03` (§6.5).
+
+⚠ **A `detection_rate` of 1.00 on an all-healthy scenario is vacuous** — with no faults
+seeded it is arithmetically the same fact as `KPI-03 = 0`, restated. `khavda_selfshade`
+is exactly this. Do not quote the two side by side as if they were two results.
 
 **`KPI-03`'s two halves (`KPI-03a`/`KPI-03b`), decided 2026-07-29.** `unknown` is
 `!= healthy`, so a panel the model *failed to answer for* scored identically in
