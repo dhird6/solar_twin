@@ -259,6 +259,102 @@ PLANT_LOOKS: dict[str, dict] = {
 PANEL_GLASS = dict(color=(0.92, 0.95, 0.98), ior=1.5, thin_walled=True, roughness=0.02)
 
 
+#: NVIDIA's **procedural** sky shaders — the fix for the sky being darker than the
+#: ground. All seven verified fetchable (HTTP 200) 2026-07-31.
+#:
+#: This is not a texture. A dynamic sky binds an **MDL material to the DomeLight**, so
+#: the sky is evaluated procedurally and is **HDR by construction** — which is exactly
+#: what our 8-bit latlong PNG could never be. Measured on the block02 stage at f/9:
+#:
+#:     sky texture (ours)       sky  15.4   ground 108.5   ratio 0.14   R-B +24.0
+#:     ClearSky.mdl             sky 132.8   ground 171.2   ratio 0.78   R-B +17.1
+#:     CumulusLight.mdl         sky 176.2   ground 174.9   ratio 1.01   R-B +14.1
+#:
+#: The sky went from 6x DARKER than the desert to about equal, **and the Session-10c
+#: warm-ground invariant held** (R-B stayed positive). That is the part the LDR route
+#: could not do: raising a PNG dome's intensity fixed the sky and drove R-B to ~0.
+SKY_MDL_BASE = (
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
+    "/Assets/Skies/2022_1/Skies/Sky_Elements/materials/procedural"
+)
+
+#: Sky looks available. `ProceduralSky` is the general one; the rest are presets.
+SKIES = (
+    "ClearSky",
+    "CumulusLight",
+    "CumulusHeavy",
+    "Cirrus",
+    "Overcast",
+    "NightSky",
+    "ProceduralSky",
+)
+
+
+def sky_material(
+    stage,
+    path: str,
+    kind: str = "ClearSky",
+    *,
+    elevation_deg: float,
+    azimuth_deg: float,
+    lat_deg: float = 0.0,
+    lon_deg: float = 0.0,
+    north_orientation_deg: float = 0.0,
+) -> UsdShade.Material:
+    """A procedural sky, driven by OUR sun vector.
+
+    `elevation_deg`/`azimuth_deg` come from `world/solar.py`, so the visible sky and
+    the `DistantLight` cannot disagree about where the sun is — the same one-source
+    rule the tracker angle already follows. Latitude/longitude are passed through as
+    well because the shader uses them for the sky's colour gradient.
+
+    ⚠ Two things the caller must get right, both measured:
+      * **`DomeLight.intensity` must be 1.0.** The MDL supplies the radiance itself;
+        at intensity 100 the whole frame saturates to 255 (sky AND ground), which
+        looks like a blown exposure and is really a double-counted sky.
+      * **Clear `DomeLight.textureFile`.** A dome carrying both a texture and a bound
+        MDL material is ambiguous, and the texture is what our stages set.
+
+    ⚠ Adds a **network dependency** at render time (Kit caches after the first
+    fetch). Every other stage this project ships is self-contained; this is the first
+    thing that is not, which is why it rides on `realism.enabled` rather than the
+    default path.
+    """
+    if kind not in SKIES:
+        raise ValueError(f"unknown sky {kind!r}; known: {list(SKIES)}")
+    mat = UsdShade.Material.Define(stage, path)
+    shader = UsdShade.Shader.Define(stage, path + "/Shader")
+    shader.SetSourceAsset(Sdf.AssetPath(f"{SKY_MDL_BASE}/{kind}.mdl"), "mdl")
+    shader.SetSourceAssetSubIdentifier(kind, "mdl")
+    for name, value in (
+        ("Elevation", elevation_deg),
+        ("Azimuth", azimuth_deg),
+        ("Latitude", lat_deg),
+        ("Longitude", lon_deg),
+        ("NorthOrientation", north_orientation_deg),
+    ):
+        shader.CreateInput(name, F).Set(float(value))
+    # A sky shader drives surface AND volume — matching NVIDIA's own ClearSky.usd,
+    # which wires all three MDL contexts to the same shader output.
+    mat.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+    mat.CreateVolumeOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+    return mat
+
+
+def bind_sky(stage, dome_prim, material: UsdShade.Material) -> None:
+    """Put a procedural sky on a `DomeLight`, with the two required side-effects."""
+    from pxr import UsdLux
+
+    dome = UsdLux.DomeLight(dome_prim)
+    tex = dome.GetTextureFileAttr()
+    if tex:
+        tex.Clear()
+    dome.CreateIntensityAttr().Set(1.0)
+    UsdShade.MaterialBindingAPI(dome_prim).Bind(
+        material, UsdShade.Tokens.weakerThanDescendants
+    )
+
+
 def build_plant_materials(
     stage,
     looks_root: str = "/World/Looks",

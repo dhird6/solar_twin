@@ -1530,6 +1530,10 @@ def build(farm_cfg: dict, out_path: str) -> str:
     world = UsdGeom.Xform.Define(stage, "/World")
     stage.SetDefaultPrim(world.GetPrim())
 
+    # Resolved BEFORE the lighting block, because the procedural sky below is part
+    # of the realism layer and the dome is authored there.
+    realism = bool((farm_cfg.get("realism", {}) or {}).get("enabled", False))
+
     # --- lighting: a directional sun (relief/shadows) + dome ambient fill ----
     sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
     sun.CreateAngleAttr(0.53)  # sun's angular diameter -> soft shadow edges
@@ -1624,6 +1628,46 @@ def build(farm_cfg: dict, out_path: str) -> str:
         dome.CreateTextureFormatAttr().Set(UsdLux.Tokens.latlong)
         print(f"  sky: generated {sky_tex}", flush=True)
 
+    # --- procedural sky: the fix for a sky darker than the ground -------------- #
+    # Our generated PNG is 8-bit, so it clips at 255 and can never be BOTH a correct
+    # sky and a correct light source (a real sky spans ~1e3-1e5). Measured: it renders
+    # at 0.14x the ground brightness — six times darker than the desert it lights,
+    # which is the dark band at the top of every render this project produced.
+    #
+    # NVIDIA's dynamic skies solve it by binding an MDL material to the DomeLight
+    # instead of a texture: procedural, HDR by construction, driven by a sun vector.
+    # Measured on this stage at f/9 (see `mdl_materials.SKY_MDL_BASE`):
+    #     ours 0.14 ratio / R-B +24  ->  ClearSky 0.78 / +17  ->  CumulusLight 1.01 / +14
+    # The sky is fixed AND the warm-ground invariant holds, which is what the
+    # raise-the-dome-intensity route could not manage (it drove R-B to ~0).
+    #
+    # ⚠ Rides on the realism layer because it is the first thing in this project that
+    # makes a stage NOT self-contained: the shader is fetched over https (Kit caches
+    # it, but the first render needs the network).
+    if realism and (farm_cfg.get("sky", {}) or {}).get("procedural", True):
+        from solar_twin.world import mdl_materials as _mdlm
+
+        sky_kind = str((farm_cfg.get("sky", {}) or {}).get("kind", "ClearSky"))
+        try:
+            sky_mat = _mdlm.sky_material(
+                stage, "/World/Looks/sky_procedural", sky_kind,
+                elevation_deg=elev, azimuth_deg=azim,
+                lat_deg=layout.anchor.lat0 if layout.anchor else 0.0,
+                lon_deg=layout.anchor.lon0 if layout.anchor else 0.0,
+            )
+            _mdlm.bind_sky(stage, dome.GetPrim(), sky_mat)
+            print(
+                f"  sky: procedural {sky_kind}.mdl bound to the dome "
+                f"(elev {elev:.1f} azim {azim:.1f}) — ⚠ fetched over https at render time",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — a sky must never fail a build
+            print(
+                f"  [warn] procedural sky unavailable ({exc}); keeping the generated "
+                "PNG dome, which renders ~0.14x the ground brightness",
+                flush=True,
+            )
+
     # --- shared material set (one look per _LOOKS entry, reused everywhere) ---
     # --- the look layer: flat UsdPreviewSurface, or MDL (realism) ------------- #
     # `realism.enabled` swaps 13 constant-colour `UsdPreviewSurface` materials for
@@ -1644,7 +1688,6 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # this adds no download and no network dependency. A library MDL over https also
     # resolved, and is available via `mdl_materials.library_material` at the cost of
     # a network dependency at render time.
-    realism = bool((farm_cfg.get("realism", {}) or {}).get("enabled", False))
     if realism:
         from solar_twin.world import mdl_materials as mdlm
 

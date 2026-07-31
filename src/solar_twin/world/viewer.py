@@ -62,6 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         help="do not turn the turbines — a static scene, if you want to inspect one "
         "blade-shadow position rather than watch it sweep",
     )
+    ap.add_argument(
+        "--no-tonemap",
+        action="store_true",
+        help="skip the photographic exposure. ON by default here, unlike a KPI run: "
+        "without it the desert blows out to paper white (measured f/5 -> 195/255 vs "
+        "f/9 -> 118). A viewer exists to be looked at, so it should be exposed.",
+    )
     args = ap.parse_args(argv)
 
     usd = Path(args.usd)
@@ -86,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         headless=not args.gui,
         resolution=(args.width, args.height),
         livestream=not args.gui,
+        tonemap=not args.no_tonemap,
     )
     print(f"opened {usd}", flush=True)
     runtime.hold(free_camera=True, spin_turbines=not args.still)
