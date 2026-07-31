@@ -11,15 +11,25 @@
 
 **Do these first, in this order. Rationale in `SESSIONS.md` Session 17 (top entry).**
 
-1. **Re-run the black-ground bisect — the old one was invalid.** `/World/Looks/ground_pbr`
-   was authored twice and the second call overwrote the first, so all four `--pbr` arms
-   rendered the same network. Fixed in `e931bfd`, along with a normal-map `fallback`
-   (a failed read decoded to a normal of `(0,0,0)` → degenerate → **exactly zero**, which
-   matches the measured 97%-pure-black ground) and absolute asset paths. **One build +
-   `tools/inspect_frame.py` settles it:** ground R−B warm ⇒ the normal input was the cause.
+1. **Black ground: test the UV wrap mode — it is the last of three causes.** The bisect was
+   re-run (`58b18a8`) and **two causes are fixed and confirmed**: the normal-map `fallback`
+   (a failed read decoded to a normal of `(0,0,0)` → degenerate → **exactly zero**), worth a
+   ~24× brightness recovery, and the missing `sourceColorSpace: raw` on albedo (`795ae33`),
+   worth a further 2.4×. Ground is now `(70.5, 66.4, 62.9)` R−B **+7.6** against the flat
+   material's `(119.5, 108.6, 95.4)` R−B **+24.1**.
+   **The residual, and the one build that settles it:** the ground's `st` is world-metres ÷
+   tile size, i.e. **±62**, almost entirely outside the unit square; `wrapS`/`wrapT` are
+   authored `repeat`, but `UsdPreviewSurfaceLib.mdl`'s `useMetadata` path falls back to
+   **`wrap_clip`, which returns BLACK outside [0,1]** — which would be both darker *and*
+   pulled toward R−B 0, the shape of both residuals. ⚠ An inference, not a measurement.
+   **Clamp `_planar_uvs` into `[0,1)` (or drop tiling for a single non-repeating map),
+   rebuild, and re-run the same check with `tools/inspect_frame.py`. If the ground jumps to
+   ~+24, it is the wrap mode.** The isolating arm is `--pbr albedo_only` (`155e789`), one of
+   five now: `{on, off, albedo, albedo_only, primvar}`.
    Free extra check in the same frame — road/concrete/equipment/structure/fence should be
    black too if the mechanism is right; every saved frame so far is a panel close-up, so
-   nobody has looked.
+   nobody has looked. ⚠ The last two arms have **no saved frames** (nothing was written to
+   `runs/` after 07:59), so this is a rebuild, not a re-read.
 2. **Chase HOTSPOT recall, not aggregate recall.** Measured over 20 archived VLM runs:
    soiled flagged **0.984** / named 0.516, hotspot flagged **0.397** / named 0.379.
    Injected soiling was called `hotspot` 29 times in 62; injected hotspots were called
@@ -38,8 +48,14 @@
 **State (2026-07-31):** KPI-03 = **0.000** on two independent runs under two different
 skies — `runs/20260730T145823` (N=5, legacy sky) and `runs/20260731T024941` (N=3, physical
 sky), both stdev 0.0, agreement 1.0, gates PASS. Shading stimulus **+12.6 points** under
-the corrected glass mask. Work is on `overnight/session-17`; PR #10 is open from
-`ID-3-Testing-and-new-features-addin`.
+the corrected glass mask. ⚠ Both runs carry the same caveat: frames are **not
+bit-reproducible** (560/560 differ between repeats) and **1 of 560 panels (`R258-C000`)
+shows a materially different picture** — the verdict agreed anyway, so it does not move the
+0.00, but for that one panel the model was not shown the same thing twice. Black ground:
+**two of three causes fixed and confirmed, the third narrowed to UV wrap mode**; the
+textured layer stays OFF. Work is on `overnight/session-17`, pushed to
+`ID-3-Testing-and-new-features-addin`; PR #10 is open from that branch and now carries
+Sessions 16 **and** 17.
 
 ---
 
@@ -295,13 +311,24 @@ bitten by one.
   which is flat materials + the generated sky and is fine. Measured 2026-07-31
   (Session 17): with the textured materials bound, SC-11's ground rendered
   **(1.1, 1.2, 1.2), R−B −0.1** — achromatic and near-black — against
-  **(77.6, 68.0, 54.1), R−B +23.5** with it off. **This is the SAME R−B invariant,
-  and the SAME class of failure, as the emissive-dome bug directly above — the
-  project has now been bitten by "the ground stopped reading warm" twice.**
-  Bisect (`farm_builder --pbr {on,off,albedo,primvar}`) shows it is neither the
-  normal map nor the diffuse source: `albedo` and `primvar` render *identically*,
-  so the diffuse input is ignored outright. The generated maps are correct
-  (ground albedo R−B +28.04) and every texture path resolves. **Root cause OPEN.**
+  **(77.6, 68.0, 54.1), R−B +23.5** with it off (`runs/inspect_legacy`-era camera).
+  **This is the SAME R−B invariant, and the SAME class of failure, as the
+  emissive-dome bug directly above — the project has now been bitten by "the
+  ground stopped reading warm" twice.**
+  ⚠⚠ **The first bisect's conclusion — "neither the normal map nor the diffuse
+  source; `albedo` and `primvar` render identically, so the diffuse input is
+  ignored outright" — was RETRACTED (`0c229e5`) and then DISPROVED (`58b18a8`).**
+  `/World/Looks/ground_pbr` had been authored twice, so all four arms rendered the
+  same network; it *was* the normal map. **Do not quote that sentence.**
+  **Current, measured 2026-07-31 on the same panel and camera:** ground
+  **(70.5, 66.4, 62.9), R−B +7.6** against the flat material's
+  **(119.5, 108.6, 95.4), R−B +24.1** — the like-for-like pair; the +23.5 above is
+  an earlier, differently-framed measurement and the two must not be mixed.
+  **Two of three causes are fixed and confirmed** (normal-map `fallback`; albedo
+  `sourceColorSpace: raw`); **the third is narrowed to UV wrap mode** — see
+  NEXT SESSION item 1 for the one build that settles it. The generated maps are
+  correct (ground albedo R−B +28.04, re-confirmed at +28.1). The layer **stays
+  off**: the bar is ground R−B back above **+20**, and +7.6 does not meet it.
   Guarded by `tests/test_textures.py::TestPbrIsOffUntilItRendersCorrectly`.
 - `panel.mount_height: 1.5` in `configs/farm_khavda_block02.yaml` is a guess —
   needs the MMS/tracker datasheet.

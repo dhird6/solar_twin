@@ -143,6 +143,8 @@ control does not.
 
 **Therefore, honestly stated: SC-11's shading stimulus on the current twin is UNMEASURED.**
 Not weakened, not doubled — unmeasured, pending a mask that survives a blue sky.
+*(⇢ **Resolved eleven lines down in §3b, same session: +12.6 points.** The paragraph is
+kept as written because the retraction is the point, but do not stop reading here.)*
 
 ⚠ **Both causal claims are withdrawn.** I first said the sky compressed the stimulus by
 redistributing radiance; I then said the black ground suppressed it by removing bounce
@@ -165,16 +167,22 @@ Swept the blue-over-red threshold across all three stages' saved frames. The rul
 
 **Re-derived differentials, and the artifact vanishes:**
 
-| SC-11 stage | old rule (1.15) | **fixed rule (2.0)** |
-|---|---|---|
-| legacy sky | +13.5 | **+13.8** |
-| physical sky, **PBR on** (black ground) | +10.1 | **+10.9** |
-| physical sky, **PBR off** | +23.7 ← artifact | **+12.6** |
+| SC-11 stage | frames | old rule (1.15) | **fixed rule (2.0)** |
+|---|---|---|---|
+| legacy sky | `runs/inspect_legacy` | +13.5 | **+13.8** |
+| physical sky, **PBR on** (black ground) | `runs/verify_sc11_pbr` | +10.1 | **+10.9** |
+| physical sky, **PBR off** | `runs/verify_sc11_skyonly` | +23.7 ← artifact | **+12.6** |
 
 ⭐ **So SC-11's stimulus on the current twin is INTACT at +12.6 points**, close to the
 legacy stage's +13.8. The +23.7 that briefly looked like a doubling was *entirely* mask
 artifact. The black ground does suppress the differential slightly (+10.9 vs +12.6) —
 a real but small effect, and **not** the mechanism I claimed twice.
+
+⚠ **"Close to the legacy stage's +13.8" is not a clean comparison, and must not be read as
+one.** The legacy row came from the **Jul 27 stage, which predates the DEM, the graded pad
+and the OSM geography** — three changes to the geometry that casts the shadow. Only the
+same-stage arms compare cleanly (+10.9 PBR-on vs +12.6 PBR-off). The legacy number is
+context, not a control.
 
 **Why 2.0 and not something between.** The PV cell's own diffuse is `(0.02, 0.04, 0.13)`,
 i.e. blue/red ≈ 6.5, so 2.0 has enormous margin on the glass side. On the other side the
@@ -187,15 +195,28 @@ executable rather than described.
 ⚠ **Numbers measured under the old rule are not comparable to numbers measured under this
 one.** Anything quoted from before 2026-07-31 carries the 1.15 rule.
 
-⚠ The KPI-03 re-run in flight was launched with the OLD rule's stimulus check, so its
-`STIMULUS` provenance is stale even though its verdicts are unaffected (the mask is a
-measurement tool, not a render input). Re-state its stimulus as **+12.6** when reporting.
+⭐ **And the reason the artifact survived long enough to be a headline is now closed
+(`3ad6521`).** `verify_shade` printed to a console and saved PNGs, so a differential could
+only be re-checked by re-deriving it from the frames by hand — the +23.7 was
+**unreproducible from anything on disk**. It now writes `stimulus.json` beside the frames
+with the per-pass figures, the control, the differential and — deliberately — **the glass
+mask share, which is the exact field that would have caught this**: a share near 1.0 means
+"% dark glass" has degenerated into whole-frame brightness. It also imports
+`DARK_FRACTION_OF_BRIGHT` from `kpi/glass.py` rather than keeping a second copy, and the
+"both tools share one definition" test is an **AST check**, so reformatting the import
+cannot defeat it.
+
+⚠ The KPI-03 re-run that was in flight at the time had been launched with the OLD rule's
+stimulus check, so its `STIMULUS` provenance was stale even though its verdicts are
+unaffected (the mask is a measurement tool, not a render input). Its stimulus is re-stated
+as **+12.6** in §1.
 
 **What survives, and it is the important part:** a KPI is only quotable against the stage
 *and the instrument* it was measured with. The stimulus check is itself an instrument, and
-it needed re-verifying when the lighting changed. The KPI-03 re-measurement now running
-against `khavda_selfshade_sky.usd` therefore has **an unproven stimulus**, and its result
-must be reported that way whatever it says.
+it needed re-verifying when the lighting changed. The KPI-03 re-measurement against
+`khavda_selfshade_sky.usd` therefore ran with **an unproven stimulus**, and had to be
+reported that way whatever it said — §1 records what it said, and the stimulus is now
+proven at +12.6.
 
 ### 6. ⭐⭐ The mission video — and the real brain missing what the stub catches
 
@@ -256,7 +277,20 @@ What the demo cut therefore does and does not show:
   confound but hotspot recall pays for it**, and the panel missed tonight was a
   **hotspot** at `crop_fraction: 1.0`. Whether hotspot recall specifically is the weak
   half of that 0.875 is a real, cheap question — a per-state breakdown of `KPI-01` would
-  answer it and nobody has run one.
+  answer it and nobody has run one. **⇢ Run later the same session: §8. Hotspots are
+  flagged at 0.397 against soiling's 0.984 — it is the weak half, decisively.**
+
+**The assembly is a script now, not a one-off** (`edcdd62`, `tools/make_cinematic.py`).
+Every number on the cards is **read from the run record** rather than typed — the same
+rule `plant_tour.py` follows — so the video cannot drift from the run it describes.
+⚠ **The perception backend gets its own card, deliberately.** The stub cut reads injected
+state off the prim and therefore *cannot miss*; it demonstrates choreography, not detection
+skill, and unlabelled a viewer reasonably concludes the AI found the fault. The scenario's
+own header says DO NOT QUOTE A KPI FROM THIS FILE, and **this project has already had
+KPI-01 quoted off a demo config for weeks.** Assembly is a concat demuxer rather than an
+`xfade` filter graph: every part is already the same size/fps/codec, so it is a stream copy
+with no generation loss, and it cannot silently drop a segment the way a long
+`filter_complex` can. Pure CPU (PIL + ffmpeg) — it re-cuts without touching the GPU.
 
 ### 8. ⭐⭐ THE FINDING: our detection gate can be passed by a model that detects nothing
 
@@ -303,11 +337,20 @@ four in the run record: `healthy_fraction` (the null baseline a gate must beat),
 `fault_recall`, `fault_flagged_rate`, `recall_by_state()`. Specced as `KPI-01a`/`01b`/`01n`
 in `docs/specs/06`, with the rule: **never gate on `KPI-01` alone.**
 
+⚠ **And landing them in the run record was not enough** (`3343fe0`). `variance.py`'s
+`DEFAULT_METRICS` is a hardcoded tuple, so the new metrics were readable off a single run
+but **never summarised across repeats** — i.e. never quotable with an N and a range, which
+is the one rule that module exists to enforce. Easy to miss, so it is now a test.
+`fault_recall`, `fault_flagged_rate` and `healthy_fraction` all get a spread like every
+other KPI. `healthy_fraction` travels with `detection_rate` deliberately: it is the score
+`detection_rate` gets for free, and **seeing 0.825 without it does not tell a reader they
+are looking at the null.**
+
 ⚠ A `detection_rate` of 1.00 on an all-healthy scenario is **vacuous** — with no faults
 seeded it is arithmetically the same fact as `KPI-03 = 0`, restated. `khavda_selfshade`
 is exactly that, so §1's table should not be read as "detects faults perfectly".
 
-### 7. From the parallel audit: two more real defects
+### 7. From the parallel audit: two more real defects — ⭐ both fixed the same night
 
 Ran a fan-out of finder+verifier agents over yesterday's Isaac-bound work. Two survived
 adversarial verification (several verifiers were cut short by an API quota, so this is a
@@ -321,12 +364,70 @@ partial sweep, not a clean bill):
   `np.rint`, and the sibling `textures.py` already rounds at all four of its conversion
   sites. It is a **one-directional bias that cannot average out across `--repeat N`**.
   Small (~0.36% of fill, well under the stimulus) but it always darkens.
+  **⭐ Fixed in `34c805f`** — decoding at the bin centre leaves `<2.2e-5` against the
+  0.00196 bias (SC-11 anchor 0.547490, truncated 0.545529); 22 sky tests pass. Fixed not
+  because a conclusion flips — none does — but because *a known-direction bias in the thing
+  that sets shadow fill is not something to leave in place, and the commit record currently
+  names the wrong cause.* ⚠ **Not re-verified end-to-end on the GPU**: the box was running
+  the KPI-03 re-measurement and a render would have contended with it. ⚠ Two known-wrong
+  records are left standing where they were written — `1fe0eb6`'s "8-bit quantisation" note
+  and the test comment blaming "finite row count".
 - **⚠ `grid_dispatch.py:151` can label a greedy plan `cuopt`.** There is no cuOpt code
   path — `_greedy_route` runs unconditionally — and the `import cuopt` is only a feature
   probe that flips the provenance string. Verified by injecting a stub module: the plan
   comes back `solver="cuopt"` with a byte-identical greedy order and travel. The module
   explicitly refuses to fall back silently *because* "a greedy result labelled cuopt would
-  be a false provenance" — and it will produce exactly that the day cuOpt is installed.
+  be a false provenance" — and it would have produced exactly that the day cuOpt is
+  installed. ⚠ **The trigger was `pip install`, not a code change**, so it would have
+  arrived silently, and cuOpt is on the roadmap — a latent bug whose fuse is a dependency
+  install deserves fixing *before* the install.
+  **⭐ Fixed in `c7387b3`**: the label is now a constant, and asking for cuOpt **raises
+  whether or not the package imports** — what is missing is the *integration*, not the
+  package. `NotImplementedError` rather than `RuntimeError`, since that is what it is (and
+  it subclasses `RuntimeError`, so existing callers still catch it). The regression test
+  injects the stub module, so **the fuse itself is what gets tested.**
+
+### 9. The suspicion-first ranker is wired in — and "off" is now provably free
+
+Session 16 §7 shipped `grid_dispatch.order_targets` as **a tested library nothing called.**
+`6e0e044` wires it into `run.py`, between `layout.inspection_targets()` and the mission, so
+it decides only *which panels in what order* — the FSM, `Perception`, `Transport`,
+`RobotControl` and `FaultReport` are untouched, exactly as the interface rule requires.
+
+⭐ **Off by default, and off costs nothing — asserted end to end, not claimed.** With
+`grid_dispatch.enabled` unset the layer returns the target list *itself*, builds no plan,
+and never constructs `panel_records()` (**30k records on the full plot**). The library's
+acceptance test asserted that property in isolation; `tests/test_run_dispatch_wiring.py`
+(249 lines) now asserts it through `run.py`, so a run with the feature off stays
+byte-identical and every recorded KPI stays reproducible.
+
+**Placed BEFORE `--max-panels`, deliberately.** `docs/specs/06` requires KPI-09's
+ranker-ON and ranker-OFF arms to be compared at the same seed **and the same panel
+budget** — so the budget has to be spent on the ranked order, not ahead of it.
+
+⚠⚠ **The prior is SIMULATED and circular by construction** — derived from the twin's own
+`pv:state`/`pv:iv_yield`, the very ground truth the mission is sent out to discover. So:
+
+- **a `dispatch` block is written on EVERY run**, including disabled ones
+  (`scada_source: "none"`) — a reader never has to infer whether ranking happened;
+- whenever a ranking actually chose the order, the record also carries a **`caveat`** saying
+  in prose that this proves nothing about a real plant. The wording lives in
+  `simulated_scada.SIMULATED_CAVEAT` so the run record and `scada.summary()` cannot drift
+  into two versions of the same warning.
+
+Two things are stated rather than left to be discovered: **`escalation_arm` is recorded but
+NOT enacted** (the FSM is ground-first by construction), and `grid_dispatch.modules_per_cell`
+is **a stub key `order_targets` never reads** — a mission that sets it is warned that cells
+come from the stage.
+
+**And the join key it ranks on is now derived once** (`1cd37b0`). `layout.panel_records()`
+left `cell_id` empty, so the one demo exercising dispatch stamped the key **by hand** — and
+a join key that the stage and the mission derive separately, or that one of them does not
+derive at all, is not a join key. `cell_id_for()` now lives in `world/layout.py` as the
+single derivation and `farm_builder._cell_id_for()` is a one-line forward to it, so
+`PanelRecord.cell_id` and the prim's `grid:id` come from `(site.row, site.col)` **by
+construction rather than by agreement**. Still gated by `grid.enabled`: a `farm.yaml`
+predating the namespace yields `cell_id == ""` on every record and is byte-identical.
 
 ### 4. ⚠⚠ The textured-PBR layer renders the desert BLACK — now off by default
 
@@ -385,6 +486,11 @@ CWD** — so it resolved because I ran the check from the repo root. Layer-ancho
 be `assets/assets/…`, which does not exist, and Kit's MDL texture loader does not take
 that CWD fallback. Now authored absolute.
 
+**A fourth fix in the same commit, harmless but wrong.** `ConnectToSource` on a *missing*
+output creates it with the **connecting** attribute's type — so connecting before
+`CreateOutput` typed the primvar reader's output `color3f` where the working
+`_vertex_colour_material` path gets `float3`. It cannot cause black, and it was free to fix.
+
 What **does** still stand, measured not argued:
 - **The generated maps are correct.** Ground albedo mean RGB (76.50, 63.75, 48.44),
   **R−B +28.1** — matching Session 16's +28.04 to within a rounding step. The
@@ -419,6 +525,11 @@ material on the same panel and camera:
 So the textured ground is **~4.5× darker and a quarter as warm** as the material it is
 meant to replace. Not broken any more; not yet right. The guard test's bar — ground R−B
 back above **+20** — is **not met**, so `pbr.enabled` stays `False`.
+
+⚠ **The 4.5× is superseded twelve lines down — do not quote it as the current state.** The
+colour-space fix below moves this same arm to `(70.5, 66.4, 62.9)`, i.e. **~1.7× darker**.
+The conclusion is unchanged (the layer stays off, on the R−B bar), but the brightness gap
+is now much smaller than this table says.
 
 ⭐ **Tested, and half the gap was a colour-space mismatch.** `sourceColorSpace: raw` was
 set on the roughness and normal maps but **not on albedo**, so the renderer sRGB-decoded a
@@ -470,12 +581,21 @@ equipment, structure and fence are black too** — they share the same normal wi
 same huge planar UVs. Every frame saved so far is a panel close-up, so nobody has looked.
 If they render correctly, the mechanism is wrong and the fault is ground-specific.
 
+⚠ **Provenance gap, stated rather than papered over: the two newest arms have NO saved
+frames.** Only `runs/bg2_on` (the +6.0 row) and `runs/bg2_albedo` (the +7.4 row) are on
+disk; nothing was written to `runs/` after 07:59. So the `raw` arm's
+`(70.5, 66.4, 62.9)` and `albedo_only`'s `(28.7, 24.6, 21.2)` **exist only as prose here
+and in the commit messages** — there is nothing to re-inspect. This is the same class of
+gap §1 flags for the stage path, and it is the *only* reason the UV-wrap test below needs a
+rebuild rather than a re-read. Not re-rendered tonight: it needs the GPU.
+
 ### 5. ⚠ 42 tests had never run — and one of them was failing
 
 `tests/test_schema_usd.py` and friends are `pytest.importorskip("pxr")`. **pxr is absent
 from both the aarch64 system Python and the Isaac-free CI job**, so those tests SKIP
 everywhere the suite normally runs. Under Isaac's bundled Python: **693 passed, 1
-failed.** The green 654-test suite was structurally incapable of seeing it.
+failed.** The green 654-test suite was structurally incapable of seeing it. *(Both are the
+figures at the moment of discovery; the end-of-session counts are below.)*
 
 The failure: `test_grid_id_is_absent_when_not_requested` passed `_stage()` inline, so the
 only reference to the in-memory stage died with the call expression, USD collected the
@@ -487,6 +607,35 @@ the outlier. Fixed in `b3131fb`.
 discipline is a genuine strength, but it has a matching blind spot — **a green suite here
 is evidence about the pure half only.** Three defects, three different mechanisms, one
 shared cause: nobody ran the thing.
+
+### Where this leaves things
+
+**Counts at end of session** (`db4487b`, measured 2026-07-31, not remembered): Isaac-free
+**695 passed / 6 skipped**; under Isaac Sim's own Python **737 passed / 3 skipped**. The
+gap is **42** `pytest.importorskip("pxr")` items across 5 modules — the ones §5 is about.
+`tests/test_docs_fresh.py` enforces the documented number so it cannot rot a fourth time.
+
+**Shipped and verified:** the three defects (`3a8c5e2` build, `b3131fb` expired prim,
+`e3c0e2f` PBR off) plus the two audit defects (`34c805f` sky rounding, `c7387b3` cuopt
+provenance) — all fixed, all with a regression test that tests the *mechanism*, not the
+typo. KPI-03 = **0.000** re-measured on the current twin (`runs/20260731T024941`, N=3,
+stdev 0.0, gates PASS), stimulus **+12.6** under the corrected glass mask. The ranker is
+wired into `run.py` with "off" proven free (§9). The recall metrics ship with a spread (§8).
+
+**Still open — in the order the next session should take them:**
+
+1. **The UV-wrap test (§4b).** One build: clamp `_planar_uvs` into `[0,1)` and re-run the
+   same ground R−B check. ~+24 ⇒ it is the wrap mode. Free extra check in the same frame:
+   road/concrete/equipment/structure/fence should be black too if the mechanism is right.
+   **The PBR layer stays OFF until the R−B > +20 bar is met.**
+2. **Chase HOTSPOT recall, not aggregate recall (§8).** Flagged 0.397 vs soiling's 0.984.
+3. **Re-gate on `KPI-01a` against `KPI-01n`.** The metrics are in the run record; the gates
+   still point at `detection_rate`, which a null model passes.
+4. Re-render the stale video set, and record the stage path in the run record (§1).
+
+**State:** work is on `overnight/session-17`, cut from
+`ID-3-Testing-and-new-features-addin`. Full task detail lives in the `docs/TASKS.md`
+NEXT SESSION block; this entry is the reasoning behind it.
 
 ## 2026-07-30 — Session 16: KPI-03 as a range, PBR split along the fault-signature risk line, and suspicion-first dispatch
 
