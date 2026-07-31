@@ -73,8 +73,11 @@ panel:
 
 # REAL terrain (FR-10/FR-20). Copernicus DEM GLO-30, fetched and baked by
 #   /home/simulationhub/venvs/dem-ingest/bin/python tools/dem_fetch.py \
-#       configs/layouts/khavda_a10b_block02.yaml --out assets/dem/khavda_block02
-# The block measures 3.3-5.4 m above sea level: 2.2 m of relief over 1.1 x 1.4 km,
+#       configs/layouts/khavda_s05b_digest.yaml --out assets/dem/khavda_s05b
+# ⚠ Bake THIS layout, not BLOCK-02's — `assets/dem/` is gitignored, so a fresh
+# checkout re-bakes from this line, and the block02 command that used to sit here
+# would silently reintroduce the clamped-ground bug fixed in `637aa90`.
+# The plot measures 3.3-8.7 m above sea level: 5.4 m of relief over 5.7 x 2.8 km,
 # which is what the Rann of Kutch actually looks like. `datum: hardware_mean`
 # puts that mean elevation at stage z=0 so waypoint standoffs stay meaningful.
 #

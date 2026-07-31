@@ -10,13 +10,17 @@
 #    cells). Healthy panels are ~1 prim each; a faulted one is ~75. Use
 #    `--subset N` for a band of tables, or faults.rate: 0.0 for pure geometry.
 #
-# 2. ⚠ THE DEM DOES NOT COVER THIS PLOT, AND IT FAILS SILENTLY. The baked
-#    patch below is BLOCK-02's (plot A10b). S05b starts ~300 m east and runs
-#    4.8 km further; `dem._raw` CLAMPS outside the grid by design (so the far
-#    ground mesh does not tear a cliff), so most of this plot would sit on a
-#    flat clamped edge elevation while LOOKING like real terrain. Re-bake with
-#    tools/dem_fetch.py for S05b's extent before trusting any z here, or set
-#    terrain.kind: flat so the approximation is at least explicit (NFR-07).
+# 2. ✅ RESOLVED (`637aa90`) — DEM COVERAGE. This plot used to point at
+#    BLOCK-02's patch, which starts ~300 m west and stops 4.8 km short, so most
+#    of it stood on one clamped edge elevation while LOOKING like real terrain
+#    (`dem._raw` clamps outside the grid by design, so the far ground mesh does
+#    not tear a cliff — the clamp is right, the patch was wrong). S05b now has
+#    its own bake: 284 x 140 cells at 20 m = 5.68 x 2.80 km, containing this
+#    plot's 4.84 x 1.97 km with ~400 m of margin on every side.
+#    ⚠ It failed SILENTLY for a day, so it is now a test rather than a warning:
+#    `test_dem_patch_covers_the_layout_it_is_paired_with` walks every
+#    `configs/farm*.yaml` with `kind: dem` and fails if the patch does not
+#    contain that config's own layout extent. Isaac-free; no GPU.
 #
 # Khavda PLOT A10b, BLOCK-02 — the REAL site, from the vendor CAD.
 #
@@ -56,8 +60,11 @@ panel:
 
 # REAL terrain (FR-10/FR-20). Copernicus DEM GLO-30, fetched and baked by
 #   /home/simulationhub/venvs/dem-ingest/bin/python tools/dem_fetch.py \
-#       configs/layouts/khavda_a10b_block02.yaml --out assets/dem/khavda_block02
-# The block measures 3.3-5.4 m above sea level: 2.2 m of relief over 1.1 x 1.4 km,
+#       configs/layouts/khavda_s05b_digest.yaml --out assets/dem/khavda_s05b
+# ⚠ Bake THIS layout, not BLOCK-02's — `assets/dem/` is gitignored, so a fresh
+# checkout re-bakes from this line, and the block02 command that used to sit here
+# would silently reintroduce the clamped-ground bug fixed in `637aa90`.
+# The plot measures 3.3-8.7 m above sea level: 5.4 m of relief over 5.7 x 2.8 km,
 # which is what the Rann of Kutch actually looks like. `datum: hardware_mean`
 # puts that mean elevation at stage z=0 so waypoint standoffs stay meaningful.
 #

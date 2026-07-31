@@ -120,6 +120,79 @@ def test_real_khavda_dem_is_flat_but_not_zero():
     assert "GLO-30" in meta["source"]
 
 
+# --- the coverage guard ----------------------------------------------------- #
+#
+# `_raw` CLAMPS outside the grid on purpose, so the far ground mesh does not tear
+# a cliff around the site (see `test_sampling_outside_the_grid_clamps_...`). The
+# cost of that choice is that a DEM patch which does NOT cover its plot fails
+# SILENTLY: every table outside the grid sits on one clamped edge elevation while
+# the stage still looks like real terrain. That is not hypothetical — the S05b
+# plot shipped pointing at BLOCK-02's patch, ~300 m west and 4.8 km too short,
+# until `637aa90` re-baked it. Nothing failed; someone had to notice.
+#
+# So: every config that asks for `kind: dem` must have a patch that contains its
+# own layout extent. Pure YAML arithmetic — no Isaac, no numpy, no GPU.
+
+REPO = Path(__file__).resolve().parents[1]
+DEM_CONFIGS = sorted(REPO.glob("configs/farm*.yaml"))
+
+
+def _dem_configs():
+    import yaml
+
+    for cfg_path in DEM_CONFIGS:
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        terrain = cfg.get("terrain") or {}
+        layout = cfg.get("layout") or {}
+        if terrain.get("kind") != "dem" or layout.get("kind") != "file":
+            continue
+        yield cfg_path.name, terrain.get("path"), layout.get("path")
+
+
+@pytest.mark.parametrize(
+    "cfg_name,dem_rel,site_rel", list(_dem_configs()), ids=lambda v: str(v)[:40]
+)
+def test_dem_patch_covers_the_layout_it_is_paired_with(cfg_name, dem_rel, site_rel):
+    """A `kind: dem` config whose patch misses its plot is worse than `kind: flat`:
+    flat is honest, a clamped edge is flat while LOOKING surveyed."""
+    import yaml
+
+    dem_path, site_path = REPO / dem_rel, REPO / site_rel
+    if not dem_path.exists():
+        pytest.skip(f"{dem_rel} not fetched (tools/dem_fetch.py); assets are gitignored")
+    assert site_path.exists(), f"{cfg_name} names a layout that does not exist: {site_rel}"
+
+    dem = yaml.safe_load(dem_path.read_text())
+    site = yaml.safe_load(site_path.read_text())
+    extent = site.get("extent")
+    assert extent, f"{site_rel} carries no `extent` — cannot check DEM coverage"
+
+    step = float(dem["step_m"])
+    dem_e0, dem_n0 = float(dem["origin_easting"]), float(dem["origin_northing"])
+    dem_e1, dem_n1 = dem_e0 + int(dem["nx"]) * step, dem_n0 + int(dem["ny"]) * step
+    (site_e0, site_e1), (site_n0, site_n1) = extent["easting"], extent["northing"]
+
+    # Same CRS, or the comparison is meaningless before it is wrong.
+    assert dem["crs"] == site["crs"], (
+        f"{cfg_name}: DEM is {dem['crs']}, layout is {site['crs']}"
+    )
+
+    shortfall = {
+        "west": dem_e0 - site_e0,
+        "east": site_e1 - dem_e1,
+        "south": dem_n0 - site_n0,
+        "north": site_n1 - dem_n1,
+    }
+    missed = {k: round(v, 1) for k, v in shortfall.items() if v > 0.0}
+    assert not missed, (
+        f"{cfg_name}: `{dem_rel}` does not cover `{site_rel}` — short by {missed} metres. "
+        f"Sampling there CLAMPS to the patch edge, so those tables would stand on flat "
+        f"ground while the stage looks surveyed. Re-bake with tools/dem_fetch.py for this "
+        f"layout's extent, or set terrain.kind: flat so the approximation is explicit "
+        f"(NFR-07)."
+    )
+
+
 @pytest.mark.skipif(
     not (SIDECAR.exists() and SITE.exists()), reason="DEM or site file missing"
 )

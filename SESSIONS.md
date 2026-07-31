@@ -608,10 +608,55 @@ discipline is a genuine strength, but it has a matching blind spot — **a green
 is evidence about the pure half only.** Three defects, three different mechanisms, one
 shared cause: nobody ran the thing.
 
+### 10. "Real DEM was never started" — it was, twice. But the config still said otherwise
+
+Raised as a blocker: *terrain is still `flat`, real DEM never started.* **It is done and has
+been since Session 10d** (`world/dem.py`, `tools/dem_fetch.py`, Copernicus GLO-30), and the
+whole-plot patch landed in `637aa90`. Verified on this branch, not remembered:
+
+| patch | grid | span | relief | covers its layout? |
+|---|---|---|---|---|
+| `assets/dem/khavda_block02.npy` | 74 × 58 @ 20 m | 1.16 × 1.48 km | 3.26–5.44 m | ✓ |
+| `assets/dem/khavda_s05b.npy` | 140 × 284 @ 20 m | 5.68 × 2.80 km | 3.26–8.66 m, **18,309 unique values** | ✓ ~400 m margin |
+
+**Why it reads as undone, and this is the real finding.** Three docs still said flat:
+
+- `SESSIONS.md:2421` (**Session 9, 2026-07-27**) — *"terrain is still deliberately `flat`
+  (no real DEM)"*. It already carries a **SUPERSEDED** banner four lines below, but the
+  claim is what a skim lands on.
+- ⚠⚠ `configs/farm_khavda_s05b.yaml` carried, as **blocker #2 at the top of the file**,
+  *"THE DEM DOES NOT COVER THIS PLOT, AND IT FAILS SILENTLY … most of this plot would sit
+  on a flat clamped edge elevation while LOOKING like real terrain."* True on Jul 28.
+  **Fixed on Jul 29 by `637aa90`, which re-baked the patch and left the warning standing.**
+  Anyone opening the whole-plot config since then has been told terrain is fake.
+- Both S05b configs documented the **wrong regeneration command** — they named BLOCK-02's
+  layout and output stem while `terrain.path` pointed at `khavda_s05b.yaml`. `assets/dem/`
+  is **gitignored**, so a fresh checkout re-bakes from that line and would have silently
+  restored the clamped-ground bug. Corrected, along with the elevation figures, which were
+  also BLOCK-02's.
+
+⭐ **Guarded, because the failure mode is silence.** `_raw` clamps outside the grid *by
+design* — that is right, it stops the far ground mesh tearing a cliff — but the cost is
+that a patch which misses its plot produces flat ground that still looks surveyed. Nothing
+throws; someone has to notice, and for a day nobody did.
+`test_dem_patch_covers_the_layout_it_is_paired_with` now walks every `configs/farm*.yaml`
+with `kind: dem`, and fails if the patch does not contain that config's own layout extent.
+Pure YAML arithmetic — Isaac-free, no numpy, no GPU, so it guards an Isaac-bound asset from
+the suite that actually runs (the §5 lesson, applied).
+
+**Verified non-vacuous** against the historical bug: pointed at BLOCK-02's patch, it
+reports the S05b plot *"short by `{'east': 4800.6, 'north': 965.5}` metres"* — which is
+exactly the "~300 m east and 4.8 km further" the retired warning described.
+
+⚠ Genuinely still open on terrain, and unchanged: GLO-30 is a **pre-grading DSM**, so
+`terrain.graded` (the inferred civil pad) stays **off by default** — we hold the DC
+hardware drawing, not the civil grading plan.
+
 ### Where this leaves things
 
-**Counts at end of session** (`db4487b`, measured 2026-07-31, not remembered): Isaac-free
-**695 passed / 6 skipped**; under Isaac Sim's own Python **737 passed / 3 skipped**. The
+**Counts at end of session** (measured 2026-07-31, not remembered): Isaac-free
+**698 passed / 6 skipped** (695 at `db4487b`, plus §10's three DEM-coverage cases); under
+Isaac Sim's own Python **737 passed / 3 skipped**, which predates §10 and is 740 with it. The
 gap is **42** `pytest.importorskip("pxr")` items across 5 modules — the ones §5 is about.
 `tests/test_docs_fresh.py` enforces the documented number so it cannot rot a fourth time.
 
