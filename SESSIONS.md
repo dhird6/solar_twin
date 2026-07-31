@@ -420,12 +420,28 @@ So the textured ground is **~4.5× darker and a quarter as warm** as the materia
 meant to replace. Not broken any more; not yet right. The guard test's bar — ground R−B
 back above **+20** — is **not met**, so `pbr.enabled` stays `False`.
 
-⭐ **Leading hypothesis for the remaining gap, untested:** a colour-space mismatch on the
-albedo map. `sourceColorSpace: raw` is set on the roughness and normal maps but **not on
-albedo**, so the renderer sRGB-decodes it — while `tinted_albedo` applies the diffuse
-constant as a *linear* modulation and writes 8-bit without sRGB encoding. That would darken
-and desaturate by roughly the amount observed. Cheap to test: set `raw` on the albedo
-sampler, or sRGB-encode at write time, and re-run this same one-build check.
+⭐ **Tested, and half the gap was a colour-space mismatch.** `sourceColorSpace: raw` was
+set on the roughness and normal maps but **not on albedo**, so the renderer sRGB-decoded a
+map that `tinted_albedo` writes as **linear** 8-bit — applying a transfer curve that was
+never encoded. Setting `raw` (write linear, read linear — self-consistent):
+
+| SC-11 control panel, ground screen mean | RGB | R−B |
+|---|---|---|
+| flat material (`--pbr off`) | (119.5, 108.6, 95.4) | **+24.1** |
+| textured, sRGB-decoded | (29.6, 25.6, 22.2) | +7.4 |
+| textured, **`raw`** | **(70.5, 66.4, 62.9)** | +7.6 |
+
+**Brightness recovers 2.4×.** And it confirms the map itself is right: read linearly,
+`(76.5, 63.75, 48.44)/255 = (0.300, 0.250, 0.190)` — *exactly* the `_LOOKS["ground"]`
+diffuse constant.
+
+⚠⚠ **A real gap survives, and the layer therefore STAYS OFF.** Still 1.7× darker than the
+flat material, and hue barely moved (+7.4 → +7.6) where brightness alone predicts ~+14.
+So there is a **second, independent** effect — saturation, not just exposure. Remaining
+suspects, none tested: the roughness map shifting the diffuse/specular balance, the normal
+map still perturbing at grazing sun even with a valid fallback, or the modulation's
+mean-1.0 guarantee not surviving the render. **Next step is one more arm of the same cheap
+test** — `--pbr` with roughness dropped — not another round of reasoning.
 
 ⭐ **Free extra check nobody has run:** if the mechanism is right, **road, concrete,
 equipment, structure and fence are black too** — they share the same normal wiring and the

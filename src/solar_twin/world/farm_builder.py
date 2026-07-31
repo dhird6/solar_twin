@@ -207,7 +207,15 @@ def _textured_material(
             reader.ConnectableAPI(), "result"
         )
     else:
-        _, rgb_out = _tex("albedo", Sdf.ValueTypeNames.Float3, "rgb")
+        atex, rgb_out = _tex("albedo", Sdf.ValueTypeNames.Float3, "rgb")
+        # `raw`, not the sRGB default. `textures.tinted_albedo` writes LINEAR values
+        # straight to 8-bit (diffuse constant x an achromatic mean-1.0 modulation),
+        # so letting the renderer sRGB-decode them applies a transfer curve that was
+        # never encoded. Measured on SC-11's control panel, ground screen mean:
+        #   sRGB-decoded (29.6, 25.6, 22.2)   raw (70.5, 66.4, 62.9)   flat (119.5, ...)
+        # i.e. reading it linearly recovers 2.4x of the brightness. Write linear,
+        # read linear -- self-consistent. ⚠ A residual gap to the flat material
+        # remains (see SESSIONS.md); this fixes the transfer curve, not that.
         shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
             rgb_out
         )
