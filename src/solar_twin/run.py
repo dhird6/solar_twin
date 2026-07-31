@@ -25,6 +25,7 @@ from pathlib import Path
 import yaml
 
 from solar_twin.control.safe import SafeControl
+from solar_twin.control.wind_drift import WindDisturbedControl
 from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
@@ -134,6 +135,86 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
         )
         return SimNativeTransport(runtime, panel_paths), control
     raise ValueError(f"unknown backend: {name!r}")
+
+
+def _wrapper(control, cls):
+    """First wrapper of type `cls` in a decorator chain, or None.
+
+    `SafeControl` and `WindDisturbedControl` both wrap a `RobotControl` and both
+    expose `.inner`, so the outermost object is no longer a reliable `isinstance`
+    target. Walking the chain is what stops adding a wrapper from silently dropping
+    another's contribution to the run record — which is exactly what an
+    `isinstance(control, SafeControl)` check does the moment anything wraps it.
+    """
+    seen = 0
+    while control is not None and seen < 8:  # 8 = a chain depth nothing should reach
+        if isinstance(control, cls):
+            return control
+        control = getattr(control, "inner", None)
+        seen += 1
+    return None
+
+
+def _wrap_wind(control, farm_cfg: dict, mission_cfg: dict, layout: FarmLayout):
+    """Opt-in: let the wind push the drones off their commanded pose.
+
+    OFF by default and off is the identity — a run without
+    `kinematics.wind_disturbance` gets the same object back, so every KPI recorded
+    before this existed stays reproducible.
+
+    ⚠ This disturbs the **camera pose**, not the airframe. It is not flight dynamics
+    and `KPI-05` does not come from it (see `control/wind_drift.py`, and
+    `tools/px4_hover.py` for the real-dynamics measurement). It is wrapped OUTSIDE
+    `SafeControl` on purpose so the keep-out layer vets the pose the drone will
+    actually hold rather than the one the mission wished for.
+    """
+    kin = mission_cfg.get("kinematics", {}) or {}
+    if not kin.get("wind_disturbance"):
+        return control
+
+    # `WindDisturbedControl` is already imported at module scope (the run record
+    # needs it to find the wrapper); these two are only needed on the opt-in path.
+    from solar_twin.control.wind_drift import DEFAULT_HOLD_STIFFNESS_N_PER_M, HoldModel
+    from solar_twin.world.fleet_specs import DRONES
+    from solar_twin.world.siting import resolve_turbines
+    from solar_twin.world.windfield import from_cfg as wind_from_cfg
+
+    # Wake sources must be the turbines the stage was BUILT with, not the config's
+    # explicit list — a scattered field wakes (and shelters) the drone somewhere else.
+    field = wind_from_cfg(farm_cfg, resolve_turbines(farm_cfg, layout))
+    if field.mean_speed_ms <= 0.0:
+        print(
+            "  [warn] kinematics.wind_disturbance is ON but this farm config declares "
+            "no wind (mean_speed 0) — the fleet will fly undisturbed and any KPI will "
+            "read as a calm-air result. This is the NFR-07 failure mode: asking for a "
+            "hazard and then measuring without it.",
+            flush=True,
+        )
+        return control
+
+    spec_name = str(kin.get("wind_drone_spec", "m350"))
+    if spec_name not in DRONES:
+        raise ValueError(
+            f"kinematics.wind_drone_spec={spec_name!r} is not one of {sorted(DRONES)}"
+        )
+    spec = DRONES[spec_name]
+    stiffness = float(
+        kin.get("wind_hold_stiffness_n_per_m", DEFAULT_HOLD_STIFFNESS_N_PER_M)
+    )
+    model = HoldModel.for_drone(spec, hold_stiffness_n_per_m=stiffness)
+
+    # Drones only. The ground bot is deliberately left undisturbed: `HoldModel`'s
+    # stiffness is a rotor position-hold figure, and applying it to a 50 kg wheeled
+    # rover held on the terrain by friction would invent a number, not model one.
+    fleet = mission_cfg["fleet"]
+    models = {fleet["screen_drone"]: model, fleet["confirm_drone"]: model}
+    print(
+        f"  wind disturbance ON: {field.mean_speed_ms:.1f} m/s from "
+        f"{field.wind_dir_deg:.0f} deg, gust {100 * field.speed_variation:.0f}%, "
+        f"{spec.name} @ {stiffness:.0f} N/m (camera pose only — NOT flight dynamics)",
+        flush=True,
+    )
+    return WindDisturbedControl(control, field, models)
 
 
 def _perception(name: str, opts: dict | None = None):
@@ -282,6 +363,10 @@ def run(
     keepouts = build_keepouts(farm_cfg, layout)
     if keepouts:
         control = SafeControl(control, keepouts)
+    # Wind on the camera, OUTSIDE the keep-out clamp so a gust cannot push an
+    # already-vetted waypoint back into the rotor volume unchecked. No-op unless
+    # `kinematics.wind_disturbance` is set.
+    control = _wrap_wind(control, farm_cfg, mission_cfg, layout)
     perception = _perception(
         mission_cfg.get("perception", "ground_truth"),
         mission_cfg.get("perception_opts", {}),
@@ -521,8 +606,13 @@ def run(
             # as ground truth (see pv_module.restore_state).
             transport.restore_panels(snapshot)
             print(f"  --- repeat {rep + 1}/{n_repeats} ---", flush=True)
-            if isinstance(control, SafeControl):
-                control.reset()  # per-repeat keep-out tally, not cumulative
+            # Per-repeat tallies, not cumulative. Called on the OUTERMOST wrapper:
+            # each `reset` delegates inward, so one call clears the keep-out tally
+            # and rewinds the gust clock (repeat 2 must see repeat 1's weather, or
+            # `variance.json` would read the wind as a decoding spread — RISK-23).
+            _reset = getattr(control, "reset", None)
+            if callable(_reset):
+                _reset()
         t0 = time.perf_counter()
         run_kw = (
             {"on_scouted": _surveyed} if isinstance(mission, ScoutDispatchMission) else {}
@@ -585,16 +675,23 @@ def run(
         # scoring a real defect against the wrong panel — recorded per run rather
         # than left for someone to notice (`kpi/confound.py`).
         record["confound"] = kpi_confound.analyse(record).to_dict()
-        if isinstance(control, SafeControl):
+        safe = _wrapper(control, SafeControl)
+        if safe is not None:
             record["keepout"] = {
                 "turbines": len(keepouts),
-                "waypoints_clamped": len(control.events),
+                "waypoints_clamped": len(safe.events),
                 "min_clearance_m": (
-                    None if control.min_clearance_m == float("inf")
-                    else round(control.min_clearance_m, 3)
+                    None if safe.min_clearance_m == float("inf")
+                    else round(safe.min_clearance_m, 3)
                 ),
-                "events": [e.to_dict() for e in control.events],
+                "events": [e.to_dict() for e in safe.events],
             }
+        # How much wind actually reached the camera. Present only when the
+        # disturbance is on, and it names its own limits in `model` so a reader
+        # cannot mistake a drift figure for a flight-dynamics result.
+        wind_ctl = _wrapper(control, WindDisturbedControl)
+        if wind_ctl is not None:
+            record["wind_disturbance"] = wind_ctl.summary()
         records.append(record)
 
         # Single run keeps the historic layout (results.json at the top); repeats

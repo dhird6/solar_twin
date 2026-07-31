@@ -1,0 +1,145 @@
+# khavda_bladeshadow — KPI-03 (false-fault rate, HAZ-07) from a REAL turbine's
+# blade shadow, on the real block, with the stimulus located before it is measured.
+#
+# ## Why this scenario exists when SC-05 already claimed to do this
+#
+# `sweeping_shadow.yaml` (SC-05) is the same idea on the old synthetic farm, and it
+# produced a hollow null: the blade shadow "sailed over the elevated rows onto the
+# ground" (recorded in `khavda_selfshade.yaml`'s header). A false-fault rate of 0.00
+# came back from a scene where no shadow ever touched a module. `khavda_selfshade`
+# then sidestepped the problem entirely by using tracker self-shading instead.
+#
+# This one goes back to the blade shadow and *locates it first*. Every number below
+# is computed by `world/bladeshadow.py` against the real layout and the real
+# ephemeris, not chosen to look plausible:
+#
+#   ISAAC-free, run it yourself:
+#     PYTHONPATH=src python3 -c "..."   # see tests/test_bladeshadow.py for the API
+#
+# ## The geometry, measured 2026-07-31
+#
+# Site anchor 24.09150 N, 69.42050 E. Array spans x 1.1..320.1, y 0.6..646.3 m.
+# Turbine: the nearest REAL, surveyed machine — plot S05b of the GatiShakti digest,
+# 546.2 m off the footprint (the same one `khavda_windy_hover.yaml` uses).
+#
+#   sun 2026-06-21T01:20:00Z  ->  elevation 8.60 deg, azimuth 68.08 deg (east)
+#   hub shadow displaced 783.9 m; swept-disc centre (139.1, 148.4)
+#   swept-disc bbox (-291.2, -36.6) .. (569.3, 333.3)  -> lands ON the array
+#   coverage 6,875 of 30,016 panels = 22.9% (23.5% on a 310-panel probe grid)
+#   blade dwell: mean 0.0711, max 0.3500 of each revolution
+#
+# ⚠ **The window is 40 minutes wide and it closes hard.** Coverage by timestamp:
+#   01:00Z 20.3% | 01:20Z 23.5% | 01:40Z 11.6% | 01:50Z 3.5% | 02:00Z 0.3%
+# By 02:00Z — the timestamp `khavda_selfshade` uses — this stimulus is gone. The two
+# scenarios cannot share a sun, which is precisely why they are two scenarios.
+#
+# ## Why the trackers are STOWED FLAT
+#
+# At this sun the ideal tracker rotation is 80.7 deg (measured), so a 60 deg-limited
+# HSAT pins at its stop — and a pinned tracker throws the self-shading shadow that IS
+# `khavda_selfshade`'s stimulus. Leaving the trackers tracking would put two
+# shadow mechanisms on the same modules and make any false fault unattributable.
+# `tracker_max_rotation_deg: 0.0` clamps the rotation to zero (verified: it is the
+# single source `farm_builder` authors panels from AND `panel_top_z` places the
+# drone from, so geometry and waypoints cannot disagree).
+#
+# This is not a contrivance — flat is the real high-wind stow pose, which is also
+# the state a plant is in when the turbines beside it are working hardest. It does
+# mean the modules are near-horizontal under an 8.6 deg sun, so they are dimly lit;
+# that is handled by scoring GLASS pixels against an in-frame unshaded control
+# (`kpi/glass.py`, `tools/verify_shade.py`) rather than whole-frame brightness,
+# which is the confound `khavda_selfshade` documents at low sun.
+#
+# ## ⚠ Sizing the run, or the KPI is not quotable
+#
+# A blade is a narrow moving bar, not a blanket. Two pieces of arithmetic decide
+# whether a run of this scenario can measure anything at all:
+#
+#   * A panel under the swept disc is shaded for a mean 0.0711 of each revolution.
+#     A randomly chosen block panel at a random instant: 0.235 x 0.0711 = 0.0167,
+#     about 1 in 60. Targeting only covered panels: about 1 in 14.
+#   * The kinematic proxy advances 2.3 deg per sim step (`rpm_to_deg_per_s(rpm)/30`
+#     at 11.5 rpm) and teleport mode spends 2 steps per panel — so **4.6 deg of
+#     rotor per panel inspected**. A full revolution takes 78 panels.
+#
+# So `--max-panels 24` sweeps only 110 deg of one revolution and whether ANY panel
+# is shaded depends on the starting phase: that is a lottery, not a measurement.
+# Use >= 78 panels to cover a revolution, and ~280 targeted inspections for ~20
+# shadowed observations. A short run of this scenario is a picture, not a KPI.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --out assets/khavda_bladeshadow.usd
+#   # PROVE THE STIMULUS IN PIXELS FIRST — do not skip this, it is the whole point:
+#   PYTHONPATH=src $ISAAC tools/verify_shade.py \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --farm-usd assets/khavda_bladeshadow.usd --out runs/bladeshadow_probe
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --farm-usd assets/khavda_bladeshadow.usd --max-panels 120
+
+name: khavda_bladeshadow
+seed: 20260731
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM — the whole point of KPI-03
+
+farm_overrides:
+  faults:
+    rate: 0.0        # every panel HEALTHY -> any fault verdict is a FALSE fault
+    states: []
+
+  sun:
+    # 01:20Z = 06:50 local. See the coverage table above: this is the peak of a
+    # 40-minute window, and it is the ONLY reason this timestamp and not a rounder one.
+    timestamp: "2026-06-21T01:20:00Z"
+    # Stow flat to isolate the blade shadow from tracker self-shading. 0.0 clamps
+    # the rotation to zero; see the header for why this is a real operating state.
+    tracker_max_rotation_deg: 0.0
+
+  # ⚠ BOTH keys are required and the order of precedence is the trap:
+  # `resolve_turbines` checks `turbine_scatter.enabled` FIRST and it WINS, so an
+  # explicit list alone is silently discarded and replaced by scattered positions —
+  # which would move the shadow off the array and reproduce the SC-05 null exactly.
+  # Measured 2026-07-29: a scenario setting `turbines: []` and documenting itself as
+  # turbine-free built four of them.
+  turbine_scatter:
+    enabled: false
+
+  # ⭐ ONE turbine, the nearest REAL surveyed machine (plot S05b of the GatiShakti
+  # digest, EPSG:32642 — the same CRS as our site file), 546.2 m off the footprint.
+  # Its six siblings are omitted deliberately: with one caster, every shadow on a
+  # module is attributable to known geometry, and `bladeshadow.assess()` reports a
+  # single unambiguous coverage figure.
+  # ⚠ Position is real but SECOND-HAND (vendor DWG -> their build_gis_digest.py,
+  #   which we do not hold -> JSON -> us). Hub height, blade length, chord and rpm
+  #   are INFERRED from the 5.2 MW rating: the digest carries no dimensions.
+  #   `blade_chord` is the wide end of a real 70 m blade's taper, so the computed
+  #   dwell above is generous rather than flattering.
+  turbines:
+    - pos: [866.349, 440.959]
+      hub_height: 120.0
+      blade_len: 70.0
+      blade_chord: 4.0
+      rpm: 11.5
+      rating_mw: 5.2
+      provenance: digest
+      geometry_provenance: INFERRED
+
+  # Kinematic spun proxy, NOT the physics articulation: the shadow sweeps either
+  # way, and `turbines_articulated: true` moves ownership of the hub transform to
+  # the solver, which every KPI recorded to date was not measured under.
+  turbines_articulated: false
+
+kpi_gates:
+  # ⚠ Read these as one-sided. A **breach** is real evidence: a blade shadow that is
+  # verifiably on the glass got logged as a fault. A **pass** is NOT evidence until
+  # the run is sized per the arithmetic in the header — with 24 panels the expected
+  # number of shadowed observations is under one, and a gate cannot be cleared by a
+  # hazard that never arrived. That is the SC-05 failure restated as a gate.
+  false_fault_rate_max: 0.05
+  false_alarm_rate_max: 0.05
+  # Zero on purpose: a lost verdict is a plumbing bug, not a budget to spend.
+  abstention_rate_max: 0.0

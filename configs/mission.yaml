@@ -34,6 +34,27 @@ kinematics:
   screen_standoff: 2.5  # meters above the panel TOP (wide context pass)
   confirm_standoff: 0.8 # meters above the panel TOP (close detail pass)
 
+  # ---- wind on the CAMERA (not the airframe) -------------------------------
+  # Lets the wind leave the drone slightly off its commanded pose, so perception is
+  # tested on a frame that moved. Needs a `wind:` block in the FARM config; with
+  # `wind_disturbance: true` and no wind the run warns loudly rather than quietly
+  # measuring calm air.
+  #
+  # ⚠⚠ THIS IS NOT FLIGHT DYNAMICS AND `KPI-05` DOES NOT COME FROM IT. It is a
+  # quasi-static drag/stiffness pose offset — no mass, no thrust, no attitude loop
+  # (`NFR-07`). It answers "does the VLM still read a panel when the camera is 0.2 m
+  # off station?", which is the EYES half of the thesis. The BODY half — can the
+  # drone hold station at all — needs real dynamics and lives in
+  # `tools/px4_hover.py --wind-scenario` against `khavda_windy_hover.yaml`.
+  #
+  # OFF by default, and off is the identity: the controller is returned unwrapped, so
+  # every KPI recorded before this existed reproduces byte-for-byte.
+  wind_disturbance: false
+  wind_drone_spec: m350          # m350 | mavic3t — sets the frontal drag area
+  # ⚠ INFERRED, and it scales every drift figure linearly. Calibrate it against
+  # px4_hover's real dynamics under the same wind: k = drag / measured excursion.
+  wind_hold_stiffness_n_per_m: 80.0
+
 # Escalation: with the ground-truth stub every non-healthy panel is suspect.
 # Kept explicit so a real detector can gate on confidence later.
 escalation:

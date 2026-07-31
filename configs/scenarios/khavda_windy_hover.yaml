@@ -13,6 +13,20 @@
 # `NFR-07` failure mode. Wind only bites once the drone is a dynamic body under
 # PX4's control loops, so that is what this scenario configures:
 #
+# ⚠ **Amended 2026-07-31 — there is now a narrow, honest way to have wind in an
+# inspection run, and it is not this one.** `kinematics.wind_disturbance`
+# (`control/wind_drift.py`, scenario `SC-15` / `khavda_bladeshadow_windy.yaml`)
+# offsets the drone's achieved *camera pose* from its commanded one by a
+# quasi-static drag/stiffness drift. That does not contradict the paragraph above:
+# it applies no force and simulates no dynamics — it moves where the camera ends
+# up, so perception can be scored on a frame that was pushed. The division is the
+# project's own thesis: **physics tests the body, world models test the eyes.**
+# This scenario is the BODY (real PX4 dynamics, real forces) and is the **only**
+# source of `KPI-05`. `SC-15` is the EYES and must never be quoted for station-
+# keeping — a drift figure there is an artefact of an INFERRED stiffness constant.
+# Calibrating that constant against THIS scenario is the open task:
+# `k = drag / measured excursion`.
+#
 #     python3 tools/px4_sitl_smoke.py            # PX4 SITL, arm64 container
 #     PYTHONPATH=src $ISAAC tools/px4_hover.py \
 #         --wind-scenario configs/scenarios/khavda_windy_hover.yaml

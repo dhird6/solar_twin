@@ -241,13 +241,33 @@ starting set, not the final one.
 | `SC-10` | `full_farm_battery_window` | full farm, both robots, N panels, declared daylight/battery window | `HAZ-06` | `KPI-02`, `KPI-06` | `SLICE-7` |
 | `SC-11` | `khavda_selfshade` | real Khavda BLOCK-02, HSAT trackers pinned at their 60° stop, sun 17.2° (02:00Z), every panel healthy, no turbines | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade.yaml` |
 | `SC-12` | `khavda_selfshade_lowsun` | `SC-11` one hour earlier (01:30Z, sun 10.7°): ~54% of each module shaded *and* the whole scene dimmer, so shading is confounded with underexposure | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade_lowsun.yaml` |
-| `SC-13` | `khavda_windy_hover` | real Khavda DEM + **graded civil pad** + one **articulated** 120 m turbine + **12 m/s wind with 35% gusts and a Jensen wake**, PX4-governed flight | `HAZ-01`, `HAZ-02`, `HAZ-03` | `KPI-05` | `SLICE-2` — **built + flown 2026-07-29**, `configs/scenarios/khavda_windy_hover.yaml`. The first scenario where the physics pieces run TOGETHER rather than being individually tested. ⚠ A hover, not an inspection: wind is a force and the inspection mission drives its robots kinematically, where a force does nothing (`NFR-07`) |
+| `SC-13` | `khavda_windy_hover` | real Khavda DEM + **graded civil pad** + one **articulated** 120 m turbine + **12 m/s wind with 35% gusts and a Jensen wake**, PX4-governed flight | `HAZ-01`, `HAZ-02`, `HAZ-03` | `KPI-05` | `SLICE-2` — **built + flown 2026-07-29**, `configs/scenarios/khavda_windy_hover.yaml`. The first scenario where the physics pieces run TOGETHER rather than being individually tested. ⚠ A hover, not an inspection: wind is a force and the inspection mission drives its robots kinematically, where a force does nothing (`NFR-07`). This remains the **only** source of `KPI-05` — `SC-15` puts wind in an inspection run but as a camera-pose offset, which tests the eyes, not the body |
 
-`SC-11`/`SC-12` supersede `SC-05`'s original stimulus rather than extending it:
+| `SC-14` | `khavda_bladeshadow` | real Khavda BLOCK-02, **one real surveyed turbine** (546.2 m off the footprint), sun 8.6° (01:20Z), trackers **stowed flat** to isolate the blade shadow from self-shading, every panel healthy | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_bladeshadow.yaml`. Recovers `SC-05`'s stimulus by *locating* it first: 6,875 of 30,016 panels (22.9%) under the swept blade shadow, blade dwell mean 0.0711 |
+| `SC-15` | `khavda_bladeshadow_windy` | `SC-14` + **12 m/s wind with 35% gusts**, applied as a camera-pose disturbance | `HAZ-03`, `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_bladeshadow_windy.yaml`. Treatment arm to `SC-14`'s control: the pair differs only in wind, so the `false_fault_rate` delta attributes to the camera being pushed. ⚠ **Not** a source of `KPI-05` — the disturbance is a quasi-static pose offset, not flight dynamics (`NFR-07`) |
+
+`SC-11`/`SC-12` superseded `SC-05`'s original stimulus rather than extending it:
 the turbine-blade shadow sailed over the elevated rows onto the ground, while
 tracker self-shading is a real, on-surface, many-panel shadow produced by the
 plant's own hardware. Both are asserted geometrically in `tests/test_solar.py`
 before any run — a KPI-03 of 0.00 means nothing if the stimulus was absent.
+
+`SC-14` then **recovers the blade shadow** on the real block, by making the
+stimulus a computation instead of a hope: `world/bladeshadow.py` projects the rotor
+disc onto the *module* plane (not the ground — that height difference is the class
+of error that produced the `SC-05` null) and reports how many panels it covers and
+for what fraction of each revolution. `tests/test_bladeshadow.py` asserts the
+scenario's own coverage claim, so moving the sun by forty minutes fails a test
+instead of silently restoring the hollow null: the usable window is 01:00–01:50Z
+and coverage collapses from 22.9% to 0.3% by 02:00Z.
+
+The `SC-14` dwell figure is why `KPI-03` needs a **sized** run and not just a
+stimulus. A blade is a narrow moving bar: a covered panel is shaded for a mean
+0.0711 of each revolution, the kinematic rotor advances 4.6° per panel inspected,
+and a full revolution therefore takes 78 panels. A 24-panel run samples 110° of one
+revolution and its expected number of shadowed observations is under one — so a
+passing gate there measures nothing. Both scenarios state this in their headers and
+gate one-sidedly: a breach is evidence, a pass is not.
 
 ## Gating discipline
 

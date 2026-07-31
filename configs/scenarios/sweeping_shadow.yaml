@@ -1,5 +1,22 @@
 # SC-05 sweeping_shadow — the KPI-03 false-fault test (HAZ-07, the central thesis).
 #
+# ⚠⚠ SUPERSEDED — DO NOT QUOTE A KPI FROM THIS FILE.
+# On the real Khavda block this stimulus failed silently: the blade shadow sailed
+# over the elevated rows onto the ground and `false_fault_rate` came back 0.00 from
+# a scene where no shadow ever touched a module. The geometry below was tuned for
+# `configs/farm.yaml`'s 14 m-hub synthetic farm and does not transfer.
+#
+# Use instead, in order of preference:
+#   * `khavda_bladeshadow.yaml` (SC-14) — the same idea on the real block with the
+#     stimulus LOCATED first (`world/bladeshadow.py`): one real surveyed turbine,
+#     22.9% panel coverage and a stated blade dwell, asserted by a test.
+#   * `khavda_bladeshadow_windy.yaml` (SC-15) — SC-14 plus wind on the camera.
+#   * `khavda_selfshade{,_lowsun}.yaml` (SC-11/SC-12) — tracker self-shading, a
+#     many-panel on-surface stimulus needing no turbine at all.
+#
+# Retained only so the failure stays on the record and the old geometry is
+# reproducible. See `docs/specs/06-scenario-suite-and-kpis.md`.
+#
 # Every panel is HEALTHY, a LOW sun casts long turbine-blade shadows across the
 # row, and the blades spin so successive panels are inspected under a moving
 # shadow. Any panel the perception layer flags as faulted is a FALSE fault — the
