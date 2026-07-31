@@ -878,6 +878,31 @@ def _build_ground_heightfield(stage, farm_cfg, layout, material, horizon_m: floa
     mesh.CreateFaceVertexIndicesAttr(idx)
     mesh.CreateSubdivisionSchemeAttr("none")
     _set_uvs(mesh, pts, _UV_TILE_M["ground"])
+
+    # ⭐ THE GROUND IS THE FLOOR, so it needs a collider — and it never had one.
+    # Measured 2026-07-31 with `tools/physics_probe.py` on the full block: of 81,961
+    # prims exactly **25** carried `CollisionAPI` and all 25 were on turbines. A body
+    # dropped over the array fell 44.66 m against a 44.15 m free-fall prediction, i.e.
+    # it hit NOTHING and kept going to z = -32 m. There is no floor in this world.
+    #
+    # That was invisible until now because nothing ever stepped physics: `SimRuntime`
+    # spins rotors and calls `app.update()`, and `px4_hover.py` flies in
+    # `add_default_ground_plane()` — an empty world with its own floor. So the twin's
+    # own terrain has never once been stood on.
+    #
+    # `meshSimplification` rather than the default `convexHull`: a hull over a 320 x
+    # 647 m heightfield is a lens-shaped blob that would put the drone metres above
+    # or below the grade. ⚠ A triangle-mesh collider is static-only, which is correct
+    # here (terrain does not move) — and see `docs/ENVIRONMENT.md` on the Isaac
+    # trimesh fall-through issue; a body can tunnel through a thin trimesh at high
+    # speed, so this is verified by drop test rather than assumed.
+    _add_collision(mesh.GetPrim())
+    try:
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(
+            "meshSimplification"
+        )
+    except Exception as exc:  # noqa: BLE001 — a collider must not fail the build
+        print(f"  [warn] ground mesh collider approximation not set: {exc}")
     # Break up the flat tan sheet. A uniform ground over 320 x 647 m reads as a
     # backdrop, not terrain: with nothing varying, the eye gets no scale cue and
     # the whole plant looks like a model. Low-frequency, deterministic (a seeded

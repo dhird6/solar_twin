@@ -537,3 +537,54 @@ is what PVcase and RatedPower export.
 against our metres/Z-up convention; expect to rescale, decimate and re-bind
 materials. The tool prints prim count, units and up-axis so those show up
 immediately rather than after the asset is instanced 30,016 times.
+
+## Physics on a farm stage — measured 2026-07-31 (`tools/physics_probe.py`)
+
+The inspection mission has never stepped physics: `SimRuntime.step()` spins rotors,
+turns turbine hubs and calls `app.update()` — no `SimulationContext`, no `World`, no
+`play()`. And `tools/px4_hover.py`, the one place real dynamics run, flies in
+`world.scene.add_default_ground_plane()` — an **empty world**. So the twin's own
+terrain had never been stood on. Two findings, both blocking, both now measured.
+
+### 1. There was no floor — only 25 colliders in 81,961 prims
+
+| | |
+|---|---|
+| prims (full block, realism) | 81,961 |
+| `CollisionAPI` | **25 — all on turbines** |
+| `RigidBodyAPI` | **0** |
+| `/World/Ground` collision | **none** |
+
+A 6.47 kg body dropped from 12 m over the array fell **44.66 m** against a 44.15 m
+free-fall prediction — it hit nothing and kept going to z = −32 m. Panels, racking,
+roads and fence have no colliders either.
+
+**Fixed for the ground:** `_build_ground_heightfield` now applies `CollisionAPI` +
+`MeshCollisionAPI` with `approximation = meshSimplification` (a `convexHull` over a
+320 × 647 m heightfield is a blob that would put the drone metres off the grade).
+Verified by drop test: 12.0 m → **rests at z = 0.073 m**.
+
+⚠ Still absent: colliders on panels, racking, roads, fence. A drone can fly through
+a module. And a trimesh collider is static-only and can be tunnelled at speed — see
+the Isaac trimesh fall-through issue; this is verified by drop test, not assumed.
+
+### 2. Physics does not scale to the full plant
+
+| stage | prims | steps/s | realtime |
+|---|---|---|---|
+| block02 subset, 24 tables (flat) | 7,053 | 217 | **1.09×** |
+| block02 subset, 24 tables (realism) | 7,614 | 200–211 | **1.00–1.06×** |
+| **block02 full** | **81,961** | **14** | **0.07×** |
+
+At `physics_dt = 1/200` and render off. The realism layer costs ~8% — **it is not the
+problem**; plant scale is. ~11× the prims gave ~14× the slowdown.
+
+**Consequence for PX4 in the mission:** feasible on a **subset** (≈8k prims, ~24
+tables) at ~1× realtime; **not feasible on the full 30,016-module block**, because a
+flight controller runs on wall-clock and at 0.07× the sim and PX4 disagree about time.
+
+⚠ **Hypothesis worth testing before accepting the ceiling:** only 25 prims had
+colliders, so PhysX had almost nothing to collide. The cost is therefore unlikely to
+be collision — more probably USD→Fabric scene-graph sync over 82k prims. If so it may
+be reducible (Fabric scene delegate, or excluding the visual-only branches from the
+physics scene) rather than being a hard limit. Not yet investigated.
