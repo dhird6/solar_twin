@@ -354,24 +354,53 @@ A/B'd without editing a config:
 | `primvar` | vertex-colour diffuse, **no albedo** | −0.0 | black ✗ |
 | `on` | everything | −0.1 | black ✗ |
 
-⭐ **`albedo` and `primvar` render IDENTICALLY** — 1.2 and 29.6 in both, on two
-completely different diffuse sources. Identical output from different inputs means the
-diffuse input is **ignored outright**, not mis-sampled. So it is neither the normal map
-nor the diffuse source.
+⚠⚠⚠ **THAT BISECT WAS INVALID — RETRACTED.** I wrote here that "`albedo` and `primvar`
+render IDENTICALLY, so the diffuse input is ignored outright". An agent sent to read the
+*shipped MDL shader* found why they were identical, and it is not what I claimed:
 
-What was **eliminated by measurement**, not by argument:
-- **The generated maps are correct.** Ground albedo mean RGB (76.49, 63.75, 48.44),
-  **R−B +28.04** — precisely the figure Session 16 quoted. The texture-generation unit
-  tests were right; they just never tested the *binding*.
-- **Every texture path resolves to a file that exists**, checked through the USD asset
-  resolver rather than assumed (a relative-path theory, tested and refuted).
+**`/World/Looks/ground_pbr` was authored TWICE.** Once inside the loop that honours
+`--pbr mode`, and again ~20 lines later by a hardcoded call with
+`diffuse_from_primvar=True` and the normal map on. The second overwrote the first. So
+**every arm of the bisect rendered the same ground network** — that was one material
+measured four times, not evidence about diffuse. Confirmed by reading the built stages
+with `pxr`: `bisect_albedo.usd` and `bisect_primvar.usd` have an *identical* live ground
+network, and in `albedo` mode the `AlbedoTex` prim exists but nothing connects to it.
+Fixed in `e931bfd`; the bisect must be re-run.
+
+⭐ **The real hypothesis, and it fits the pixels the old one never did.** From
+`UsdPreviewSurface.mdl` as shipped in this build: a **failed texture read returns
+`fallback` VERBATIM** — the shader skips the scale/bias decode on that branch. So the
+default `(0,0,0,1)` becomes a shading normal of `(0,0,0)`, `normalize(0)` is degenerate,
+and the surface renders **exactly zero regardless of what feeds `diffuseColor`.**
+
+That matches the measurement precisely: the ground is **97.3% exactly `(0,0,0)`**, not
+merely dark. A dropped *diffuse* connection would give the MDL's `float3(0.18)` default —
+**~117/255 grey** — and even a black diffuse leaves ~4% dielectric specular, around
+50–60/255. Neither is 1.2. **Only a dead BSDF produces exact zero**, which is why "diffuse
+is ignored" was never consistent with the numbers I already had.
+
+⚠ **And my "every texture path resolves" check was worth less than I thought.** A bare
+`assets/…` is a *search path* to `ArDefaultResolver`, which falls back to the **process
+CWD** — so it resolved because I ran the check from the repo root. Layer-anchored it would
+be `assets/assets/…`, which does not exist, and Kit's MDL texture loader does not take
+that CWD fallback. Now authored absolute.
+
+What **does** still stand, measured not argued:
+- **The generated maps are correct.** Ground albedo mean RGB (76.50, 63.75, 48.44),
+  **R−B +28.1** — matching Session 16's +28.04 to within a rounding step. The
+  texture-generation unit tests were right; they just never tested the *binding*.
 - The ground mesh really does carry both an `st` primvar and a `displayColor` primvar,
-  vertex-interpolated.
+  vertex-interpolated, and is byte-identical across the bisect stages.
 
-⚠ **Root cause still OPEN.** What is closed is that it cannot ship: `pbr.enabled` now
-defaults to **False**, with a source-level test asserting it (scoped to the pbr gate, so
-the sky's own correct `.get("enabled", True)` is not caught by it). Re-enabling requires
-a render measurement putting ground R−B back above +20 — not a re-read of the unit tests.
+⚠ **Root cause now a testable hypothesis rather than a story.** Still cannot ship:
+`pbr.enabled` defaults to **False** with a source-level test asserting it. Three fixes
+landed alongside (normal `fallback`, absolute paths, authoring order); the one-build GPU
+test that settles it is queued.
+
+⭐ **Free extra check nobody has run:** if the mechanism is right, **road, concrete,
+equipment, structure and fence are black too** — they share the same normal wiring and the
+same huge planar UVs. Every frame saved so far is a panel close-up, so nobody has looked.
+If they render correctly, the mechanism is wrong and the fault is ground-specific.
 
 ### 5. ⚠ 42 tests had never run — and one of them was failing
 
