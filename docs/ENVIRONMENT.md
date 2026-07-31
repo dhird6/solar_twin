@@ -583,8 +583,32 @@ problem**; plant scale is. ~11× the prims gave ~14× the slowdown.
 tables) at ~1× realtime; **not feasible on the full 30,016-module block**, because a
 flight controller runs on wall-clock and at 0.07× the sim and PX4 disagree about time.
 
-⚠ **Hypothesis worth testing before accepting the ceiling:** only 25 prims had
-colliders, so PhysX had almost nothing to collide. The cost is therefore unlikely to
-be collision — more probably USD→Fabric scene-graph sync over 82k prims. If so it may
-be reducible (Fabric scene delegate, or excluding the visual-only branches from the
-physics scene) rather than being a hard limit. Not yet investigated.
+### 3. The cost is scene-graph sync, NOT collision — confirmed
+
+Same stage, same body, branches progressively deactivated:
+
+| configuration | live prims | steps/s | realtime |
+|---|---|---|---|
+| all active (baseline) | 81,974 | 13 | 0.07× |
+| deactivate `/World/Farm` | 7,270 | **288** | **1.44×** |
+| + `/World/Site` | 236 | 966 | 4.83× |
+| + `/World/OSM` | 96 | 1,077 | 5.38× |
+| + `/World/Turbines` | 55 | 1,241 | 6.20× |
+| all reactivated | 81,974 | 11 | 0.05× |
+
+**`/World/Farm` alone costs 22×, and it carries ZERO colliders.** PhysX is colliding
+against 25 turbine prims plus one ground mesh; the 30,016 physically-inert panel
+Xforms are what the time goes to. Reactivating restores the baseline, so the effect is
+causal and not a warming cache.
+
+⚠ **Fabric does not fix it — measured, not assumed.** Enabling `omni.physx.fabric` at
+runtime (reports `True`), setting `/physics/updateToUsd = False`, and
+`omnihydra.useFastSceneDelegate` at launch each left the rate at **13–14 steps/s**.
+Untested: launching the dedicated `isaac-sim.fabric.sh` app, where those are set
+before app init rather than after.
+
+So full-plant physics is **not currently available**, and the practical answer is to
+run physics on a subset (~24 tables, ~8k prims, ~1× realtime) while rendering and
+KPI-scoring on the full block, which needs no physics. Panel-level instancing is
+already in place (29,416 modules from 1 prototype) — the residual cost is the
+per-panel Xform each module needs to carry its `pv:` state.
