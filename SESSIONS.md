@@ -392,10 +392,40 @@ What **does** still stand, measured not argued:
 - The ground mesh really does carry both an `st` primvar and a `displayColor` primvar,
   vertex-interpolated, and is byte-identical across the bisect stages.
 
-⚠ **Root cause now a testable hypothesis rather than a story.** Still cannot ship:
-`pbr.enabled` defaults to **False** with a source-level test asserting it. Three fixes
-landed alongside (normal `fallback`, absolute paths, authoring order); the one-build GPU
-test that settles it is queued.
+### 4b. ⭐⭐ CONFIRMED AND FIXED — the normal map was killing the surface
+
+Ran the test on the now-valid bisect (`runs/bg2_on`, `runs/bg2_albedo`). Ground non-glass
+mean RGB on SC-11's control panel, screen pass:
+
+| | before the fixes | after |
+|---|---|---|
+| `--pbr on` (albedo + roughness + normal) | (1.1, 1.2, 1.2) R−B **−0.1**, black ✗ | **(26.4, 23.0, 20.4) R−B +6.0, warm ✓** |
+| `--pbr albedo` (no normal map) | — | (29.6, 25.6, 22.2) R−B **+7.4**, warm ✓ |
+
+**The hypothesis was right.** A ~24× brightness recovery and the hue is back, from giving
+the normal map a `fallback` of `(0,0,1,1)` instead of letting the default `(0,0,0,1)`
+decode to a degenerate shading normal. ⚠ Strictly, the normal `fallback` and the absolute
+asset paths landed in the same commit, so this test cannot separate them — but both are
+correct changes and the mechanism only fits the normal path.
+
+⚠⚠ **It is a PARTIAL fix and the layer STAYS OFF.** Like-for-like against the flat
+material on the same panel and camera:
+
+| | screen non-glass mean | R−B |
+|---|---|---|
+| flat materials (`--pbr off`) | (119.5, 108.6, 95.4) | **+24.1** |
+| textured, fixed (`--pbr on`) | (26.4, 23.0, 20.4) | **+6.0** |
+
+So the textured ground is **~4.5× darker and a quarter as warm** as the material it is
+meant to replace. Not broken any more; not yet right. The guard test's bar — ground R−B
+back above **+20** — is **not met**, so `pbr.enabled` stays `False`.
+
+⭐ **Leading hypothesis for the remaining gap, untested:** a colour-space mismatch on the
+albedo map. `sourceColorSpace: raw` is set on the roughness and normal maps but **not on
+albedo**, so the renderer sRGB-decodes it — while `tinted_albedo` applies the diffuse
+constant as a *linear* modulation and writes 8-bit without sRGB encoding. That would darken
+and desaturate by roughly the amount observed. Cheap to test: set `raw` on the albedo
+sampler, or sRGB-encode at write time, and re-run this same one-build check.
 
 ⭐ **Free extra check nobody has run:** if the mechanism is right, **road, concrete,
 equipment, structure and fence are black too** — they share the same normal wiring and the
