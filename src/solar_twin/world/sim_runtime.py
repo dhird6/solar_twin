@@ -38,6 +38,7 @@ class SimRuntime:
         overview_capture: bool = True,
         overview_resolution: Optional[tuple[int, int]] = None,
         livestream: bool = False,
+        tonemap: bool = False,
     ):
         from isaacsim import SimulationApp
 
@@ -106,6 +107,14 @@ class SimRuntime:
         self._app.update()
         self._stage = omni.usd.get_context().get_stage()
         assert UsdGeom.GetStageUpAxis(self._stage) == UsdGeom.Tokens.z, "farm must be Z-up"
+
+        # ⚠ AFTER the stage is open, and that ordering is the whole trick. Applied in
+        # `__init__` before `open_stage` the settings are accepted by carb and then
+        # silently reset when the renderer re-initialises for the new stage —
+        # measured: identical frame means (182.2 vs 182.3) with the tonemap
+        # "applied". Setting them here is what actually changes the picture.
+        if tonemap:
+            self._apply_tonemap()
 
         UsdGeom.Xform.Define(self._stage, "/World/Robots")
 
@@ -437,6 +446,68 @@ class SimRuntime:
     #: `camera_prim_path` to exactly this, and `stage.py` prints the prim at that
     #: path. Kit also authors `/OmniverseKit_Top|Front|Right` alongside it.
     _KIT_PERSP_CAMERA = "/OmniverseKit_Persp"
+
+    #: RTX post-processing for a photographic image rather than a raw radiance dump.
+    #:
+    #: Why this is needed at all: with no tonemapping the renderer maps radiance to
+    #: pixels near-linearly, so on a desert stage the bright surfaces clip and the sky
+    #: reads as a dull band — which is what made the plant look washed out and the
+    #: horizon brown. Measured symptom: a material probe under a bright key light
+    #: reported EVERY surface as pale grey, because albedo differences had saturated.
+    #:
+    #: ⚠ Every key here is a **carb setting path**, not a USD attribute, and the set
+    #: below is what a **measured sweep** on this build showed actually works — most
+    #: of the obvious knobs do nothing:
+    #:
+    #:   WORKS   fNumber, cameraShutter, filmIso  (the photographic triad)
+    #:   INERT   exposure/compensation, exposureKey, maxWhiteLuminance, whiteScale
+    #:           — all four moved the frame mean by <0.3/255 across their whole
+    #:           range, because this build's active tonemap operator (`op` = 6)
+    #:           does not consume the Reinhard parameters.
+    #:
+    #: So exposure is set photographically. Measured ground brightness on the
+    #: block02 stage at a 43 deg sun: f/5 -> 195 (blown white), f/7 -> 153,
+    #: **f/9 -> 118**, f/11 -> 91, f/16 -> 51. f/9 is where sunlit desert reads as
+    #: sunlit desert instead of paper.
+    #:
+    #: `op` is deliberately NOT set: the build's default is 6, an earlier version of
+    #: this table forced it to 1 on the strength of a docs recommendation, and that
+    #: was an unverified change to the whole tone curve.
+    _TONEMAP_SETTINGS: dict = {
+        "/rtx/post/tonemap/fNumber": 9.0,
+        "/rtx/post/tonemap/cameraShutter": 50.0,
+        "/rtx/post/tonemap/filmIso": 100.0,
+        # Auto-exposure OFF: a KPI render must not silently re-expose between frames,
+        # or a panel's measured brightness changes for reasons unrelated to the panel.
+        # Fixed photographic exposure is what makes a render comparable across runs.
+        "/rtx/post/histogram/enabled": False,
+        # Reflections deep enough for glass over cells to show anything at all.
+        "/rtx/reflections/maxReflectionBounces": 3,
+    }
+
+    def _apply_tonemap(self) -> None:
+        """Apply the photographic post-processing settings, reporting what stuck."""
+        applied, missing = [], []
+        try:
+            import carb
+
+            settings = carb.settings.get_settings()
+        except Exception as exc:  # noqa: BLE001 — the picture is never worth the run
+            print(f"  [warn] tonemap: carb settings unavailable ({exc})", flush=True)
+            return
+        for key, value in self._TONEMAP_SETTINGS.items():
+            try:
+                settings.set(key, value)
+                applied.append(key.rsplit("/", 1)[-1])
+            except Exception:  # noqa: BLE001, PERF203
+                missing.append(key)
+        print(f"  tonemap: applied {', '.join(applied)}", flush=True)
+        if missing:
+            print(
+                f"  [warn] tonemap: {len(missing)} setting(s) not accepted by this "
+                f"Kit build — {', '.join(missing)}",
+                flush=True,
+            )
 
     def hold(self, *, free_camera: bool = True, spin_turbines: bool = True) -> None:
         """Keep the app alive and interactive until the window is closed.

@@ -279,6 +279,167 @@ def _set_uvs(mesh, pts, tile_m: float) -> None:
 _PROTO_ROOT = "/__Prototypes"
 
 
+def _author_mounting(stage, layout, mount_h: float, ground, looks, tracker_rot) -> dict:
+    """Author the torque tube and piles each tracker table stands on.
+
+    **The plant had no mounting structure at all.** Measured on the shipped stage:
+    zero prims matching torque/pile/pier/mount, so all 30,016 modules floated
+    `mount_height` (1.5 m) above the terrain on nothing. That is most of why the
+    array read as a blue mat painted on the desert rather than as hardware — there
+    was no vertical element anywhere to give the rows height or cast a shadow under
+    them.
+
+    An HSAT table is a single steel torque tube on a line of driven piles, with the
+    modules clamped either side of the tube. So per table (one panel ROW here):
+
+      * one tube along the table's own axis at hub height, sized to the row's extent;
+      * piles from the *terrain* up to the tube every `pile_spacing_m`.
+
+    Piles follow the ground under each pile, not one z for the whole row — the block
+    has 2.2 m of relief and a single-z row would bury the uphill piles and leave the
+    downhill ones hanging. `ground(x, y)` is the same sampler the panels use, so
+    hardware and grade cannot disagree.
+
+    ⚠ Geometry is INFERRED. The vendor CAD carries module positions, not the rack:
+    tube diameter, pile section and pile spacing are ordinary utility-HSAT values.
+    Nothing measures them — they are structure to look at, not a structural model.
+    """
+    from collections import defaultdict
+
+    TUBE_D = 0.13        # torque tube outside diameter
+    PILE_W = 0.10        # W6-ish pile flange width
+    PILE_SPACING = 6.0   # driven piles every ~6 m of tube
+    root = "/World/Site/Racking"
+    UsdGeom.Xform.Define(stage, root)
+
+    rows: dict = defaultdict(list)
+    for s in layout.sites:
+        rows[s.row].append(s)
+
+    n_tube = n_pile = 0
+    for row, sites in sorted(rows.items()):
+        xs = [float(s.position[0]) for s in sites]
+        ys = [float(s.position[1]) for s in sites]
+        cx = (min(xs) + max(xs)) / 2.0
+        # Which way the table runs. Khavda's tubes run north-south (+Y), but a
+        # procedural grid row runs east-west — decided by the row's own extent so
+        # both layouts get a tube along the correct axis instead of a crossbar.
+        span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
+        along_y = span_y >= span_x
+        length = max(span_y, span_x) + (sites[0].size_y_m or 1.0)
+        cy = (min(ys) + max(ys)) / 2.0
+
+        tube = UsdGeom.Cylinder.Define(stage, f"{root}/tube_{row:04d}")
+        tube.CreateRadiusAttr(TUBE_D / 2.0)
+        tube.CreateHeightAttr(float(length))
+        tube.CreateAxisAttr("Y" if along_y else "X")
+        tapi = UsdGeom.XformCommonAPI(tube)
+        tapi.SetTranslate(Gf.Vec3d(cx, cy, ground(cx, cy) + mount_h))
+        _bind(tube.GetPrim(), looks["galv_steel"])
+        n_tube += 1
+
+        # Piles march along the tube; each one stands on its own ground sample.
+        steps = max(2, int(length // PILE_SPACING) + 1)
+        for i in range(steps):
+            t = (i / (steps - 1)) - 0.5
+            px = cx + (0.0 if along_y else t * length)
+            py = cy + (t * length if along_y else 0.0)
+            gz = ground(px, py)
+            h = (ground(cx, cy) + mount_h) - gz
+            if h <= 0.05:
+                continue
+            _box(
+                stage, f"{root}/pile_{row:04d}_{i:03d}",
+                PILE_W, PILE_W, h, px, py, gz, looks["galv_steel"],
+            )
+            n_pile += 1
+    return {"tubes": n_tube, "piles": n_pile}
+
+
+def _panel_prototype_real(
+    stage, cache: dict, key, path: str, sx, sy, ph, n_ccol, n_crow, looks
+) -> str:
+    """A PV module built the way one is actually made (realism layer).
+
+    Layer stack, bottom to top, in real millimetres for a framed crystalline module:
+
+        laminate  a DARK slab, `ph` thick — backsheet + encapsulant. This is what
+                  shows in the 2 mm gaps between cells, and it is dark, which is the
+                  single change that stops the module reading as tiled floor.
+        cells     FLUSH with the laminate's top face, inset by a real 2 mm kerf
+                  rather than the old 14% shrink. Coplanar geometry z-fights, so they
+                  sit `_CELL_LIFT` (0.2 mm) proud — below the glass, above the slab,
+                  and far too small to read as relief.
+        frame     4 thin bars at the PERIMETER only, `_FRAME_W` wide, standing
+                  `_FRAME_LIP` above the glass the way a real anodised frame does.
+        glass     one sheet over the aperture, OmniGlass. A PV module's dominant
+                  visual surface is glass, and the old model had none at all.
+
+    Prim cost is `n_cells + 6` in the PROTOTYPE, which every module then references —
+    so the whole 30,016-module block still costs one Xform per panel on the stage.
+    """
+    #: Real framed-module dimensions, metres. ⚠ INFERRED for this hardware — the CAD
+    #: gives module extent, not frame profile. These are ordinary values for a
+    #: utility 72-cell module and are visual only; nothing measures them.
+    _FRAME_W = 0.035      # anodised frame face width
+    _FRAME_LIP = 0.004    # how far the frame stands above the glass
+    _GLASS_T = 0.0032     # 3.2 mm low-iron float glass
+    _CELL_KERF = 0.002    # inter-cell gap
+    _CELL_LIFT = 0.0002   # z-fight guard under the glass
+
+    top = ph / 2.0
+
+    laminate = UsdGeom.Cube.Define(stage, path + "/Laminate")
+    laminate.CreateSizeAttr(1.0)
+    UsdGeom.XformCommonAPI(laminate).SetScale(Gf.Vec3f(sx, sy, ph))
+    _bind(laminate.GetPrim(), looks["panel_laminate"])
+
+    # Cells fill the aperture inside the frame, not the whole module.
+    ap_x, ap_y = sx - 2 * _FRAME_W, sy - 2 * _FRAME_W
+    cw, cl = ap_x / n_ccol, ap_y / n_crow
+    UsdGeom.Xform.Define(stage, path + "/Cells")
+    for r in range(n_crow):
+        for c in range(n_ccol):
+            cell = UsdGeom.Cube.Define(stage, f"{path}/Cells/c_{r}_{c}")
+            cell.CreateSizeAttr(1.0)
+            capi = UsdGeom.XformCommonAPI(cell)
+            capi.SetTranslate(
+                Gf.Vec3d(
+                    -ap_x / 2 + (c + 0.5) * cw,
+                    -ap_y / 2 + (r + 0.5) * cl,
+                    top + _CELL_LIFT,
+                )
+            )
+            # A hair thick and inset by the real kerf: the dark laminate between
+            # cells is the gap, so the gap is dark instead of bright metal.
+            capi.SetScale(Gf.Vec3f(cw - _CELL_KERF, cl - _CELL_KERF, 0.0004))
+            _bind(cell.GetPrim(), looks["cell_healthy"])
+
+    # Perimeter frame: two bars along Y, two along X, mitred by overlap.
+    for name, tx, ty, w, h in (
+        ("y_neg", 0.0, -(sy - _FRAME_W) / 2, sx, _FRAME_W),
+        ("y_pos", 0.0, (sy - _FRAME_W) / 2, sx, _FRAME_W),
+        ("x_neg", -(sx - _FRAME_W) / 2, 0.0, _FRAME_W, sy),
+        ("x_pos", (sx - _FRAME_W) / 2, 0.0, _FRAME_W, sy),
+    ):
+        bar = UsdGeom.Cube.Define(stage, f"{path}/Frame/{name}")
+        bar.CreateSizeAttr(1.0)
+        bapi = UsdGeom.XformCommonAPI(bar)
+        bapi.SetTranslate(Gf.Vec3d(tx, ty, top + _FRAME_LIP / 2 - ph / 2 + ph / 2))
+        bapi.SetScale(Gf.Vec3f(w, h, ph + _FRAME_LIP))
+        _bind(bar.GetPrim(), looks["panel_frame"])
+
+    glass = UsdGeom.Cube.Define(stage, path + "/Glass")
+    glass.CreateSizeAttr(1.0)
+    gapi = UsdGeom.XformCommonAPI(glass)
+    gapi.SetTranslate(Gf.Vec3d(0.0, 0.0, top + _GLASS_T / 2))
+    gapi.SetScale(Gf.Vec3f(ap_x, ap_y, _GLASS_T))
+    _bind(glass.GetPrim(), looks["panel_glass"])
+
+    cache[key] = path
+    return path
+
+
 def _panel_prototype(stage, cache: dict, sx, sy, ph, n_ccol, n_crow, looks) -> str:
     """Define (once per distinct module size) the geometry of a HEALTHY panel and
     return its class-prim path, for healthy panels to reference (`IF-09`).
@@ -295,7 +456,7 @@ def _panel_prototype(stage, cache: dict, sx, sy, ph, n_ccol, n_crow, looks) -> s
     writeback is unchanged — only the *geometry* is shared. Prototype roots
     author no transform, so each instance's own translate/rotate still wins.
     """
-    key = (round(sx, 6), round(sy, 6), round(ph, 6), n_ccol, n_crow)
+    key = (round(sx, 6), round(sy, 6), round(ph, 6), n_ccol, n_crow, bool(looks.get("panel_glass")))
     if key in cache:
         return cache[key]
 
@@ -303,6 +464,24 @@ def _panel_prototype(stage, cache: dict, sx, sy, ph, n_ccol, n_crow, looks) -> s
         stage.CreateClassPrim(_PROTO_ROOT)
     path = f"{_PROTO_ROOT}/Panel_{len(cache)}"
     UsdGeom.Xform.Define(stage, path)
+
+    # A `panel_glass` look in the table is the signal that the realism layer is on.
+    # Two module models, and the difference is why the old one read as bathroom tile:
+    #
+    #   OLD: one slab painted 0.62 ALUMINIUM, with each cell a separate box floating
+    #        ph*0.25 ABOVE it and shrunk to 86%. So the bright metal showed through
+    #        between cells as raised grout lines, and the dominant surface of a PV
+    #        module — the thing that should be dark glass — was light grey.
+    #   NEW: a DARK laminate slab (a real module's backsheet/EVA reads near-black
+    #        between cells), cells FLUSH with its top face, a thin aluminium frame at
+    #        the PERIMETER ONLY, and a glass sheet over the whole thing.
+    #
+    # ⚠ This also removes the bright inter-cell rails that Cosmos Reason once read as
+    # "a cluster of bright pixels ... characteristic of a hotspot". That should help
+    # KPI-03, but it MOVES the measured baseline, which is why the realism layer is
+    # opt-in and must be re-measured rather than assumed to be an improvement.
+    if looks.get("panel_glass") is not None:
+        return _panel_prototype_real(stage, cache, key, path, sx, sy, ph, n_ccol, n_crow, looks)
 
     geom = UsdGeom.Cube.Define(stage, path + "/Geom")
     geom.CreateSizeAttr(1.0)
@@ -985,13 +1164,30 @@ def _build_osm_layer(stage, farm_cfg, layout, looks, ground_box=None) -> dict:
         for s in range(len(edges) - 1):
             a = 2 * s
             counts.append(4)
-            idx.extend([a, a + 1, a + 3, a + 2])
+            # ⚠ WINDING: [a, a+2, a+3, a+1], NOT [a, a+1, a+3, a+2].
+            # Vertices alternate left,right per station, so a=left_i, a+1=right_i,
+            # a+2=left_{i+1}, a+3=right_{i+1}. Walking left_i -> right_i ->
+            # right_{i+1} -> left_{i+1} traverses the quad CLOCKWISE in XY (measured:
+            # signed area -60 for a +X road), giving a face normal of -Z — pointing
+            # into the ground. With `doubleSided` false (the USD default, and nothing
+            # in this file ever set it) every OSM road was BACKFACING and rendered
+            # black or invisible from above. That is the "the roads are broken" the
+            # owner saw in the GUI. Going up the left edge and back down the right
+            # is CCW, so the normal points +Z like every other surface here.
+            idx.extend([a, a + 2, a + 3, a + 1])
         name = f"road_{i:02d}_{way.kind}"
         mesh = UsdGeom.Mesh.Define(stage, f"/World/OSM/Roads/{name}")
         mesh.CreatePointsAttr(verts)
         mesh.CreateFaceVertexCountsAttr(counts)
         mesh.CreateFaceVertexIndicesAttr(idx)
         mesh.CreateSubdivisionSchemeAttr("none")
+        # Belt-and-braces on top of the winding fix above. A polyline draped over a
+        # cross-slope can produce a segment whose quad is non-planar or locally
+        # reversed, and one black segment in the middle of a road is exactly the kind
+        # of defect that reads as "broken" rather than as a normals bug. Roads are a
+        # negligible share of the stage's triangles, so two-sided shading is cheap
+        # insurance here in a way it would not be on the 30k modules.
+        mesh.CreateDoubleSidedAttr(True)
         _set_uvs(mesh, verts, _UV_TILE_M["road"])
         _bind(mesh.GetPrim(), looks["road"])
         _tag(
@@ -1361,7 +1557,32 @@ def build(farm_cfg: dict, out_path: str) -> str:
         if elev <= 0.0:
             print("  [warn] sun BELOW horizon — render will be dark", flush=True)
     # Dim a low sun a little (grazing light is less intense) so frames don't blow out.
-    sun.CreateIntensityAttr(2400.0 if elev >= 30.0 else 1700.0)
+    #
+    # ⚠ These are ARBITRARY units, not photometry, and the sun:sky ratio they imply is
+    # physically inverted. Measured 2026-07-31 on the block02 stage at f/9:
+    #
+    #     dome  sun    sky   ground   sky/ground
+    #      300  2400   15.5   100.1     0.16   <- SHIPPED. Sky 6x DARKER than the desert.
+    #     1500  2400   67.9   114.5     0.59
+    #     3000  2400  109.1   131.0     0.83
+    #     6000  1200  156.8   135.8     1.15   <- realistic ordering
+    #
+    # A real clear sky is *brighter* than the ground it lights, so at any exposure
+    # that stops the desert blowing out, the shipped sky goes black — which is the
+    # dark brown band at the top of every render this project has produced.
+    #
+    # Raising `ambient` fixes the sky and floods the ground with blue skylight, which
+    # attacks the Session-10c warm-ground invariant (R-B > 0). That trade is not
+    # resolvable by tuning, because a DomeLight's texture is both the background and
+    # the fill and ours is an 8-bit LDR PNG: a real HDRI carries the sun disk at ~1e5
+    # and the sky at ~1e3, a range 255 levels cannot hold. **The real fix is an HDRI
+    # or NVIDIA's dynamic-sky USD** (`Assets/Skies/2022_1/Skies/Dynamic/ClearSky.usd`,
+    # verified reachable; `omni.kit.environment.core` is installed on this build).
+    # Until then both knobs are exposed so a scenario can choose its compromise, and
+    # the default stays exactly what every recorded KPI was measured against.
+    sun.CreateIntensityAttr(
+        float(sun_cfg.get("intensity", 2400.0 if elev >= 30.0 else 1700.0))
+    )
     # A DistantLight emits along local -Z. With rotation order XYZ,
     #   L = Rz(rz)*Rx(rx)*(0,0,-1) = (-sin rx sin rz, sin rx cos rz, -cos rx)
     # and we need L = -sun = (-cos E sin A, -cos E cos A, -sin E), giving
@@ -1404,10 +1625,41 @@ def build(farm_cfg: dict, out_path: str) -> str:
         print(f"  sky: generated {sky_tex}", flush=True)
 
     # --- shared material set (one look per _LOOKS entry, reused everywhere) ---
-    looks = {
-        name: _make_material(stage, f"/World/Looks/{name}", diff, emis, rough, metal)
-        for name, (diff, emis, rough, metal) in _LOOKS.items()
-    }
+    # --- the look layer: flat UsdPreviewSurface, or MDL (realism) ------------- #
+    # `realism.enabled` swaps 13 constant-colour `UsdPreviewSurface` materials for
+    # MDL (OmniPBR/OmniGlass) AND turns on the glass-over-flush-cells module, the
+    # perimeter frame, and the racking. It is one switch because the three are not
+    # independent: dark laminate without glass looks unfinished, and a glass sheet
+    # over raised tiles looks worse than either.
+    #
+    # ⚠ OFF by default, and off is the identity — the same guard the wind and
+    # dispatch layers use. Every KPI on record was measured against the flat looks,
+    # and the panel-frame albedo (0.62) in particular is what the soiling film's
+    # alpha window was tuned against. Flipping this default is a decision that needs
+    # a render measurement (warm ground R-B, no bright inter-cell rails) plus a
+    # KPI-01/KPI-03 re-run, not a preference.
+    #
+    # Verified on this build 2026-07-31 (`tools/material_probe.py`): OmniPBR.mdl and
+    # OmniGlass.mdl resolve BY BARE NAME — they are built into the RTX renderer, so
+    # this adds no download and no network dependency. A library MDL over https also
+    # resolved, and is available via `mdl_materials.library_material` at the cost of
+    # a network dependency at render time.
+    realism = bool((farm_cfg.get("realism", {}) or {}).get("enabled", False))
+    if realism:
+        from solar_twin.world import mdl_materials as mdlm
+
+        looks = mdlm.build_plant_materials(stage, "/World/Looks")
+        # The module body. Dark, because a real module's inter-cell gaps show
+        # backsheet, not the bright aluminium the old model painted the whole slab.
+        looks["panel_laminate"] = mdlm.omni_pbr(
+            stage, "/World/Looks/panel_laminate",
+            diffuse=(0.045, 0.045, 0.050), roughness=0.55, metallic=0.0,
+        )
+    else:
+        looks = {
+            name: _make_material(stage, f"/World/Looks/{name}", diff, emis, rough, metal)
+            for name, (diff, emis, rough, metal) in _LOOKS.items()
+        }
     dust_mat = _dust_material(stage)
 
     # --- textured PBR for the balance-of-plant surfaces ---------------------- #
@@ -1683,10 +1935,16 @@ def build(farm_cfg: dict, out_path: str) -> str:
         # one contract, free to drift.
 
         # --- unique geometry: faulted panels (and the procedural farm) --------
+        # The realism layer changes what the module body IS: a dark laminate whose
+        # 2 mm inter-cell gaps read dark, instead of a bright aluminium slab whose
+        # gaps read as grout. Faulted panels must match the healthy prototype or a
+        # fault would be visible as a change of MATERIAL rather than of cell colour —
+        # which would hand the VLM the answer for free.
+        real = looks.get("panel_glass") is not None
         geom = UsdGeom.Cube.Define(stage, path + "/Geom")
         geom.CreateSizeAttr(1.0)
         UsdGeom.XformCommonAPI(geom).SetScale(Gf.Vec3f(sx, sy, ph))
-        _bind(geom.GetPrim(), looks["panel_frame"])
+        _bind(geom.GetPrim(), looks["panel_laminate" if real else "panel_frame"])
 
         rng = random.Random(f"{seed}:{site.panel_id}")
         # Cell-level faults (hotspot) recolor cells; soiling is a film authored
@@ -1696,17 +1954,26 @@ def build(farm_cfg: dict, out_path: str) -> str:
 
         # --- cell grid on the top face: each cell a thin inset tile ----------
         cells = UsdGeom.Xform.Define(stage, path + "/Cells")  # noqa: F841
-        cw, cl = sx / n_ccol, sy / n_crow
-        gap = 0.86  # tile shrink -> dark grid lines between cells
+        # Realism: cells sit FLUSH on the laminate, inset by a real 2 mm kerf.
+        # Legacy: cells float ph*0.25 proud and shrink to 86%, so the bright slab
+        # shows between them — the tiled-floor look.
+        inset_x = 0.035 if real else 0.0          # frame face width, aperture only
+        ap_x, ap_y = sx - 2 * inset_x, sy - 2 * inset_x
+        cw, cl = ap_x / n_ccol, ap_y / n_crow
+        cz = (ph / 2 + 0.0002) if real else (ph / 2 + ph * 0.25)
+        cth = 0.0004 if real else (ph * 0.5)
         for r in range(n_crow):
             for c in range(n_ccol):
-                cx = -sx / 2 + (c + 0.5) * cw
-                cy = -sy / 2 + (r + 0.5) * cl
+                cx = -ap_x / 2 + (c + 0.5) * cw
+                cy = -ap_y / 2 + (r + 0.5) * cl
                 cell = UsdGeom.Cube.Define(stage, f"{path}/Cells/c_{r}_{c}")
                 cell.CreateSizeAttr(1.0)
                 capi = UsdGeom.XformCommonAPI(cell)
-                capi.SetTranslate(Gf.Vec3d(cx, cy, ph / 2 + ph * 0.25))
-                capi.SetScale(Gf.Vec3f(cw * gap, cl * gap, ph * 0.5))
+                capi.SetTranslate(Gf.Vec3d(cx, cy, cz))
+                if real:
+                    capi.SetScale(Gf.Vec3f(cw - 0.002, cl - 0.002, cth))
+                else:
+                    capi.SetScale(Gf.Vec3f(cw * 0.86, cl * 0.86, cth))
                 look = fault_look if (fault_look and (r, c) in bad) else looks["cell_healthy"]
                 _bind(cell.GetPrim(), look)
 
@@ -1715,6 +1982,19 @@ def build(farm_cfg: dict, out_path: str) -> str:
             _build_dust_film(stage, path, sx, sy, ph, n_ccol, n_crow, rng, dust_mat)
 
         _label(prim, "panel", state.value)
+
+    # --- racking: the torque tubes and piles the tables stand on --------------- #
+    # Part of the realism layer because it is geometry the flat-look stages never
+    # had, and adding structure under 30,016 modules changes what every downward
+    # camera sees (there is now hardware and its shadow under a row, where before
+    # there was bare desert).
+    rack_stats = None
+    if realism:
+        rack_stats = _author_mounting(
+            stage, layout, mount_h,
+            lambda x, y: terrain_height(x, y, farm_cfg),
+            looks, tracker_rot,
+        )
 
     # --- wind turbines: proxies with a spin-able Hub (runtime turns the blades) -
     from solar_twin.world.siting import resolve_turbines
@@ -1768,7 +2048,13 @@ def build(farm_cfg: dict, out_path: str) -> str:
         if len(faults) <= 30
         else f"{len(faults)} faults seeded (list suppressed)"
     )
-    site_line = f"  site works: {site_stats or 'none'}"
+    look_line = (
+        "  looks: MDL (OmniPBR/OmniGlass) + glass-over-flush-cells module"
+        f" + racking {rack_stats}"
+        if realism
+        else "  looks: flat UsdPreviewSurface (realism.enabled=false — no glass, no racking)"
+    )
+    site_line = f"{look_line}\n  site works: {site_stats or 'none'}"
     if site_stats:
         # Said on every build, deliberately: 'inferred' elements are our standard
         # practice assumptions, not survey (NFR-07, world/site.py).
@@ -1804,6 +2090,16 @@ def main(argv: list[str] | None = None) -> int:
         "stage lacks.",
     )
     ap.add_argument(
+        "--realism",
+        choices=("on", "off"),
+        default="",
+        help="override `realism.enabled`. ON swaps the 13 flat UsdPreviewSurface "
+        "colours for MDL (OmniPBR/OmniGlass), rebuilds the module as glass over "
+        "FLUSH cells with a perimeter frame, and authors the torque tubes and piles "
+        "the plant never had. ⚠ Changes what every camera sees, so a KPI measured "
+        "with it on is not comparable to one measured without it.",
+    )
+    ap.add_argument(
         "--pbr",
         choices=("on", "off", "albedo", "primvar", "albedo_only"),
         default="",
@@ -1836,6 +2132,10 @@ def main(argv: list[str] | None = None) -> int:
         pbr_cfg["enabled"] = args.pbr != "off"
         pbr_cfg["mode"] = args.pbr
         farm_cfg = {**farm_cfg, "pbr": pbr_cfg}
+    if args.realism:
+        r_cfg = dict(farm_cfg.get("realism") or {})
+        r_cfg["enabled"] = args.realism == "on"
+        farm_cfg = {**farm_cfg, "realism": r_cfg}
     build(farm_cfg, args.out)
     return 0
 
