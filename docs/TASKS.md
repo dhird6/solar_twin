@@ -7,7 +7,43 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 13b)
+## ⇢ NEXT SESSION — start here (updated 2026-07-31, Session 17)
+
+**Do these first, in this order. Rationale in `SESSIONS.md` Session 17 (top entry).**
+
+1. **Re-run the black-ground bisect — the old one was invalid.** `/World/Looks/ground_pbr`
+   was authored twice and the second call overwrote the first, so all four `--pbr` arms
+   rendered the same network. Fixed in `e931bfd`, along with a normal-map `fallback`
+   (a failed read decoded to a normal of `(0,0,0)` → degenerate → **exactly zero**, which
+   matches the measured 97%-pure-black ground) and absolute asset paths. **One build +
+   `tools/inspect_frame.py` settles it:** ground R−B warm ⇒ the normal input was the cause.
+   Free extra check in the same frame — road/concrete/equipment/structure/fence should be
+   black too if the mechanism is right; every saved frame so far is a panel close-up, so
+   nobody has looked.
+2. **Chase HOTSPOT recall, not aggregate recall.** Measured over 20 archived VLM runs:
+   soiled flagged **0.984** / named 0.516, hotspot flagged **0.397** / named 0.379.
+   Injected soiling was called `hotspot` 29 times in 62; injected hotspots were called
+   `healthy` 35 times in 58. Different failures, different fixes.
+   `python3 tools/kpi_recall.py runs/ --perception cosmos_reason` reproduces all of it.
+3. **Re-gate on `KPI-01a` (`fault_recall`) against `KPI-01n` (the null baseline).**
+   `nominal_calm_vlm` is 82.5% healthy against a `detection_rate_min: 0.80` gate, so a
+   model that finds nothing scores 0.825 and passes. Metrics ship in the run record now;
+   the gates still need pointing at them.
+4. **Re-render the stale video set.** Every `.mp4` in `assets/` misrepresents the twin in
+   at least one documented way, and `plant_status_tour.mp4` is a *status* video whose
+   status is wrong in four. `assets/fault_response_demo_pbr.usd` is the current stage.
+5. **Record the stage path in the run record.** It archives `farm.yaml`/`mission.yaml` but
+   names no USD, so "which stage produced this KPI" is an inference from file mtimes.
+
+**State (2026-07-31):** KPI-03 = **0.000** on two independent runs under two different
+skies — `runs/20260730T145823` (N=5, legacy sky) and `runs/20260731T024941` (N=3, physical
+sky), both stdev 0.0, agreement 1.0, gates PASS. Shading stimulus **+12.6 points** under
+the corrected glass mask. Work is on `overnight/session-17`; PR #10 is open from
+`ID-3-Testing-and-new-features-addin`.
+
+---
+
+## ⇢ Previous front of work (updated 2026-07-29, Session 13b)
 
 Everything below this block is the older two-track plan and is still valid; this
 is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-13.
