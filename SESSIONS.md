@@ -54,10 +54,31 @@ says "those panels are not comparing like with like". The verdict agreed anyway,
 does not move the 0.00; but a false-fault rate quoted from this run must carry it,
 because for that one panel the model was not shown the same thing twice.
 
-⚠ **And this number is now stage-specific.** It was measured on the **legacy-ramp-sky**
-stage (the run started 14:58; the sky commits landed 17:02). §3 below shows the sky
-change moves the stimulus, so **KPI-03 must be re-measured on the current twin** before
-being quoted against it. That re-measurement is running.
+⚠ **That number came from the legacy-ramp-sky stage.** The proof is the stage mtime, not
+the clock: `assets/khavda_selfshade.usd` is **Jul 27 16:40 and was never rebuilt**, and
+`run.py` loads a stage but never builds one. (The timing argument alone is weak — repeats
+3–5 finished at 18:02/19:03/20:04, *after* the 17:02 sky commits. ⚠ And the run record
+names **no stage at all**; it archives only `farm.yaml`/`mission.yaml`, which is a real
+provenance gap worth closing.)
+
+**⭐ RE-MEASURED on the current twin, and it holds** — `runs/20260731T024941`, the
+Preetham-sky stage with the textured layer off, 560 panels × 3 repeats:
+
+| | result |
+|---|---|
+| `false_fault_rate` (**KPI-03**) | **0.000** — mean 0.0, **stdev 0.0**, identical across 3 |
+| `false_alarm_rate` / `abstention_rate` | 0.000 / 0.000 |
+| agreement across repeats | **1.0** (560/560) |
+| gates | **PASS**, 3 declared, basis **worst-of-3** |
+| frames | 560/560 differ; 559 same picture, **1 materially different** — same shape as n=5 |
+
+So **KPI-03 = 0.00 survives the sky change**, on a stage that is genuinely different, with
+the stimulus under the *fixed* mask at **+12.6 points** (§3b). Two independent runs, two
+skies, same answer.
+
+⚠ `detection_rate` reads 1.00 here and it is **vacuous** — the scenario seeds zero faults,
+so with nothing to find it is arithmetically the same fact as `KPI-03 = 0` restated. Do
+not quote the two side by side as if they were two results (§8).
 
 ### 2. ⚠⚠ The farm builder could not build a single stage
 
