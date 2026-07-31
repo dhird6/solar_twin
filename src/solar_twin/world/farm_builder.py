@@ -160,6 +160,7 @@ def _textured_material(
     metallic: float,
     diffuse_from_primvar: bool = False,
     use_normal: bool = True,
+    use_roughness: bool = True,
 ) -> UsdShade.Material:
     """A `UsdPreviewSurface` driven by generated albedo / roughness / normal maps.
 
@@ -220,8 +221,11 @@ def _textured_material(
             rgb_out
         )
 
-    _, r_out = _tex("roughness", Sdf.ValueTypeNames.Float, "r")
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(r_out)
+    if use_roughness:
+        _, r_out = _tex("roughness", Sdf.ValueTypeNames.Float, "r")
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(r_out)
+    else:
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(_LOOKS[name][2])
 
     if use_normal:
         _, n_out = _tex("normal", Sdf.ValueTypeNames.Float3, "rgb")
@@ -243,8 +247,9 @@ def _textured_material(
         ntex.CreateInput("fallback", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 1, 1))
         shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(n_out)
 
-    rtex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/RoughnessTex"))
-    rtex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+    if use_roughness:
+        rtex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/RoughnessTex"))
+        rtex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
 
     mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     return mat
@@ -1449,7 +1454,8 @@ def build(farm_cfg: dict, out_path: str) -> str:
                 paths,
                 metallic=_LOOKS[name][3],
                 diffuse_from_primvar=(mode == "primvar" and name == "ground"),
-                use_normal=(mode != "albedo"),
+                use_normal=mode not in ("albedo", "albedo_only"),
+                use_roughness=(mode != "albedo_only"),
             )
         print(
             f"  pbr: textured {len(pbr_paths)} surfaces "
@@ -1799,7 +1805,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--pbr",
-        choices=("on", "off", "albedo", "primvar"),
+        choices=("on", "off", "albedo", "primvar", "albedo_only"),
         default="",
         help="override the config's `pbr.enabled` so the textured-PBR layer can be "
         "A/B'd against the flat materials WITHOUT editing a config. `off` = flat "

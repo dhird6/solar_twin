@@ -435,13 +435,35 @@ never encoded. Setting `raw` (write linear, read linear — self-consistent):
 `(76.5, 63.75, 48.44)/255 = (0.300, 0.250, 0.190)` — *exactly* the `_LOOKS["ground"]`
 diffuse constant.
 
-⚠⚠ **A real gap survives, and the layer therefore STAYS OFF.** Still 1.7× darker than the
-flat material, and hue barely moved (+7.4 → +7.6) where brightness alone predicts ~+14.
-So there is a **second, independent** effect — saturation, not just exposure. Remaining
-suspects, none tested: the roughness map shifting the diffuse/specular balance, the normal
-map still perturbing at grazing sun even with a valid fallback, or the modulation's
-mean-1.0 guarantee not surviving the render. **Next step is one more arm of the same cheap
-test** — `--pbr` with roughness dropped — not another round of reasoning.
+⚠⚠ **A real gap survives, and the layer therefore STAYS OFF.** Ran the isolating arm
+(`--pbr albedo_only`: albedo map, roughness pinned to the flat constant 1.0, no normal
+map), so the *only* difference from the flat material is constant-vs-texture:
+
+| arm — same scenario, panel, camera | screen non-glass | R−B |
+|---|---|---|
+| flat constant, roughness 1.0 | (119.5, 108.6, 95.4) | **+24.1** |
+| **albedo texture, roughness 1.0, no normal** | **(28.7, 24.6, 21.2)** | +7.5 |
+| albedo texture + roughness map, no normal | (70.5, 66.4, 62.9) | +7.6 |
+
+**4.2× darker with everything else held equal** — and the texture's linear values are
+*exactly* the constant `(0.300, 0.250, 0.190)`. So the map is right and the sampling is
+wrong: the shader is not getting the texture's mean back out of it.
+
+⭐ **The remaining suspect, now well-supported: UV wrap mode is not reaching MDL.** The
+ground's `st` is world-metres ÷ tile size, i.e. **±62** — almost entirely outside the unit
+square. `wrapS`/`wrapT` are authored `repeat`, but `UsdPreviewSurfaceLib.mdl`'s
+`useMetadata` path falls back to **`wrap_clip`, which returns BLACK outside [0,1]**. A
+mostly-black-sampled ground would be both much darker *and* pulled toward R−B 0 by all
+that black — which is exactly the shape of both residuals, and explains why fixing the
+transfer curve moved brightness but not hue.
+
+⚠ Stated as an inference, not a measurement: I have not confirmed the wrap mode is being
+dropped. **The discriminating test is one build** — clamp `_planar_uvs` into [0,1) (or drop
+tiling for a single non-repeating map) and re-run this same check. If the ground jumps to
+~+24, it is the wrap mode.
+
+**Two of three causes are fixed and confirmed; the third is narrowed to one testable
+line.** The guard's bar (ground R−B above +20) is not met, so `pbr.enabled` stays `False`.
 
 ⭐ **Free extra check nobody has run:** if the mechanism is right, **road, concrete,
 equipment, structure and fence are black too** — they share the same normal wiring and the
