@@ -45,6 +45,17 @@
 5. **Record the stage path in the run record.** It archives `farm.yaml`/`mission.yaml` but
    names no USD, so "which stage produced this KPI" is an inference from file mtimes.
 
+**Terrain (2026-07-31, Session 17 §11):** ✅ REAL and PROVED IN PIXELS on BLOCK-02.
+`tools/terrain_proof.py` rebuilds the same config with `terrain.kind: flat` and diffs the
+renders — verdict `TERRAIN CHANGES THE RENDER`, up to **24.5%** of pixels moved; the flat
+control reads **exactly 0.0 m**. Ground mesh spans **1.9508 m** (3,710 verts at the DEM's
+own 20 m post spacing), panels **1.1009 m** over 30,016 modules. The GLO-30 patch re-bakes
+**byte-identical** from the documented command.
+⚠⚠ **But the relief sits inside GLO-30's own error bars** — 2.173 m total against a
+published **< 4 m LE90**, lag-1 autocorrelation **0.45/0.50** (1.0 = landform, 0 = noise).
+Real data, correctly plumbed; **not survey-grade micro-topography.** So `terrain.graded`
+stays **OFF**, and the 0.461 m worst pile-height is provisional until a civil survey exists.
+
 **State (2026-07-31):** KPI-03 = **0.000** on two independent runs under two different
 skies — `runs/20260730T145823` (N=5, legacy sky) and `runs/20260731T024941` (N=3, physical
 sky), both stdev 0.0, agreement 1.0, gates PASS. Shading stimulus **+12.6 points** under

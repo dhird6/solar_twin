@@ -652,6 +652,79 @@ exactly the "~300 m east and 4.8 km further" the retired warning described.
 `terrain.graded` (the inferred civil pad) stays **off by default** — we hold the DC
 hardware drawing, not the civil grading plan.
 
+### 11. Terrain, proved in pixels — and the relief turns out to sit inside GLO-30's error bars
+
+§10 established the DEM is wired; this went looking for *visual* proof on the real stage.
+Target **BLOCK-02** (273 tables / 30,016 modules) — S05b's 679,616 panels would have made
+this a build-time story instead of a terrain one.
+
+**Nothing was broken. Every step checked out, and one of them checked out harder than
+expected:**
+
+| step | result |
+|---|---|
+| config ↔ docs agree | ✓ `terrain.path: assets/dem/khavda_block02.yaml`, layout `khavda_a10b_block02.yaml`, documented bake command names both |
+| coverage guard (§10) | ✓ passes for all 3 `kind: dem` configs |
+| **re-baked fresh from AWS GLO-30** | ✓ **byte-identical to the shipped patch** — same SHA-256 `71519bc92784f492`, max abs diff 0.0. The documented command reproduces the asset exactly |
+| ground mesh sampling | ✓ `farm_builder.py:670` calls `terrain_height()` **per vertex**, tessellated at `terrain_feature_step()` = **20.0 m**, the DEM's own post spacing |
+| panels | ✓ 30,016 modules, z **−0.478 … +0.623 m**, delta **1.1009 m**, 6,050 distinct values |
+
+**Read back out of the built USD, not inferred:** `/World/Ground` carries 3,710 verts
+spanning **1.9508 m** (1,728 distinct z, stdev 0.2894 m); over the hardware footprint alone
+it is **1.556 m**. Torque-tube fit residual, printed by the build: **0.461 m on T0130**.
+
+⚠ **The eye cannot see this, and any image suggesting otherwise is lying.** BLOCK-02 has
+2.2 m of relief over 1.1 × 1.4 km — **a 0.16% grade**. So the proof is an **A/B**, in the
+project's own bisect idiom: the same config rebuilt with `terrain.kind: flat` (same seed,
+same 30,016 modules, same cameras), and every pixel that differs differs *because of
+terrain*. `tools/terrain_proof.py` does this reproducibly and writes the numbers as JSON.
+
+⭐ **The control arm is what makes it non-vacuous:** the flat build measures **exactly
+0.0 m** across 380 verts, and the tool prints `VERDICT: FLAT`. A stage that is not sampling
+the DEM scores 0.0 by construction, so this cannot pass by accident. (It also drops the
+ground to 380 verts at **158 m** spacing against the DEM arm's 3,710 at **19.7 m** —
+`terrain_feature_step` returning 0 for `flat` is what re-coarsens the mesh.)
+
+**⭐ Result — `TERRAIN CHANGES THE RENDER`.** Same seed, same hardware, same cameras;
+fraction of pixels differing by more than 8/255 (past RTX dither):
+
+| shot | pixels changed | max \|Δ\| | mean \|Δ\| |
+|---|---|---|---|
+| `raking_north` | **24.52%** | 158 | 10.48 |
+| `aerial` | **23.69%** | 184 | 8.12 |
+| `raking_south` | 15.16% | 161 | 7.36 |
+| `raking_low_wide` | 8.67% | 179 | 3.43 |
+| `compressed_south` | 4.48% | 91 | 2.25 |
+| `compressed_north` | 3.89% | 128 | 1.77 |
+
+The amplified difference images are the artifact worth looking at: in `diff_aerial.png`
+**every tracker row lights up** — each table is fitted to its own patch of grade, so all 273
+sit at slightly different heights — over a **mottled ground whose pattern is the DEM's own
+shape**. Artifacts in `runs/terrain_block02/` (DEM arm, with `diff_*.png`) and
+`runs/terrain_block02_FLAT/` (control); both gitignored.
+
+⚠ Reproducing this is two Isaac launches, and **the second hung on startup for 27 minutes
+at 0% CPU** before I killed it — back-to-back `SimulationApp` starts contend. Re-run after
+the first has fully exited; the same command then finished in **44 s**.
+
+⚠⚠ **The unexpected finding, and it is a limit worth carrying: at this site the DEM's
+relief is comparable to its own noise floor.** Measured on the patch:
+
+| | |
+|---|---|
+| total relief | **2.173 m** (stdev 0.268 m) |
+| adjacent 20 m posts, mean \|Δ\| | **0.170 m** (p95 0.596 m) |
+| **lag-1 autocorrelation** | **x 0.454, y 0.496** — 1.0 would be smooth landform, 0.0 white noise |
+| GLO-30 published accuracy | **< 4 m LE90 absolute** |
+
+So the field is only about half-correlated post to post, and the whole 2.17 m of relief sits
+**inside the DEM's own stated vertical error**. That does not make it fake — it is really
+Copernicus data, really sampled, really rendered — but it means **the shape must not be
+treated as survey-grade micro-topography**, and a pile-height number derived from it
+(0.461 m on T0130) is an artefact of the DSM as much as of the ground. It is a further
+argument for `terrain.graded` staying **OFF** until a real civil survey exists, which is
+where it remains.
+
 ### Where this leaves things
 
 **Counts at end of session** (measured 2026-07-31, not remembered): Isaac-free
@@ -669,6 +742,10 @@ wired into `run.py` with "off" proven free (§9). The recall metrics ship with a
 
 **Still open — in the order the next session should take them:**
 
+0. **Terrain is DONE and proved (§11)** — `tools/terrain_proof.py` is the reproducible
+   check. What is NOT done is a **civil grading survey**: GLO-30's relief at Khavda sits
+   inside its own error bars, so `terrain.graded` stays off and any pile-height number off
+   this DSM is provisional.
 1. **The UV-wrap test (§4b).** One build: clamp `_planar_uvs` into `[0,1)` and re-run the
    same ground R−B check. ~+24 ⇒ it is the wrap mode. Free extra check in the same frame:
    road/concrete/equipment/structure/fence should be black too if the mechanism is right.
