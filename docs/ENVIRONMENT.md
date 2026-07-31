@@ -443,3 +443,97 @@ defaults to sim-native for simplicity, but the seam is proven.
 Note: sourcing system ROS 2 Jazzy before launch makes the bridge + `ros2` CLI
 share middleware. RViz2 image display still needs the deferred VTK/paraview fix;
 `ros2 topic echo/hz` is sufficient for verification.
+
+## Looks: what this build has for materials, lighting and CAD (verified 2026-07-31)
+
+Established while fixing the "it looks nothing like real" problem. Every line here
+was measured or listed on this box, not read from docs.
+
+### MDL materials — available, and by bare name
+
+The build ships **zero `.mdl` files** (`find / -name '*.mdl'` → none outside test
+fixtures) and configures no MDL search path in any `.kit`. That is why the project
+never moved off `UsdPreviewSurface`. But a render probe
+(`tools/material_probe.py`, `mdl_probe`) settled it:
+
+| binding | result |
+|---|---|
+| `OmniPBR.mdl` / `OmniGlass.mdl` by **bare name** | ✅ resolve and render — built into the RTX renderer, **no download, no network** |
+| library MDL over **https** (`.../Materials/Base/Metals/Aluminum_Anodized.mdl`) | ✅ resolves and renders (adds a network dependency at render time) |
+| `UsdPreviewSurface` | renders, but RTX only *translates* it — this is why the textured path's diffuse input was "ignored outright" |
+
+The contract is `SetSourceAsset(file, "mdl")` + `SetSourceAssetSubIdentifier(fn, "mdl")`
++ the material's **`mdl`** surface output. Get any one wrong and you get a silent
+default grey, indistinguishable from "the material is just flat".
+
+⚠ Honest scope: for rough dielectrics (sand, concrete, asphalt) MDL and
+`UsdPreviewSurface` render nearly identically — both are Lambert+GGX. The real wins
+are **glass** (measured 111 vs 67 on a sphere) and texture inputs that work.
+
+Asset root that resolves: `https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/`
+(`SimReady/ Environments/ Props/ Materials/ Robots/ People/ Sensors/ Samples/`).
+`Materials/vMaterials_2/` has Metal, Stone, Masonry, Paint, Plastic, Ceramic, Wood —
+**no ground/sand/gravel**, so the desert floor stays OmniPBR + our own maps.
+**There is no PV module, tracker or inverter asset in any NVIDIA library.**
+
+### Exposure — only the photographic triad works
+
+| key | effect |
+|---|---|
+| `/rtx/post/tonemap/fNumber`, `cameraShutter`, `filmIso` | ✅ strong |
+| `exposure/compensation`, `exposureKey`, `maxWhiteLuminance`, `whiteScale` | ❌ **inert** (<0.3/255 across their range) |
+
+The active tonemap `op` is **6**, which ignores the Reinhard parameters. Measured
+ground brightness on block02 at a 43° sun: f/5 → 195 (blown white), f/7 → 153,
+**f/9 → 118**, f/11 → 91, f/16 → 51.
+
+⚠⚠ **Apply these AFTER `open_stage`.** Set in `SimulationApp` construction they are
+accepted by carb and then reset when the renderer re-initialises for the new stage —
+measured as identical frame means (182.2 vs 182.3) with the tonemap "applied".
+
+### The sky is the remaining defect
+
+At the shipped `DomeLight` 300 / `DistantLight` 2400 the sky renders **0.16× the
+ground** — six times darker than the desert it supposedly lights, which is the dark
+brown band at the top of every render. Measured at f/9:
+
+| dome | sun | sky | ground | sky/ground |
+|---|---|---|---|---|
+| 300 | 2400 | 15.5 | 100.1 | **0.16** (shipped) |
+| 3000 | 2400 | 109.1 | 131.0 | 0.83 |
+| 6000 | 1200 | 156.8 | 135.8 | 1.15 (realistic) |
+
+Raising the dome fixes the sky and floods the ground with blue skylight, attacking
+the Session-10c warm-ground invariant. **Not tunable:** a `DomeLight`'s texture is
+both background and fill, and ours is an 8-bit LDR PNG where a real HDRI spans
+~1e3–1e5. The fix is an HDRI or NVIDIA's dynamic sky —
+`Assets/Skies/2022_1/Skies/Dynamic/ClearSky.usd` returns **HTTP 200**, and
+`omni.kit.environment.core-1.4.2` (with `sunstudy_player/`) plus
+`omni.usd.schema.physical_lighting-0.1.0` are **already installed**. ⚠ `SkyHelper`'s
+API is unverified against 6.0.1.
+
+### CAD → USD — installed and working
+
+`tools/cad_to_usd.py`, verified end to end on this box (STL → USD).
+
+    omni.kit.converter.cad 209.4.0    bundle
+    omni.kit.converter.hoops 510.3.0  step stp iges igs sldprt sldasm catpart
+                                      catproduct prt asm x_t x_b jt dwg dxf 3dm
+                                      ipt iam dgn obj stl glb gltf fbx
+    omni.kit.converter.dgn 510.1.5    MicroStation
+    omni.kit.converter.jt 509.1.2     Siemens JT
+    omni.kit.asset_converter 6.0.1    OBJ/STL/glTF/FBX
+    omni.importer.onshape 2.0.3
+    omni.kit.converter.gsplat 0.1.14  Gaussian splats (the NuRec path)
+
+API: enable `omni.kit.converter.{common,hoops_core,hoops}`, then
+`hoops_core.get_instance().create_converter_task(src, dst, config_path_to_args(json))`.
+
+⚠ **`.dwg`/`.dxf` is the important one** — the Khavda vendor drawing is already in
+that format (we currently parse it for coordinates and discard the geometry), and it
+is what PVcase and RatedPower export.
+
+⚠ A raw import is **not** SimReady. The STL test came back `metersPerUnit=0.001`
+against our metres/Z-up convention; expect to rescale, decimate and re-bind
+materials. The tool prints prim count, units and up-axis so those show up
+immediately rather than after the asset is instanced 30,016 times.
