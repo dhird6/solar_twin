@@ -198,10 +198,14 @@ def _textured_material(
         reader = UsdShade.Shader.Define(stage, path + "/ColorReader")
         reader.CreateIdAttr("UsdPrimvarReader_float3")
         reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+        # Create the output BEFORE connecting: `ConnectToSource(api, "result")` on a
+        # missing output creates it with the CONNECTING attribute's type, so this
+        # ordering typed it `color3f` where the working `_vertex_colour_material`
+        # gets `float3`. Not the black-ground cause, but wrong, and free to fix.
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
         shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
             reader.ConnectableAPI(), "result"
         )
-        reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
     else:
         _, rgb_out = _tex("albedo", Sdf.ValueTypeNames.Float3, "rgb")
         shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
@@ -221,6 +225,14 @@ def _textured_material(
         # Normal maps are non-colour data; letting the renderer sRGB-decode them
         # bends the normals.
         ntex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+        # ⚠⚠ A FAILED texture read returns `fallback` VERBATIM — the MDL skips
+        # scale/bias on that branch — so the default (0,0,0,1) decodes to a normal
+        # of (0,0,0), `normalize(0)` is degenerate, and the surface renders EXACTLY
+        # zero regardless of what feeds diffuseColor. That is the signature we
+        # measured: the black ground is 97% exactly (0,0,0), not merely dark.
+        # (0,0,1,1) is UsdPreviewSurface's own "no normal map" sentinel, so a failed
+        # read now falls back to the geometric normal instead of killing the BSDF.
+        ntex.CreateInput("fallback", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 1, 1))
         shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(n_out)
 
     rtex = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/RoughnessTex"))
@@ -1408,7 +1420,10 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # measurement puts the ground back above R-B +20.
     pbr_paths = {}
     if (farm_cfg.get("pbr", {}) or {}).get("enabled", False):
-        tex_dir = Path(out).parent / f"tex_{Path(out).stem}"
+        # Absolute: a bare `assets/...` is a SEARCH path to ArDefaultResolver, which
+        # falls back to the process CWD — so it resolves from the repo root and
+        # nowhere else, and Kit's MDL texture loader does not take that fallback.
+        tex_dir = Path(out).resolve().parent / f"tex_{Path(out).stem}"
         pbr_paths = tex.write_all(
             str(tex_dir),
             size=int((farm_cfg.get("pbr", {}) or {}).get("size", tex.DEFAULT_SIZE)),
@@ -1444,11 +1459,15 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # maps. Its displayColor carries the three-octave grading variation AND the
     # aerial-perspective fade into the horizon haze; a flat albedo texture would
     # discard both and bring back the hard mesh rim with void beyond it (10c).
+    # ⚠⚠ This used to CALL `_textured_material` again, at the same prim path the
+    # loop above already authored — so the second definition silently overwrote the
+    # first, always with `diffuse_from_primvar=True` and the normal map on,
+    # regardless of `--pbr mode`. Every arm of the black-ground bisect therefore
+    # rendered the SAME ground network, which is why `albedo` and `primvar` came out
+    # identical: that was not evidence about the diffuse input, it was one material
+    # measured twice. Take the loop's material instead, so `mode` actually applies.
     ground_mat = (
-        _textured_material(
-            stage, "/World/Looks/ground_pbr", "ground", pbr_paths["ground"],
-            metallic=_LOOKS["ground"][3], diffuse_from_primvar=True,
-        )
+        looks["ground"]
         if "ground" in pbr_paths
         else _vertex_colour_material(
             stage, "/World/Looks/ground_vc", 1.0, emissive=False
