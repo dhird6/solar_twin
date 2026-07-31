@@ -340,3 +340,135 @@ def test_khavda_bladeshadow_scenario_really_has_a_stimulus():
     # Dwell is the half that stops us overstating it: a shadow that covers panels
     # but never lingers is not a hazard perception can be scored against.
     assert rep.max_duty > 0.05, f"max blade dwell {rep.max_duty:.4f} is too brief to score"
+
+
+# --------------------------------------------------------------------------- #
+# Penumbra — why the blade shadow was retired as a stimulus
+# --------------------------------------------------------------------------- #
+
+
+def test_penumbra_grows_with_distance():
+    from solar_twin.world.bladeshadow import penumbra_width_m
+
+    assert penumbra_width_m(100.0) == pytest.approx(0.925, abs=0.01)
+    assert penumbra_width_m(780.0) == pytest.approx(7.22, abs=0.05)
+    assert penumbra_width_m(0.0) == 0.0
+
+
+def test_a_distant_blade_cannot_cast_full_shadow():
+    """⭐ The geometric result that retired `SC-14`'s blade stimulus, pinned so nobody
+    re-authors the scenario expecting a hard shadow.
+
+    Measured 2026-07-31: the swept-disc model claimed 22.9% panel coverage and
+    `tools/verify_blade_sweep.py` found a 4.9% dip on the most-covered panel against
+    7.1% on a clear control. This is why — at Khavda's 780 m throw a 4 m blade has a
+    7.2 m penumbra, so it never fully occludes the sun.
+    """
+    from solar_twin.world.bladeshadow import casts_umbra, max_umbra_distance_m
+
+    assert not casts_umbra(4.0, 780.0)   # the SC-14 geometry: no umbra, hence no signal
+    assert casts_umbra(4.0, 100.0)       # the same blade close in does cast one
+    # The ceiling for a 4 m blade is ~432 m; Khavda's nearest real turbine is 546 m.
+    assert max_umbra_distance_m(4.0) == pytest.approx(432.0, abs=2.0)
+    assert max_umbra_distance_m(4.0) < 546.2
+
+
+def test_a_tower_is_wide_enough_to_cast_umbra_where_a_blade_is_not():
+    """The asymmetry that makes the tower shadow the usable stimulus: same distance,
+    same sun, but a 5 m tower beats its penumbra over a longer reach than a 4 m blade
+    — and unlike the blade it is in the frame continuously."""
+    from solar_twin.world.bladeshadow import max_umbra_distance_m
+
+    assert max_umbra_distance_m(5.0) > max_umbra_distance_m(4.0)
+
+
+# --------------------------------------------------------------------------- #
+# The tower's shadow — the mechanism the pixels actually found
+# --------------------------------------------------------------------------- #
+
+
+def test_tower_shadow_runs_from_the_base_to_the_hub_shadow():
+    """The band is the tower's own shadow, so it starts at the tower foot and ends
+    exactly where the hub's shadow lands — the same point the swept disc is centred
+    on. If these two disagreed, one of them computes the wrong reach."""
+    from solar_twin.world.bladeshadow import TowerShadow
+
+    tower = TowerShadow.from_turbine(TURBINE, elevation_deg=45.0, azimuth_deg=90.0, target_z=0.0)
+    disc = _shadow()
+    assert (tower.base_x, tower.base_y) == pytest.approx((0.0, 0.0), abs=1e-9)
+    assert tower.tip_x == pytest.approx(disc.center_x)
+    assert tower.tip_y == pytest.approx(disc.center_y)
+    assert tower.length_m == pytest.approx(100.0)
+
+
+def test_tower_shadow_is_narrow_and_covers_only_near_its_axis():
+    from solar_twin.world.bladeshadow import TowerShadow
+
+    tower = TowerShadow.from_turbine(
+        {**TURBINE, "tower_diameter": 5.0},
+        elevation_deg=45.0, azimuth_deg=90.0, target_z=0.0,
+    )
+    assert tower.covers(-50.0, 0.0)       # mid-band, on the axis
+    assert tower.distance_to_axis(-50.0, 0.0) == pytest.approx(0.0, abs=1e-9)
+    assert tower.covers(-50.0, 2.4)       # inside the 2.5 m half-width
+    assert not tower.covers(-50.0, 2.6)   # outside it
+    assert tower.distance_to_axis(-50.0, 3.0) == pytest.approx(3.0)
+
+
+def test_tower_shadow_ends_rather_than_running_forever():
+    """Past the hub's shadow nothing is casting, so the band stops. A model that ran on
+    would claim a stimulus on panels beyond the shadow's tip."""
+    from solar_twin.world.bladeshadow import TowerShadow
+
+    tower = TowerShadow.from_turbine(TURBINE, elevation_deg=45.0, azimuth_deg=90.0, target_z=0.0)
+    assert tower.distance_to_axis(-99.0, 0.0) is not None   # inside the band
+    assert tower.distance_to_axis(-101.0, 0.0) is None      # past the tip
+    assert tower.distance_to_axis(10.0, 0.0) is None        # behind the base
+
+
+def test_the_measured_dark_tables_lie_on_the_scenario_tower_shadow():
+    """⭐ The measurement, pinned. `tools/verify_shade.py` on the SC-14 stage found
+    exactly three tables darker than the other 270 (glass mean 11.9/12.2/12.6 vs a
+    13.4 median; dark fraction 51/41/42% vs 24%), and their darkness ranked by
+    distance from the TOWER shadow's axis — 0.6 m, 1.6 m, 2.5 m — not by blade dwell.
+
+    This is the only pixel-verified stimulus on this stage. The test would catch
+    someone moving the sun or the turbine and quietly invalidating it.
+    """
+    import pathlib
+
+    from solar_twin.scenario import load_scenario
+    from solar_twin.world.bladeshadow import TowerShadow
+    from solar_twin.world.layout import FarmLayout
+    from solar_twin.world.siting import resolve_turbines
+    from solar_twin.world.solar import parse_timestamp, solar_position
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    cfg = load_scenario(str(root / "configs" / "scenarios" / "khavda_bladeshadow.yaml")).farm_cfg
+    layout = FarmLayout(cfg)
+    turbine = resolve_turbines(cfg, None)[0]
+    elev, azim = solar_position(
+        layout.anchor.lat0, layout.anchor.lon0, parse_timestamp(cfg["sun"]["timestamp"])
+    )
+    tower = TowerShadow.from_turbine(
+        turbine,
+        elevation_deg=elev,
+        azimuth_deg=azim,
+        target_z=float(cfg["panel"]["mount_height"]),
+    )
+
+    expected = {53: 0.6, 62: 1.6, 52: 2.5}  # row -> measured distance from the axis
+    found = {}
+    for site in layout.sites:
+        if site.col == 50 and site.row in expected:
+            found[site.row] = tower.distance_to_axis(
+                float(site.position[0]), float(site.position[1])
+            )
+    assert set(found) == set(expected), f"the measured tables are gone from the layout: {found}"
+    for row, want in expected.items():
+        got = found[row]
+        assert got is not None, f"R{row} is no longer under the tower shadow band"
+        assert got == pytest.approx(want, abs=0.5), (
+            f"R{row} is now {got:.1f} m from the tower shadow axis, was {want} m when "
+            "the darkening was measured — the pixel-verified stimulus has moved"
+        )

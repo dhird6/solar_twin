@@ -269,6 +269,39 @@ revolution and its expected number of shadowed observations is under one — so 
 passing gate there measures nothing. Both scenarios state this in their headers and
 gate one-sidedly: a breach is evidence, a pass is not.
 
+### ⚠ Measured 2026-07-31: geometry was necessary and not sufficient
+
+`SC-14` was then verified **in pixels**, and the blade shadow failed. One panel
+watched over a full rotor revolution (`tools/verify_blade_sweep.py`, PV-glass
+pixels) dipped 4.9% at a predicted blade duty of 1.00, against 7.1% on a
+geometrically-clear control — the control varied *more* than the target.
+
+The cause is geometric and permanent. The sun is an extended source (0.53°, and
+`farm_builder` authors `/World/Sun` with `CreateAngleAttr(0.53)`, so the renderer
+models it), smearing every shadow edge by `distance × tan(0.53°)`. At this turbine's
+780 m throw that is **7.2 m, wider than the 4 m blade** — and a caster narrower than
+its own penumbra never fully occludes the disc, so no umbra exists to find.
+`bladeshadow.max_umbra_distance_m` puts the ceiling at ~432 m for a 4 m blade;
+Khavda's nearest **real, surveyed** turbine stands at 546 m. **No real turbine at
+this site can cast a hard blade shadow on the modules**, so `SC-05`'s idea is not
+recoverable here by choosing a better sun or a nearer machine.
+
+What the same measurement *did* find is the **tower** shadow. Across all 273 tables
+exactly three were markedly darker than the other 270 — glass mean 11.9/12.2/12.6
+against a 13.4 median, dark-pixel fraction 51/41/42% against 24% — and their
+darkness ranked by distance from the tower's shadow axis (0.6/1.6/2.5 m), not by
+blade dwell. A 5 m tower beats its penumbra where a 4 m blade does not, and unlike
+the blade it is in frame **continuously**, which also dissolves the run-sizing
+lottery above. `bladeshadow.TowerShadow` models it and `tests/test_bladeshadow.py`
+pins the measured distances, so moving the sun or the turbine now fails a test.
+
+Consequences for the suite: `SC-14`/`SC-15` remain the *tower*-shadow scenarios (a
+narrow stimulus on ~3 tables, always present) and are no longer blade-shadow
+scenarios. `SC-11`/`SC-12` (tracker self-shading) stay the widest verified stimulus
+and the first choice for `KPI-03`. `SC-06`/`SC-09`, which compose on `SC-05`'s
+sweeping blade shadow, inherit this refutation and need re-scoping before they are
+built.
+
 ## Gating discipline
 
 - Every scenario config declares its own `kpi_gates` block (see `IF-03`

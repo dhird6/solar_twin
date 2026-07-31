@@ -788,6 +788,29 @@ def run(
         except Exception as exc:  # noqa: BLE001 — video is a nice-to-have
             print(f"[warn] video write failed: {exc}", flush=True)
 
+    # ---- optionally stay open so the plant can be inspected by hand ------ #
+    # Deliberately after every artefact is written and before `close()`: the run
+    # record must not depend on how long someone flies around, and `close()` may
+    # terminate the process outright.
+    if sim_opts.get("hold"):
+        runtime = getattr(transport, "runtime", None)
+        if runtime is not None and hasattr(runtime, "hold"):
+            if sim_opts.get("headless") and not sim_opts.get("livestream"):
+                print(
+                    "  [warn] --hold does nothing headless: there is no window to hold "
+                    "open and no stream to watch. Pair it with --gui (a window on this "
+                    "machine's display) or --livestream (WebRTC).",
+                    flush=True,
+                )
+            else:
+                runtime.hold()
+        else:
+            print(
+                "  [warn] --hold needs the sim_native backend (this one has no "
+                "runtime to hold open).",
+                flush=True,
+            )
+
     # Close the sim LAST (may terminate the process).
     if hasattr(transport, "close"):
         transport.close()
@@ -835,6 +858,14 @@ def main(argv: list[str] | None = None) -> int:
         help="sim_native: run headless but stream the Isaac Sim UI over WebRTC, so "
         "you can watch from another machine — connect the Isaac Sim WebRTC "
         "Streaming Client to this host (signal 49100 / stream 47998).",
+    )
+    ap.add_argument(
+        "--hold",
+        action="store_true",
+        help="sim_native + --gui/--livestream: when the mission ends, DON'T close — "
+        "hand the camera back and keep the stage open so you can fly around the "
+        "plant with the fleet parked and the verdicts already on the prims. "
+        "Turbines keep turning, so the blade shadow keeps sweeping.",
     )
     ap.add_argument(
         "--live",
@@ -925,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
         "headless": not args.gui,
         "livestream": args.livestream,
         "live": args.live,
+        "hold": args.hold,
         "resolution": (args.width, args.height),
         "save_usd": args.save_usd,
         "record": args.record,

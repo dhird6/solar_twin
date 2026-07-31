@@ -1,5 +1,44 @@
 # khavda_bladeshadow — KPI-03 (false-fault rate, HAZ-07) from a REAL turbine's
-# blade shadow, on the real block, with the stimulus located before it is measured.
+# shadow on the real block, with the stimulus located before it is measured.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚠⚠ MEASURED 2026-07-31: THE BLADE SHADOW IS NOT A USABLE STIMULUS HERE.
+# THE TOWER SHADOW IS. Read this before quoting anything from this scenario.
+#
+# The geometry below is correct and was verified twice, and the second check
+# refuted the first's usefulness. In pixels (`tools/verify_blade_sweep.py`,
+# one panel over a full rotor revolution, PV-glass pixels only):
+#
+#     target  R131-C016 (predicted blade duty 1.00)  median 12.60  dip 4.9%
+#     control R00-C000  (geometrically clear)        median 13.62  dip 7.1%
+#
+# The control varied MORE than the target. There is no blade signal at all.
+#
+# **Why, and why it is permanent:** the sun is an extended source (0.53 deg —
+# `farm_builder` authors `/World/Sun` with `CreateAngleAttr(0.53)`, so the renderer
+# models this), which smears every shadow edge by `distance * tan(0.53 deg)`. At
+# this turbine's 780 m shadow throw that is **7.2 m — wider than the 4 m blade**.
+# A caster narrower than its own penumbra never fully occludes the sun, so there
+# is no umbra to find. The ceiling is ~432 m for a 4 m blade
+# (`bladeshadow.max_umbra_distance_m`) and the nearest REAL turbine on this site
+# stands at 546 m. **No real turbine at Khavda can cast a hard blade shadow on
+# these panels.** This is arithmetic, not a tuning problem — `SC-05`'s idea cannot
+# be rescued at this site by choosing a better sun or a better turbine.
+#
+# **What the pixels DID find.** `tools/verify_shade.py` over all 273 tables showed
+# exactly three markedly darker than the other 270 — glass mean 11.9 / 12.2 / 12.6
+# against a 13.4 median, dark-pixel fraction 51% / 41% / 42% against 24% — and
+# their darkness ranked by distance from the **TOWER's** shadow axis (0.6 m,
+# 1.6 m, 2.5 m), not by blade dwell. A 5 m tower beats its penumbra where a 4 m
+# blade does not, and unlike the blade it is in frame **continuously**, which also
+# retires the run-sizing lottery below. `bladeshadow.TowerShadow` models it and
+# `tests/test_bladeshadow.py` pins the measurement.
+#
+# So: this stage has a real, verified, on-glass shading stimulus on ~3 tables. It
+# is NOT the one the scenario was written to produce. Quote it as a tower shadow.
+# The blade-dwell arithmetic further down is retained because it is correct and it
+# is the reason the blade was ruled out — not because it describes a stimulus.
+# ═══════════════════════════════════════════════════════════════════════════════
 #
 # ## Why this scenario exists when SC-05 already claimed to do this
 #
@@ -134,11 +173,17 @@ farm_overrides:
   turbines_articulated: false
 
 kpi_gates:
-  # ⚠ Read these as one-sided. A **breach** is real evidence: a blade shadow that is
-  # verifiably on the glass got logged as a fault. A **pass** is NOT evidence until
-  # the run is sized per the arithmetic in the header — with 24 panels the expected
-  # number of shadowed observations is under one, and a gate cannot be cleared by a
-  # hazard that never arrived. That is the SC-05 failure restated as a gate.
+  # ⚠ Read these as one-sided, and read the MEASURED banner at the top first. A
+  # **breach** is real evidence: a shadow verifiably on the glass got logged as a
+  # fault. A **pass** is NOT evidence unless the run actually visited the ~3 tables
+  # on the tower-shadow axis (R52/R53/R62 at col 50) — the blade shadow it was
+  # written for does not exist in pixels, so a sweep of the other 270 tables is a
+  # run with no stimulus in it, which is the SC-05 failure restated as a gate.
+  #
+  # ⭐ Target the verified stimulus explicitly rather than hoping a sweep reaches it:
+  #   --subset covers the first N tables in layout order, which is NOT where these
+  #   three sit. Until a scenario-level panel filter exists, run the whole block or
+  #   check the run record's panel list contains R52/R53/R62.
   false_fault_rate_max: 0.05
   false_alarm_rate_max: 0.05
   # Zero on purpose: a lost verdict is a plumbing bug, not a budget to spend.

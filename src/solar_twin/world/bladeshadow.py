@@ -71,6 +71,50 @@ DEFAULT_BLADE_COUNT = 3
 #: (the confound `khavda_selfshade.yaml` documents at 01:30Z).
 MIN_USABLE_ELEVATION_DEG = 3.0
 
+#: The sun's angular diameter, degrees. Not a modelling choice: `farm_builder`
+#: authors `/World/Sun` with `CreateAngleAttr(0.53)`, so this is the figure the
+#: renderer actually uses and the penumbra below is physically rendered, not
+#: theoretical.
+SUN_ANGULAR_DIAMETER_DEG = 0.53
+
+
+def penumbra_width_m(shadow_distance_m: float) -> float:
+    """Width of the soft edge on a shadow cast from this far away, in metres.
+
+    The sun is an extended source, so every shadow edge is smeared by
+    `distance * tan(angular diameter)`. At Khavda's 780 m blade-shadow throw that is
+    7.2 m — wider than a blade.
+    """
+    return abs(shadow_distance_m) * math.tan(math.radians(SUN_ANGULAR_DIAMETER_DEG))
+
+
+def casts_umbra(caster_width_m: float, shadow_distance_m: float) -> bool:
+    """Can a caster this wide, this far away, produce **full** shadow anywhere?
+
+    Only if it is wider than its own penumbra. Below that it never fully occludes
+    the solar disc — it dims it partially, over a smear wider than the object.
+
+    ⚠ **This is the result that retired the blade shadow as a `KPI-03` stimulus, and
+    it is geometric, not a tuning problem.** Measured 2026-07-31 on the `SC-14` stage:
+    the swept-disc model said 22.9% of panels were covered and
+    `tools/verify_blade_sweep.py` found no signal in the pixels — a 4.9% brightness
+    dip on the most-covered panel against 7.1% on a geometrically-clear control, i.e.
+    the control varied *more* than the target. The reason is here: a 4 m blade chord
+    at a 780 m throw has a 7.2 m penumbra, so `casts_umbra(4.0, 780.0)` is False and
+    there is no full shadow to find. `max_umbra_distance_m` gives the ceiling — about
+    432 m for a 4 m blade, and Khavda's nearest real turbine stands at 546 m.
+
+    Two honest consequences: a far turbine's blade shadow can never be a hard-edged
+    stimulus at this site, and `duty_fraction` describes *geometric* coverage only —
+    never assume it predicts a visible shadow.
+    """
+    return caster_width_m > penumbra_width_m(shadow_distance_m)
+
+
+def max_umbra_distance_m(caster_width_m: float) -> float:
+    """Furthest a caster this wide can be and still cast full shadow, in metres."""
+    return caster_width_m / math.tan(math.radians(SUN_ANGULAR_DIAMETER_DEG))
+
 
 def shadow_direction(azimuth_deg: float) -> tuple[float, float]:
     """Horizontal unit vector a shadow TRAVELS along, for a sun at `azimuth_deg`.
@@ -265,6 +309,101 @@ class SweptShadow:
                     hits += 1
                     break
         return hits / samples
+
+
+# --------------------------------------------------------------------------- #
+# The tower's own shadow — narrower, but always there
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class TowerShadow:
+    """The shadow of the tower itself: a band from the base to the hub's shadow.
+
+    **Added 2026-07-31 because the pixels found it and this module had not modelled
+    it.** `tools/verify_shade.py` on the `SC-14` stage showed three tables markedly
+    darker than the other 270 — glass mean 11.9/12.2/12.6 against a 13.4 median, dark
+    fraction 51%/41%/42% against 24% — and their darkness ranked by *distance from
+    the tower's shadow centre line* (0.6 m, 1.6 m, 2.5 m), not by blade dwell. The
+    swept-disc model predicted those panels were covered, which was true, but it
+    could not have predicted which of them would actually be dark.
+
+    Why it matters more than it sounds: this shadow is **continuous**. A blade sweeps
+    past a panel for ~7% of a revolution, which is what forces `SC-14`'s awkward
+    run-sizing arithmetic (4.6 deg of rotor per panel, 78 panels to a revolution, a
+    24-panel run being a phase lottery). A tower shadow is on the same panels in
+    *every* frame, so a run of any length measures it. For `KPI-03` that is the
+    better stimulus, and it is the one the site's real geometry actually delivers.
+
+    ⚠ Narrow, though: a utility tower is ~4-6 m across at the base, so this shades a
+    handful of tables, not a fifth of the array. Extent and dwell trade off against
+    each other and neither model alone tells you what a run will see.
+    """
+
+    #: Shadow of the tower base (i.e. the tower foot itself).
+    base_x: float
+    base_y: float
+    #: Where the hub's shadow lands — the far end of the band.
+    tip_x: float
+    tip_y: float
+    half_width_m: float
+
+    @classmethod
+    def from_turbine(
+        cls,
+        spec: dict,
+        *,
+        elevation_deg: float,
+        azimuth_deg: float,
+        target_z: float,
+        tower_z: float = 0.0,
+    ) -> "TowerShadow":
+        """`tower_diameter` is read from the spec if present, else INFERRED as 5.0 m —
+        typical for a 120 m utility tower, and the figure the vendor digest does not
+        carry (see `world/plot_digest.py`).
+
+        No `wind_dir_deg`: a tower is a vertical cylinder, so unlike the rotor its
+        shadow does not depend on which way the machine is yawed.
+        """
+        pos = spec["pos"]
+        hub_height = float(spec.get("hub_height", 18.0))
+        diameter = float(spec.get("tower_diameter", 5.0))
+        offset = shadow_offset_m((tower_z + hub_height) - target_z, elevation_deg)
+        sdx, sdy = shadow_direction(azimuth_deg)
+        return cls(
+            base_x=float(pos[0]),
+            base_y=float(pos[1]),
+            tip_x=float(pos[0]) + offset * sdx,
+            tip_y=float(pos[1]) + offset * sdy,
+            half_width_m=diameter / 2.0,
+        )
+
+    @property
+    def length_m(self) -> float:
+        return math.hypot(self.tip_x - self.base_x, self.tip_y - self.base_y)
+
+    def distance_to_axis(self, x: float, y: float) -> float | None:
+        """Perpendicular distance to the shadow's centre line, or None if the point is
+        off either end of the band.
+
+        Exported rather than kept private because it is the field that *explained the
+        measurement*: darkness fell off monotonically with this number, which is what
+        identified the mechanism. A verification tool wants to report it.
+        """
+        ax, ay = self.tip_x - self.base_x, self.tip_y - self.base_y
+        length = math.hypot(ax, ay)
+        if length < 1e-9:
+            return None
+        ax, ay = ax / length, ay / length
+        px, py = x - self.base_x, y - self.base_y
+        along = px * ax + py * ay
+        if along < 0.0 or along > length:
+            return None
+        return abs(-px * ay + py * ax)
+
+    def covers(self, x: float, y: float) -> bool:
+        d = self.distance_to_axis(x, y)
+        return d is not None and d <= self.half_width_m
 
 
 # --------------------------------------------------------------------------- #

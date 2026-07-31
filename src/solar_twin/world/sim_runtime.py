@@ -431,6 +431,74 @@ class SimRuntime:
             print(f"  [warn] could not set viewport camera: {exc}", flush=True)
             return False
 
+    #: Kit's built-in perspective camera — the one the viewport's own navigation
+    #: (mouse orbit, WASD) drives. **Verified against this 6.0.1 build**, not
+    #: remembered: `isaacsim.core.utils.viewports.set_camera_view` defaults its
+    #: `camera_prim_path` to exactly this, and `stage.py` prints the prim at that
+    #: path. Kit also authors `/OmniverseKit_Top|Front|Right` alongside it.
+    _KIT_PERSP_CAMERA = "/OmniverseKit_Persp"
+
+    def hold(self, *, free_camera: bool = True, spin_turbines: bool = True) -> None:
+        """Keep the app alive and interactive until the window is closed.
+
+        Why this exists: `run.py` closed the app the moment the mission ended, so the
+        only way to look at the built plant was to watch a run go past. Everything the
+        twin knows — the real terrain, the tables where they really stand, the turbine,
+        and now the verdicts written onto `pv:state` — was unreachable a second after
+        it finished being true.
+
+        Two things have to happen for "roam around and inspect" to actually work, and
+        neither is the loop:
+
+        * **Hand the camera back.** A watched run points the viewport at
+          `/World/Overview` and `chase()` rewrites that camera's transform every step,
+          so mouse navigation is overwritten on the next frame — the viewport looks
+          frozen and fighting it feels broken. `free_camera` switches to Kit's own
+          perspective camera, which nothing in this project drives.
+        * **Keep pumping the app.** `app.update()` is what draws frames and services
+          input; without it the window is a dead surface the compositor marks "not
+          responding" (the same reason `pump()` exists for blocking VLM calls).
+
+        `spin_turbines` leaves the rotors turning so the blade shadow keeps sweeping
+        while you fly — the point of `SC-14`, and the one thing a static USD open in
+        the editor cannot show you. Drone rotors are deliberately left still: the
+        fleet is parked, and `_spin_rotors` is cosmetic anyway (`NFR-07`).
+
+        ⚠ Advancing the world here is safe *because nothing is being measured*: the
+        run record and every verdict are already written by the time this is called.
+        Do not call it before a measurement.
+        """
+        if free_camera:
+            cam = self._stage.GetPrimAtPath(self._KIT_PERSP_CAMERA)
+            if cam and cam.IsValid():
+                if self.set_viewport_camera(self._KIT_PERSP_CAMERA):
+                    print(
+                        f"  viewport handed to {self._KIT_PERSP_CAMERA} — the camera is "
+                        "yours; orbit/WASD to fly the plant",
+                        flush=True,
+                    )
+            else:
+                # Say so rather than silently leaving the chase camera bound, which
+                # would look like the navigation is broken.
+                print(
+                    f"  [warn] no camera at {self._KIT_PERSP_CAMERA} on this stage; the "
+                    "viewport is still on the chase camera and will fight your mouse. "
+                    "Switch it by hand in the viewport's camera menu.",
+                    flush=True,
+                )
+        print(
+            "  holding the stage open — close the Isaac Sim window (or Ctrl-C here) "
+            "to exit.",
+            flush=True,
+        )
+        try:
+            while self._app.is_running():
+                if spin_turbines:
+                    self._spin_turbines()
+                self._app.update()
+        except KeyboardInterrupt:
+            print("\n  interrupted — closing.", flush=True)
+
     def export(self, path: str) -> None:
         """Save the current (post-run) stage — panels now hold verdicts."""
         self._stage.Export(path)
