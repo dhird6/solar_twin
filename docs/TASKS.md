@@ -56,8 +56,12 @@ branch, **71 commits**, and its test count went **74 → 396**. Merged only afte
 Work now happens on **`ID-3-Testing-and-new-features-addin`**, cut from the merged
 `main` (hyphens not spaces — a branch name with spaces needs quoting in every
 command and breaks CI matrices; matches `ID-2-Layout-Integration`'s convention).
-**696 Isaac-free tests** collected off-Isaac — 9 more need `pxr` and do not collect
-without it, and `tests/test_docs_fresh.py` **enforces this number** so it cannot rot
+**696 Isaac-free tests** collected off-Isaac — **42 more** run only under
+Isaac Sim's own Python (`pytest.importorskip("pxr")` across 5 modules), and are
+therefore SKIPPED by both system `python3` and the Isaac-free CI job. Measured
+2026-07-31: Isaac-free 695 passed / 6 skipped, under Isaac **737 passed / 3
+skipped**. ⚠ One of those 42 had been failing unnoticed because that run had
+never happened, and `tests/test_docs_fresh.py` **enforces this number** so it cannot rot
 a fourth time. CI (`.github/workflows/ci.yml`) gates every push. The twin
 runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, and KPI-03 now has **two
