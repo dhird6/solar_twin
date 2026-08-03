@@ -7,16 +7,61 @@ numbers, from a reproducible config — never a GUI demo (`FR-17`, `NFR-02`).
 
 | ID | Name | Formula | Gated by | Source today |
 |---|---|---|---|---|
-| `KPI-01` | Detection rate | fraction of panels where `detected_state == injected_state` | Every slice ≥ `SLICE-0` | **Already implemented**: `MissionResult.detection_rate` in `orchestrator/mission.py` |
+| `KPI-01` | Detection rate | fraction of panels where `detected_state == injected_state` | Every slice ≥ `SLICE-0` | **Already implemented**: `MissionResult.detection_rate` in `orchestrator/mission.py`. ⚠⚠ **This is ACCURACY over EVERY panel, healthy included — see the null-baseline warning below. Never gate on it alone.** |
+| `KPI-01a` | Fault recall | of **faulted** panels only, fraction where `detected_state == injected_state` | should gate wherever `KPI-01` does | `MissionResult.fault_recall` (2026-07-31). Healthy panels cannot inflate it |
+| `KPI-01b` | Fault flag rate | of **faulted** panels only, fraction where `detected_state != healthy` (noticed at all, whatever the label) | report beside `KPI-01a` | `MissionResult.fault_flagged_rate`. The gap between `01b` and `01a` is pure taxonomy confusion |
+| `KPI-01n` | Null baseline | the healthy fraction of the scenario — what `KPI-01` scores by calling everything healthy | quote beside any `KPI-01` gate | `MissionResult.healthy_fraction`. A `KPI-01` at or below this is worth nothing |
 | `KPI-02` | Coverage % | panels inspected / panels in scope, within the mission time budget | `SLICE-7` (fleet) | New — count from `MissionResult.panels_inspected` vs. `farm.yaml` grid size |
 | `KPI-03` | False-fault rate | fraction of **healthy** panels whose `detected_state != healthy` under an adversarial (shadow/blur/dust) scenario | `SLICE-3` (the central thesis metric — see `HAZ-07`) | New — filter `MissionResult.results` where `injected_state == healthy` and `not correct`. **Baseline harness demonstrated 2026-07-24**: live Cosmos Reason over a healthy panel under sweeping turbine-blade shadows returned 0/6 false faults (moderate shadow, not worst-case) — the `SC-05` harness starting point |
 | `KPI-04` | Collision-free-flight rate | fraction of scenario runs with zero collisions and zero keep-out-volume intrusions | `SLICE-2` | **Partial** — keep-out intrusions already captured in the run-record `keepout` block (`waypoints_clamped`, `min_clearance_m`) via `SafeControl` (`IF-07`); physics-contact events pending the articulation/Pegasus work |
-| `KPI-05` | Station-keep error | max/mean deviation (meters) from the commanded hold pose during a screen/confirm pass under wind/wake | `SLICE-2` | New — from `Transport.pose()` samples during the hold window |
+| `KPI-05` | Station-keep error | max/mean deviation (meters) from the commanded hold pose during a screen/confirm pass under wind/wake | `SLICE-2` | **First measurement under wind, 2026-07-29** (`SC-13` `khavda_windy_hover`, PX4-governed Iris, `tools/px4_hover.py --wind-scenario`): **calm air 43 mm** altitude hold over 35 s vs **~724 mm (2.13-2.86 m) at 12 m/s with 35% gusts**, roll/pitch working +36/-36 deg against ±0.5 deg calm. It stays airborne but **never satisfies the settled criterion** (\|vz\| < 0.05), i.e. at this wind the drone holds altitude but does not station-keep — a ~17x degradation, honestly reported rather than gated away. ⚠ Compute from Isaac ground truth, never PX4's estimate (~0.23 m apart, `RISK-29`). ⚠ Wind is applied only once airborne: 15 N exceeds the frame's 14.7 N weight and tumbled a *parked* drone inverted |
 | `KPI-06` | Battery/time-window adherence | fraction of missions completed without breaching the declared battery reserve floor or daylight/time window | `SLICE-7` | New — requires `IF-01` (`EnergyAware`) |
 | `KPI-07` | Terrain traversal pass/fail | ground bot completes the ramp testbed at the declared max grade without loss of contact/stall | `SLICE-2`/`SLICE-6` | New — pass/fail per grade angle |
 | `KPI-08` | Generated-frame validity rate | fraction of Cosmos Transfer/Predict output frames that pass the Evaluator filter | `SLICE-4` | New — from the Data Factory Blueprint's Evaluator stage (`NFR-08`) |
 | `KPI-03a` | False-alarm rate | fraction of **healthy** panels given a *specific wrong diagnosis* — `detected_state` is neither `healthy` nor `unknown` | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.false_alarm_rate` |
-| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count) |
+| `KPI-03b` | Abstention rate | fraction of **all** inspected panels with `detected_state == unknown` — no usable verdict | `SLICE-3`, alongside `KPI-03` | **Implemented**: `MissionResult.abstention_rate` (+ `abstentions` count). Earned its keep twice: it separated a VLM parse bug from a real false alarm, and it distinguished "vLLM server down" (10/10 abstentions, `false_fault_rate` 1.000) from a model collapse |
+| `KPI-03c` | False-alarm attributable share | fraction of a run's false alarms whose **neighbouring** panel was seeded faulty — an upper bound on how much of `KPI-03` is the panel next door | `SLICE-3`, alongside `KPI-03` | **Implemented**: `kpi/confound.py`, written to every run record's `confound` block. Measured 1.00 on `SC-01` — see the caveat below |
+
+| `KPI-09` | Suspicion retired per unit travel | Σ of the **simulated** prior fault-probability of every cell inspected, ÷ fleet route distance (m). What a suspicion-first dispatcher is trying to maximise | `SLICE-4b` | New — `kpi/dispatch.py`; **must** be reported against a same-seed ranker-OFF baseline arm or it means nothing |
+| `KPI-09a` | Confirmed faults per unit travel | count of panels whose `detected_state != healthy` ÷ fleet route distance (m) — the *actual yield*, not the predicted yield | `SLICE-4b`, alongside `KPI-09` | New — same module. This is the honest half: `KPI-09` can be maximised by chasing a wrong prior |
+
+### `KPI-09` — defined BEFORE the ranker, on purpose
+
+The research doc (`DIGITAL_TWIN_VISION_AND_RESEARCH.md`, "Grid-Level Fault
+Localization & Staged Dispatch") warns explicitly that *"fault-probability per
+battery-hour" is the objective, but nothing currently measures it*, and that
+building the optimisation layer first would make its benefit **asserted rather
+than demonstrated** — the same failure mode as quoting `KPI-01` from
+`demo_video.yaml`. So the metric is written down here first.
+
+**The denominator is travel distance, not battery-hours — because there is no
+battery model.** `world/fleet_specs.py` carries geometry (diagonals, widths,
+heights) and **no endurance, capacity or power draw**; `MissionResult` carries
+`steps` and the run record carries `wall_seconds`, which on a VLM run is
+dominated by ~7-12 s/panel of blocking inference and is therefore a *perception*
+cost, not a *flight* cost. Using it would measure the wrong thing. Route distance
+in metres is available today as a pure, deterministic, seed-stable function of the
+waypoint sequence, and it is genuinely proportional to energy for a fixed
+platform.
+
+⚠ **Battery-hours remains the target denominator.** Converting needs a per-platform
+cruise speed and energy model (`m350`-class endurance, hover-vs-translate draw).
+Until that exists, quote `KPI-09` in **per-metre** units and do not silently
+rename it to per-battery-hour.
+
+**Measured as a paired comparison, never as a single number.** One arm with the
+ranker on, one arm with it off (serpentine layout order), **same scenario, same
+seed, same panel budget**. The claim is the *delta*; an absolute `KPI-09` is
+uninterpretable because it scales with whatever the prior happens to be.
+
+⚠⚠ **On simulated SCADA this pair is CIRCULAR and cannot validate anything about a
+real plant.** The simulated prior is a deterministic function of `pv:state` /
+`pv:iv_yield` — the very ground truth the mission is trying to discover — so a
+ranker fed by it will score near-perfectly *by construction*. That makes `KPI-09`
+a **test that the dispatch machinery works as specified**, and emphatically **not**
+evidence that suspicion-first dispatch would beat a sweep on real hardware. Every
+run record carries `dispatch.scada_source`, which is `simulated` today; a number
+from a `simulated` run must never be quoted as a real-plant result.
 
 **Note on `KPI-01` vs `KPI-03`:** these are deliberately distinct. `KPI-01` is
 overall accuracy across all injected states (including real faults); `KPI-03`
@@ -24,6 +69,38 @@ isolates the specific "swept blade shadow → false hotspot" failure mode this
 project exists to prevent. A system can have decent `KPI-01` and still be
 unsafe to deploy if `KPI-03` is high on adversarial scenarios — report both,
 always.
+
+**⚠⚠ `KPI-01`'s denominator is mostly healthy panels, so a do-nothing model passes
+its gate. Measured 2026-07-31 over the 20 archived Cosmos Reason runs
+(`tools/kpi_recall.py` reproduces all of it):**
+
+- `nominal_calm_vlm` is **82.5% healthy** and declares `detection_rate_min: 0.80`.
+  **A model that calls every panel healthy scores 0.825 and PASSES**, having found
+  nothing. The null model clears that gate in **13 of 20** runs, and in **3** it
+  scored at or above what the real model managed.
+- Exact recall on faulted panels only ranged **0.143–0.857** across those same runs,
+  against a `detection_rate` reading 0.80–0.925.
+- Pooled by injected state — the split the aggregate structurally cannot show:
+
+  | injected | n | flagged at all (`KPI-01b`) | named right (`KPI-01a`) |
+  |---|---|---|---|
+  | `soiled` | 62 | **0.984** | 0.516 |
+  | `hotspot` | 58 | **0.397** | 0.379 |
+
+  Injected soiling was diagnosed `hotspot` **29 times in 62**; injected hotspots were
+  called `healthy` **35 times in 58**. So the two failures are different and have
+  different fixes: **soiling is a discrimination problem, hotspots are a sensitivity
+  problem.** Chase them separately.
+
+**Rule from here: never gate on `KPI-01` alone.** Gate on `KPI-01a` (recall), and
+quote `KPI-01n` (the null baseline) beside any `KPI-01` figure so a reader can see
+what it beat. `KPI-01` itself is **deliberately unchanged** — it appears in every
+run record ever written, and redefining it would make those non-comparable, the same
+reasoning that locked `KPI-03` (§6.5).
+
+⚠ **A `detection_rate` of 1.00 on an all-healthy scenario is vacuous** — with no faults
+seeded it is arithmetically the same fact as `KPI-03 = 0`, restated. `khavda_selfshade`
+is exactly this. Do not quote the two side by side as if they were two results.
 
 **`KPI-03`'s two halves (`KPI-03a`/`KPI-03b`), decided 2026-07-29.** `unknown` is
 `!= healthy`, so a panel the model *failed to answer for* scored identically in
@@ -51,6 +128,98 @@ panel is equally a plumbing failure, it just surfaces as a missed detection in
 ⚠ A vacuous `KPI-03` of 0.00 on a run with no healthy panels is exactly the case
 where quoting it alone misleads — check `KPI-03b`.
 
+### ⚠ `KPI-03`'s biggest caveat: the frame may show more than one panel
+
+**Measured 2026-07-29 and it is not marginal.** `KPI-03` assumes the frame the model
+judged shows the target panel. At the confirm standoff it does not: the module is
+tilted ~46 deg to the camera and foreshortened, so the **neighbouring module is in
+shot**. Across three prompt versions and nine repeats on `SC-01`:
+
+| run | prompt | false alarms | beside a faulted panel | clean neighbourhood |
+|---|---|---|---|---|
+| `runs/20260729T130956` | v1 | 7 | **7** | **0** |
+| `runs/20260729T133517` | v2 | 3 | **3** | **0** |
+| `runs/20260729T135700` | v3 | 6 | **6** | **0** |
+
+**All 16 false alarms sat beside a faulted panel; none of the 180
+clean-neighbourhood panel-observations produced one.** So on this scenario the
+false-fault rate is not a measure of the model at all — the model reports soiling
+that is genuinely in the image, and ground truth scores it against the wrong panel.
+Captured frames confirm it (`tools/inspect_frame.py`).
+
+This is why prompt work could not move it: there was nothing wrong with the reading.
+
+`kpi/confound.py` computes this and `run.py` writes it into every run record's
+`confound` block, printing it beside the KPI when non-zero. **Quote `KPI-03` with its
+`attributable_share`.** A share of 1.00 means the whole number may be the panel next
+door. The fix is the **frame** — crop capture to the target module's own extent so
+neighbours are excluded — and until that lands, `SC-11`/`SC-12` (all-healthy stages,
+where no neighbour can be faulted) are the only KPI-03 points free of this confound.
+That is also a reason their 0.00 stands.
+
+#### The crop: MEASURED — it removes the confound, and it costs hotspot recall
+
+`perception.cosmos_reason.centre_crop` + `crop_fraction` (config: `perception_opts.
+crop_fraction`, recorded in `provenance()`). **Default 1.0 = no crop**, because every
+KPI on record was measured on the full frame.
+
+The risk with any crop is that it deletes the defect instead of the confound — that
+is exactly how prompt `v2`/`v3` failed. Tested on captured frames with
+`tools/inspect_frame.py --crop 0.5`, which needs Isaac but **not** the VLM:
+
+| panel | injected | confirm glass% | crop 0.5 | non-glass residue |
+|---|---|---|---|---|
+| `R254-C014` | healthy (false-alarmed) | 64.0 | **87.1** | warm → **cool** |
+| `R258-C028` | healthy (false-alarmed) | 59.6 | **84.8** | warm → **cool** |
+| `R258-C000` | healthy (control) | 57.8 | **87.0** | warm → **cool** |
+| `R254-C000` | healthy (control) | 59.9 | **85.6** | warm → **cool** |
+| `R243-C098` | **soiled** | 37.6 | 54.7 | warm → **warm** |
+| `R253-C042` | **soiled** | 34.5 | 41.0 | warm → **warm** |
+
+The crop is **differential**, which is what it needs to be: on healthy panels it
+strips the warm/sandy content and the residue turns cool (85–87% glass), while on
+genuinely soiled panels the warm content survives. Soiling is central because the
+waypoint is over the target; the contaminating ground and neighbour are peripheral.
+The false-alarm panels and the clean controls also converge, which is what excluding
+the neighbour should look like.
+
+##### The KPI measurement (`runs/20260729T180626`, `nominal_calm_vlm_crop`)
+
+Same stage, same seed, same gates, same prompt (`v1`) — `crop_fraction` is the only
+variable. N=3.
+
+| | uncropped (`…T130956`) | crop 0.5 (`…T180626`) |
+|---|---|---|
+| `detection_rate` | 0.900 median (0.875–0.900) ⚠ varies | **0.925, identical across repeats** |
+| `false_fault_rate` | 0.091 median (0.030–0.091) ⚠ varies | **0.000, identical** |
+| per-panel agreement | 0.875 (5/40 flipped) | **1.000 (0/40 flipped)** |
+| `confound.attributable_share` | 1.00 | **0.00** |
+| `soiled` panels all-3-correct | 4/4 | **4/4** |
+| `hotspot` panels caught | ~3 of 9 observations (flaky) | **0 of 9** |
+
+**The confound is gone, definitively**: 13 healthy panels sat beside a faulted one
+and *none* was misread, where before every single false alarm came from that group.
+KPI-03 falls to 0.000 and stops varying, KPI-01 rises, and stability goes to perfect
+— the first change measured all day that improved accuracy *and* stability *and* the
+confound together. And the trap that killed prompt `v2`/`v3` is avoided: the `soiled`
+class is fully preserved, 4/4 both ways.
+
+⚠ **But it costs hotspot recall, and the headline hides that.** All three `hotspot`
+panels are now missed in every repeat; uncropped, two of them were caught in some
+repeats. `detection_rate` still rises only because removing 4 false alarms outweighs
+losing ~3 hotspot detections. The likely mechanism is geometric: a hotspot is a small
+bright spot on a *single cell*, so a 0.5 crop can cut it out of frame entirely,
+whereas soiling is a large patch that survives.
+
+**So `crop_fraction` stays default 1.0.** The finding is not "enable 0.5" — it is
+"the confound is real, cropping removes it, and 0.5 is too aggressive for hotspot."
+Next step is to tune the fraction (or crop to the projected module bbox rather than a
+fixed centre fraction) and re-measure, judging `soiled` and `hotspot` recall
+*separately* — the aggregate `detection_rate` conceals this trade.
+
+⚠ Quote `crop_fraction` with any number produced under it: a KPI measured on a
+cropped frame is not comparable with one measured on a full frame.
+
 ## Scenario suite
 
 Each scenario is a `configs/scenarios/<name>.yaml` per `04-interfaces-and-data.md`
@@ -72,12 +241,66 @@ starting set, not the final one.
 | `SC-10` | `full_farm_battery_window` | full farm, both robots, N panels, declared daylight/battery window | `HAZ-06` | `KPI-02`, `KPI-06` | `SLICE-7` |
 | `SC-11` | `khavda_selfshade` | real Khavda BLOCK-02, HSAT trackers pinned at their 60° stop, sun 17.2° (02:00Z), every panel healthy, no turbines | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade.yaml` |
 | `SC-12` | `khavda_selfshade_lowsun` | `SC-11` one hour earlier (01:30Z, sun 10.7°): ~54% of each module shaded *and* the whole scene dimmer, so shading is confounded with underexposure | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_selfshade_lowsun.yaml` |
+| `SC-13` | `khavda_windy_hover` | real Khavda DEM + **graded civil pad** + one **articulated** 120 m turbine + **12 m/s wind with 35% gusts and a Jensen wake**, PX4-governed flight | `HAZ-01`, `HAZ-02`, `HAZ-03` | `KPI-05` | `SLICE-2` — **built + flown 2026-07-29**, `configs/scenarios/khavda_windy_hover.yaml`. The first scenario where the physics pieces run TOGETHER rather than being individually tested. ⚠ A hover, not an inspection: wind is a force and the inspection mission drives its robots kinematically, where a force does nothing (`NFR-07`). This remains the **only** source of `KPI-05` — `SC-15` puts wind in an inspection run but as a camera-pose offset, which tests the eyes, not the body |
 
-`SC-11`/`SC-12` supersede `SC-05`'s original stimulus rather than extending it:
+| `SC-14` | `khavda_bladeshadow` | real Khavda BLOCK-02, **one real surveyed turbine** (546.2 m off the footprint), sun 8.6° (01:20Z), trackers **stowed flat** to isolate the blade shadow from self-shading, every panel healthy | `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_bladeshadow.yaml`. Recovers `SC-05`'s stimulus by *locating* it first: 6,875 of 30,016 panels (22.9%) under the swept blade shadow, blade dwell mean 0.0711 |
+| `SC-15` | `khavda_bladeshadow_windy` | `SC-14` + **12 m/s wind with 35% gusts**, applied as a camera-pose disturbance | `HAZ-03`, `HAZ-07` | `KPI-03` | `SLICE-3` — **built**, `configs/scenarios/khavda_bladeshadow_windy.yaml`. Treatment arm to `SC-14`'s control: the pair differs only in wind, so the `false_fault_rate` delta attributes to the camera being pushed. ⚠ **Not** a source of `KPI-05` — the disturbance is a quasi-static pose offset, not flight dynamics (`NFR-07`) |
+
+`SC-11`/`SC-12` superseded `SC-05`'s original stimulus rather than extending it:
 the turbine-blade shadow sailed over the elevated rows onto the ground, while
 tracker self-shading is a real, on-surface, many-panel shadow produced by the
 plant's own hardware. Both are asserted geometrically in `tests/test_solar.py`
 before any run — a KPI-03 of 0.00 means nothing if the stimulus was absent.
+
+`SC-14` then **recovers the blade shadow** on the real block, by making the
+stimulus a computation instead of a hope: `world/bladeshadow.py` projects the rotor
+disc onto the *module* plane (not the ground — that height difference is the class
+of error that produced the `SC-05` null) and reports how many panels it covers and
+for what fraction of each revolution. `tests/test_bladeshadow.py` asserts the
+scenario's own coverage claim, so moving the sun by forty minutes fails a test
+instead of silently restoring the hollow null: the usable window is 01:00–01:50Z
+and coverage collapses from 22.9% to 0.3% by 02:00Z.
+
+The `SC-14` dwell figure is why `KPI-03` needs a **sized** run and not just a
+stimulus. A blade is a narrow moving bar: a covered panel is shaded for a mean
+0.0711 of each revolution, the kinematic rotor advances 4.6° per panel inspected,
+and a full revolution therefore takes 78 panels. A 24-panel run samples 110° of one
+revolution and its expected number of shadowed observations is under one — so a
+passing gate there measures nothing. Both scenarios state this in their headers and
+gate one-sidedly: a breach is evidence, a pass is not.
+
+### ⚠ Measured 2026-07-31: geometry was necessary and not sufficient
+
+`SC-14` was then verified **in pixels**, and the blade shadow failed. One panel
+watched over a full rotor revolution (`tools/verify_blade_sweep.py`, PV-glass
+pixels) dipped 4.9% at a predicted blade duty of 1.00, against 7.1% on a
+geometrically-clear control — the control varied *more* than the target.
+
+The cause is geometric and permanent. The sun is an extended source (0.53°, and
+`farm_builder` authors `/World/Sun` with `CreateAngleAttr(0.53)`, so the renderer
+models it), smearing every shadow edge by `distance × tan(0.53°)`. At this turbine's
+780 m throw that is **7.2 m, wider than the 4 m blade** — and a caster narrower than
+its own penumbra never fully occludes the disc, so no umbra exists to find.
+`bladeshadow.max_umbra_distance_m` puts the ceiling at ~432 m for a 4 m blade;
+Khavda's nearest **real, surveyed** turbine stands at 546 m. **No real turbine at
+this site can cast a hard blade shadow on the modules**, so `SC-05`'s idea is not
+recoverable here by choosing a better sun or a nearer machine.
+
+What the same measurement *did* find is the **tower** shadow. Across all 273 tables
+exactly three were markedly darker than the other 270 — glass mean 11.9/12.2/12.6
+against a 13.4 median, dark-pixel fraction 51/41/42% against 24% — and their
+darkness ranked by distance from the tower's shadow axis (0.6/1.6/2.5 m), not by
+blade dwell. A 5 m tower beats its penumbra where a 4 m blade does not, and unlike
+the blade it is in frame **continuously**, which also dissolves the run-sizing
+lottery above. `bladeshadow.TowerShadow` models it and `tests/test_bladeshadow.py`
+pins the measured distances, so moving the sun or the turbine now fails a test.
+
+Consequences for the suite: `SC-14`/`SC-15` remain the *tower*-shadow scenarios (a
+narrow stimulus on ~3 tables, always present) and are no longer blade-shadow
+scenarios. `SC-11`/`SC-12` (tracker self-shading) stay the widest verified stimulus
+and the first choice for `KPI-03`. `SC-06`/`SC-09`, which compose on `SC-05`'s
+sweeping blade shadow, inherit this refutation and need re-scoping before they are
+built.
 
 ## Gating discipline
 

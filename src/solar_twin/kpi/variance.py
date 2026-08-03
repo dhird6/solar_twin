@@ -43,7 +43,7 @@ with no Isaac, no GPU and no VLM.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from statistics import median
+from statistics import fmean, median, stdev
 from typing import Any
 
 #: Mean absolute per-cell difference (in 0-255 LSB) below which two frame
@@ -88,7 +88,15 @@ DEFAULT_METRICS = (
     "false_fault_rate",  # KPI-03
     "false_alarm_rate",  # KPI-03's genuine-false-alarm half
     "abstention_rate",  # KPI-03's lost-answer half (over all panels)
-    "detection_rate",  # KPI-01
+    "detection_rate",  # KPI-01 — ⚠ ACCURACY over every panel, not recall
+    # KPI-01's honest halves, added 2026-07-31. `detection_rate`'s denominator is
+    # every panel, so on a mostly-healthy scenario it is dominated by healthy
+    # panels being correctly left alone: `nominal_calm_vlm` is 82.5% healthy
+    # against a 0.80 gate, so a model that finds NOTHING scores 0.825 and passes.
+    # These three make that visible in the spread as well as in a single run.
+    "fault_recall",  # KPI-01a — named right, faulted denominator
+    "fault_flagged_rate",  # KPI-01b — noticed at all, faulted denominator
+    "healthy_fraction",  # KPI-01n — the null baseline a gate must beat
     "faults_detected",
     "panels_inspected",
 )
@@ -144,6 +152,30 @@ class MetricSpread:
         return float(median(self.values))
 
     @property
+    def mean(self) -> float:
+        return float(fmean(self.values))
+
+    @property
+    def stdev(self) -> float | None:
+        """**Sample** stdev (n-1), or None when there is only one run.
+
+        None rather than 0.0 on purpose: with N=1 the sample stdev is
+        undefined, and a reported 0.0 reads as "measured, no variance" — the
+        precise misreading this whole module exists to prevent.
+
+        ⚠ Read it as a spread descriptor, not as an inference. A false-fault
+        rate is a proportion over panels, and at N=3–10 repeats its stdev is
+        itself very noisy; `min`/`max` and `range` are the honest headline, and
+        the KPI gates deliberately judge worst-of-N (`kpi/gates.py`), never
+        mean ± stdev. Do not turn this into a normal-theory confidence interval:
+        the per-repeat values are bounded at 0, discretised in units of
+        1/n_healthy_panels, and pile up on 0.00 — none of which is Gaussian.
+        """
+        if self.n < 2:
+            return None
+        return float(stdev(self.values))
+
+    @property
     def range(self) -> float:
         return self.max - self.min
 
@@ -166,6 +198,8 @@ class MetricSpread:
             "n": self.n,
             "min": self.min,
             "median": self.median,
+            "mean": self.mean,
+            "stdev": self.stdev,  # None at N=1 — undefined, not zero
             "max": self.max,
             "range": self.range,
             "stable": self.stable,
@@ -319,6 +353,14 @@ class VarianceReport:
         for name, spread in self.metrics.items():
             flag = "" if spread.stable else "  ⚠ varies"
             lines.append(f"  {name} = {spread.quote()}{flag}")
+            if not spread.stable and spread.stdev is not None:
+                # Second line, not folded into quote(): the headline stays
+                # median+range (what the gates and the specs are written
+                # against) and mean±sd sits under it as a descriptor.
+                lines.append(
+                    f"      mean {spread.mean:.4g} ± {spread.stdev:.4g} sd "
+                    f"(descriptive; gates judge worst-of-N)"
+                )
         lines.append(
             f"  per-panel agreement {self.agreement_rate:.3f} "
             f"({len(self.disagreements)}/{self.panels_compared} panels flipped)"

@@ -34,7 +34,57 @@ kinematics:
   screen_standoff: 2.5  # meters above the panel TOP (wide context pass)
   confirm_standoff: 0.8 # meters above the panel TOP (close detail pass)
 
+  # ---- wind on the CAMERA (not the airframe) -------------------------------
+  # Lets the wind leave the drone slightly off its commanded pose, so perception is
+  # tested on a frame that moved. Needs a `wind:` block in the FARM config; with
+  # `wind_disturbance: true` and no wind the run warns loudly rather than quietly
+  # measuring calm air.
+  #
+  # ⚠⚠ THIS IS NOT FLIGHT DYNAMICS AND `KPI-05` DOES NOT COME FROM IT. It is a
+  # quasi-static drag/stiffness pose offset — no mass, no thrust, no attitude loop
+  # (`NFR-07`). It answers "does the VLM still read a panel when the camera is 0.2 m
+  # off station?", which is the EYES half of the thesis. The BODY half — can the
+  # drone hold station at all — needs real dynamics and lives in
+  # `tools/px4_hover.py --wind-scenario` against `khavda_windy_hover.yaml`.
+  #
+  # OFF by default, and off is the identity: the controller is returned unwrapped, so
+  # every KPI recorded before this existed reproduces byte-for-byte.
+  wind_disturbance: false
+  wind_drone_spec: m350          # m350 | mavic3t — sets the frontal drag area
+  # ⚠ INFERRED, and it scales every drift figure linearly. Calibrate it against
+  # px4_hover's real dynamics under the same wind: k = drag / measured excursion.
+  wind_hold_stiffness_n_per_m: 80.0
+
 # Escalation: with the ground-truth stub every non-healthy panel is suspect.
 # Kept explicit so a real detector can gate on confidence later.
 escalation:
   screen_suspect_confidence: 0.5   # assess() >= this and status=suspect -> escalate
+
+# Suspicion-first dispatch (SLICE-4b) — the prioritisation layer, strictly
+# UPSTREAM of the escalation FSM: it decides only which panels, in what order.
+#
+# ⚠⚠ THE PRIOR IS SIMULATED AND CIRCULAR BY CONSTRUCTION. There is no SCADA feed
+# on this project: the cell ranking is derived from the twin's own pv:state /
+# pv:iv_yield — the very ground truth the mission is sent out to discover — so a
+# ranker fed by it scores near-perfectly *by construction*. A KPI-09 from this arm
+# is a test that the dispatch machinery works, NOT evidence that suspicion-first
+# beats a sweep on real hardware. The run record stamps `dispatch.scada_source`
+# and a `dispatch.caveat` saying exactly this.
+#
+# OFF by default, and off is the identity: with `enabled: false` the target list
+# is returned untouched (same object, same order) and no plan is built, so a run
+# is byte-identical to one from before this layer existed. Every recorded KPI
+# stays reproducible. Needs a stage built with `grid.enabled: true` in farm.yaml;
+# without it every panel's cell_id is "" and the layer falls back to layout order
+# (loudly). CLI: --grid-dispatch / --dispatch-max-cells N override this block.
+grid_dispatch:
+  enabled: false          # ⭐ leave false unless you are measuring KPI-09
+  max_cells: 0            # 0 = all cells; dropped cells are NAMED, never silent
+  min_anomaly: 0.0        # skip cells below this SIMULATED PR anomaly
+  escalation_arm: ground_first   # ground_first | drone_first — RECORDED, not yet
+                                 # enacted: the FSM is ground-first by construction.
+                                 # Which arm wins is an assumption to MEASURE.
+  solver: auto            # auto = cuOpt if importable, else the greedy stub.
+                          # cuOpt is NOT installed here; asking for it explicitly
+                          # raises rather than mislabelling a greedy result.
+  irradiance: 1.0         # plane-of-array scale for the simulated output model

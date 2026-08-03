@@ -1,0 +1,217 @@
+# khavda_bladeshadow — KPI-03 (false-fault rate, HAZ-07) from a REAL turbine's
+# shadow on the real block, with the stimulus located before it is measured.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚠⚠ MEASURED 2026-07-31: THE BLADE SHADOW IS NOT A USABLE STIMULUS HERE.
+# THE TOWER SHADOW IS. Read this before quoting anything from this scenario.
+#
+# The geometry below is correct and was verified twice, and the second check
+# refuted the first's usefulness. In pixels (`tools/verify_blade_sweep.py`,
+# one panel over a full rotor revolution, PV-glass pixels only):
+#
+#     target  R131-C016 (predicted blade duty 1.00)  median 12.60  dip 4.9%
+#     control R00-C000  (geometrically clear)        median 13.62  dip 7.1%
+#
+# The control varied MORE than the target. There is no blade signal at all.
+#
+# **Why, and why it is permanent:** the sun is an extended source (0.53 deg —
+# `farm_builder` authors `/World/Sun` with `CreateAngleAttr(0.53)`, so the renderer
+# models this), which smears every shadow edge by `distance * tan(0.53 deg)`. At
+# this turbine's 780 m shadow throw that is **7.2 m — wider than the 4 m blade**.
+# A caster narrower than its own penumbra never fully occludes the sun, so there
+# is no umbra to find. The ceiling is ~432 m for a 4 m blade
+# (`bladeshadow.max_umbra_distance_m`) and the nearest REAL turbine on this site
+# stands at 546 m. **No real turbine at Khavda can cast a hard blade shadow on
+# these panels.** This is arithmetic, not a tuning problem — `SC-05`'s idea cannot
+# be rescued at this site by choosing a better sun or a better turbine.
+#
+# **What the pixels DID find.** `tools/verify_shade.py` over all 273 tables showed
+# exactly three markedly darker than the other 270 — glass mean 11.9 / 12.2 / 12.6
+# against a 13.4 median, dark-pixel fraction 51% / 41% / 42% against 24% — and
+# their darkness ranked by distance from the **TOWER's** shadow axis (0.6 m,
+# 1.6 m, 2.5 m), not by blade dwell. A 5 m tower beats its penumbra where a 4 m
+# blade does not, and unlike the blade it is in frame **continuously**, which also
+# retires the run-sizing lottery below. `bladeshadow.TowerShadow` models it and
+# `tests/test_bladeshadow.py` pins the measurement.
+#
+# So: this stage has a real, verified, on-glass shading stimulus on ~3 tables. It
+# is NOT the one the scenario was written to produce. Quote it as a tower shadow.
+# The blade-dwell arithmetic further down is retained because it is correct and it
+# is the reason the blade was ruled out — not because it describes a stimulus.
+#
+# ── AND A SECOND DEFECT, IN THIS FILE'S OWN CHOICE: THE FRAMES ARE TOO DARK ────
+#
+# The captured confirm frames read a glass mean of **12.6 / 255 — about 5%
+# brightness**, i.e. very nearly black. That is not a renderer fault, it is
+# `tracker_max_rotation_deg: 0.0` below meeting an 8.6 deg sun. A flat panel under
+# a grazing sun receives `cos(81.4 deg) = 0.150` of normal beam irradiance. Asking
+# a VLM to judge a panel in such a frame measures the noise floor, so a KPI-03 from
+# this scenario as authored would be unquotable even with a verified shadow on it.
+#
+# Two facts that together explain why turbine shadows are simply a poor `KPI-03`
+# stimulus at this site, and are worth knowing before anyone retries this:
+#
+#   1. The tower shadow only LANDS on the array for a sun elevation between
+#      **7.5 and 12.3 deg** (reach = 118.5 m / tan(elev), needing 546-900 m to
+#      cross the block). Reaching the panels *requires* a low sun.
+#   2. A low sun on stowed-flat panels means dark frames. The two constraints pull
+#      against each other, which tracker self-shading (`SC-11`/`SC-12`) never
+#      suffers — it happens at whatever sun the trackers are working under.
+#
+# ⭐ THE DIAGNOSED FIX (arithmetic done, NOT yet re-verified in pixels): let the
+# trackers TRACK. At this same 8.6 deg sun a 60 deg tracker faces the sun to within
+# 21.4 deg, giving `cos = 0.931` — **6.2x the illumination** — and the tower shadow
+# still lands, because tracker angle does not move it. The cost is that self-shading
+# returns, but the two are separable by position: self-shading darkens every row
+# alike, while the tower shadow darkens the three tables on its axis. Set
+# `tracker_max_rotation_deg: 60.0`, rebuild, and re-run BOTH verify tools.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ## Why this scenario exists when SC-05 already claimed to do this
+#
+# `sweeping_shadow.yaml` (SC-05) is the same idea on the old synthetic farm, and it
+# produced a hollow null: the blade shadow "sailed over the elevated rows onto the
+# ground" (recorded in `khavda_selfshade.yaml`'s header). A false-fault rate of 0.00
+# came back from a scene where no shadow ever touched a module. `khavda_selfshade`
+# then sidestepped the problem entirely by using tracker self-shading instead.
+#
+# This one goes back to the blade shadow and *locates it first*. Every number below
+# is computed by `world/bladeshadow.py` against the real layout and the real
+# ephemeris, not chosen to look plausible:
+#
+#   ISAAC-free, run it yourself:
+#     PYTHONPATH=src python3 -c "..."   # see tests/test_bladeshadow.py for the API
+#
+# ## The geometry, measured 2026-07-31
+#
+# Site anchor 24.09150 N, 69.42050 E. Array spans x 1.1..320.1, y 0.6..646.3 m.
+# Turbine: the nearest REAL, surveyed machine — plot S05b of the GatiShakti digest,
+# 546.2 m off the footprint (the same one `khavda_windy_hover.yaml` uses).
+#
+#   sun 2026-06-21T01:20:00Z  ->  elevation 8.60 deg, azimuth 68.08 deg (east)
+#   hub shadow displaced 783.9 m; swept-disc centre (139.1, 148.4)
+#   swept-disc bbox (-291.2, -36.6) .. (569.3, 333.3)  -> lands ON the array
+#   coverage 6,875 of 30,016 panels = 22.9% (23.5% on a 310-panel probe grid)
+#   blade dwell: mean 0.0711, max 0.3500 of each revolution
+#
+# ⚠ **The window is 40 minutes wide and it closes hard.** Coverage by timestamp:
+#   01:00Z 20.3% | 01:20Z 23.5% | 01:40Z 11.6% | 01:50Z 3.5% | 02:00Z 0.3%
+# By 02:00Z — the timestamp `khavda_selfshade` uses — this stimulus is gone. The two
+# scenarios cannot share a sun, which is precisely why they are two scenarios.
+#
+# ## Why the trackers are STOWED FLAT
+#
+# At this sun the ideal tracker rotation is 80.7 deg (measured), so a 60 deg-limited
+# HSAT pins at its stop — and a pinned tracker throws the self-shading shadow that IS
+# `khavda_selfshade`'s stimulus. Leaving the trackers tracking would put two
+# shadow mechanisms on the same modules and make any false fault unattributable.
+# `tracker_max_rotation_deg: 0.0` clamps the rotation to zero (verified: it is the
+# single source `farm_builder` authors panels from AND `panel_top_z` places the
+# drone from, so geometry and waypoints cannot disagree).
+#
+# This is not a contrivance — flat is the real high-wind stow pose, which is also
+# the state a plant is in when the turbines beside it are working hardest. It does
+# mean the modules are near-horizontal under an 8.6 deg sun, so they are dimly lit;
+# that is handled by scoring GLASS pixels against an in-frame unshaded control
+# (`kpi/glass.py`, `tools/verify_shade.py`) rather than whole-frame brightness,
+# which is the confound `khavda_selfshade` documents at low sun.
+#
+# ## ⚠ Sizing the run, or the KPI is not quotable
+#
+# A blade is a narrow moving bar, not a blanket. Two pieces of arithmetic decide
+# whether a run of this scenario can measure anything at all:
+#
+#   * A panel under the swept disc is shaded for a mean 0.0711 of each revolution.
+#     A randomly chosen block panel at a random instant: 0.235 x 0.0711 = 0.0167,
+#     about 1 in 60. Targeting only covered panels: about 1 in 14.
+#   * The kinematic proxy advances 2.3 deg per sim step (`rpm_to_deg_per_s(rpm)/30`
+#     at 11.5 rpm) and teleport mode spends 2 steps per panel — so **4.6 deg of
+#     rotor per panel inspected**. A full revolution takes 78 panels.
+#
+# So `--max-panels 24` sweeps only 110 deg of one revolution and whether ANY panel
+# is shaded depends on the starting phase: that is a lottery, not a measurement.
+# Use >= 78 panels to cover a revolution, and ~280 targeted inspections for ~20
+# shadowed observations. A short run of this scenario is a picture, not a KPI.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   PYTHONPATH=src $ISAAC -m solar_twin.world.farm_builder \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --out assets/khavda_bladeshadow.usd
+#   # PROVE THE STIMULUS IN PIXELS FIRST — do not skip this, it is the whole point:
+#   PYTHONPATH=src $ISAAC tools/verify_shade.py \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --farm-usd assets/khavda_bladeshadow.usd --out runs/bladeshadow_probe
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/khavda_bladeshadow.yaml \
+#       --farm-usd assets/khavda_bladeshadow.usd --max-panels 120
+
+name: khavda_bladeshadow
+seed: 20260731
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM — the whole point of KPI-03
+
+farm_overrides:
+  faults:
+    rate: 0.0        # every panel HEALTHY -> any fault verdict is a FALSE fault
+    states: []
+
+  sun:
+    # 01:20Z = 06:50 local. See the coverage table above: this is the peak of a
+    # 40-minute window, and it is the ONLY reason this timestamp and not a rounder one.
+    timestamp: "2026-06-21T01:20:00Z"
+    # Stow flat to isolate the blade shadow from tracker self-shading. 0.0 clamps
+    # the rotation to zero; see the header for why this is a real operating state.
+    tracker_max_rotation_deg: 0.0
+
+  # ⚠ BOTH keys are required and the order of precedence is the trap:
+  # `resolve_turbines` checks `turbine_scatter.enabled` FIRST and it WINS, so an
+  # explicit list alone is silently discarded and replaced by scattered positions —
+  # which would move the shadow off the array and reproduce the SC-05 null exactly.
+  # Measured 2026-07-29: a scenario setting `turbines: []` and documenting itself as
+  # turbine-free built four of them.
+  turbine_scatter:
+    enabled: false
+
+  # ⭐ ONE turbine, the nearest REAL surveyed machine (plot S05b of the GatiShakti
+  # digest, EPSG:32642 — the same CRS as our site file), 546.2 m off the footprint.
+  # Its six siblings are omitted deliberately: with one caster, every shadow on a
+  # module is attributable to known geometry, and `bladeshadow.assess()` reports a
+  # single unambiguous coverage figure.
+  # ⚠ Position is real but SECOND-HAND (vendor DWG -> their build_gis_digest.py,
+  #   which we do not hold -> JSON -> us). Hub height, blade length, chord and rpm
+  #   are INFERRED from the 5.2 MW rating: the digest carries no dimensions.
+  #   `blade_chord` is the wide end of a real 70 m blade's taper, so the computed
+  #   dwell above is generous rather than flattering.
+  turbines:
+    - pos: [866.349, 440.959]
+      hub_height: 120.0
+      blade_len: 70.0
+      blade_chord: 4.0
+      rpm: 11.5
+      rating_mw: 5.2
+      provenance: digest
+      geometry_provenance: INFERRED
+
+  # Kinematic spun proxy, NOT the physics articulation: the shadow sweeps either
+  # way, and `turbines_articulated: true` moves ownership of the hub transform to
+  # the solver, which every KPI recorded to date was not measured under.
+  turbines_articulated: false
+
+kpi_gates:
+  # ⚠ Read these as one-sided, and read the MEASURED banner at the top first. A
+  # **breach** is real evidence: a shadow verifiably on the glass got logged as a
+  # fault. A **pass** is NOT evidence unless the run actually visited the ~3 tables
+  # on the tower-shadow axis (R52/R53/R62 at col 50) — the blade shadow it was
+  # written for does not exist in pixels, so a sweep of the other 270 tables is a
+  # run with no stimulus in it, which is the SC-05 failure restated as a gate.
+  #
+  # ⭐ Target the verified stimulus explicitly rather than hoping a sweep reaches it:
+  #   --subset covers the first N tables in layout order, which is NOT where these
+  #   three sit. Until a scenario-level panel filter exists, run the whole block or
+  #   check the run record's panel list contains R52/R53/R62.
+  false_fault_rate_max: 0.05
+  false_alarm_rate_max: 0.05
+  # Zero on purpose: a lost verdict is a plumbing bug, not a budget to spend.
+  abstention_rate_max: 0.0

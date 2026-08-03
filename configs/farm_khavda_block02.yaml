@@ -47,10 +47,44 @@ panel:
 # world/dem.py) rather than following it, and the build prints the worst
 # deviation — that number is the pile-height variation the row would need.
 # Regenerate rather than editing; `kind: flat` remains available for a fast build.
+# REAL OpenStreetMap geography (FR-10/FR-20/IF-11) — the landscape the block sits in.
+# Baked by
+#   python3 tools/osm_fetch.py configs/layouts/khavda_a10b_block02.yaml \
+#       --out configs/layouts/khavda_block02_osm.yaml --pad 6000
+# from the official OSM API 0.6 /map call, projected into EPSG:32642 and anchored to
+# THIS layout's origin (its own anchor, not S05b's — the two plots have different
+# ones, so the bakes are not interchangeable).
+#
+# Measured content: 3 roads (one `tertiary`, two unpaved `track`), 5 transmission
+# lines including a 765 kV run, the mapped boundaries of "Khavda Renewable Energy
+# Park" (Adani Green, 1000 MW) and "NTPC Khavda" (397.7 MW), and the real substation
+# "PSS 3". Prims carry `st:provenance = "mapped"` — a THIRD tag beside
+# derived/inferred, because this is neither read from the vendor CAD nor invented.
+#
+# ⚠ OSM CARRIES NO INTERNAL PLANT ROADS. The block's own access roads stay
+# DERIVED/INFERRED from world/site.py, and the build prints the two tallies
+# separately so they cannot blur (`NFR-07`). Road WIDTHS are per-class defaults
+# (`st:width_source`); conductor SAG is not modelled, so a span is a straight chord.
+osm:
+  enabled: true
+  path: configs/layouts/khavda_block02_osm.yaml
+  radius_m: 6000.0
+  drape_step_m: 40.0
+
 terrain:
   kind: dem
   path: assets/dem/khavda_block02.yaml
   datum: hardware_mean
+  # The engineered civil pad (`world/grading.py`). GLO-30 is a PRE-GRADING DSM:
+  # on raw satellite ground the worst tracker row needs 0.532 m of pile-height
+  # variation, which a real plant graded away (measured: 0.013 m with the pad).
+  # ⚠ INFERRED — we hold the DC hardware drawing, not the civil grading plan.
+  # Off by default so every previously recorded KPI stays reproducible; turn it
+  # on per scenario. `pad_tolerance_m` is the as-built spec: 0.0 would claim a
+  # mathematically perfect surface needing zero pile adjustment (`NFR-07`).
+  graded: false
+  pad_tolerance_m: 0.025
+  pad_blend_m: 40.0
 
 # Georef is carried by the site file's `crs` (EPSG:32642) and converted with
 # pyproj, so these are a fallback only, used if pyproj is unavailable.
@@ -78,6 +112,17 @@ faults:
 # measured against it would be an artefact of where WE put it. Blades spin at
 # runtime (sim_runtime turns each hub), and world/keepout.py authors the no-fly
 # volumes SafeControl clamps waypoints against (FR-09).
+#
+# ⚠ **`turbine_scatter.placement: interspersed` is not available on THIS layout,
+# and the reason is physical rather than editorial.** A real co-located park like
+# Khavda does stand its machines among the DC blocks, and the S05b configs use
+# that placement. But this file is ONE ~18 MWdc block: 273 tables in 321 x 647 m,
+# whose largest interior clearing is **25 m** (measured 2026-07-30,
+# `siting.largest_interior_clearance`) against the **84 m** a 140 m rotor needs to
+# keep its blade tips off the glass. The corridors inside a single block are
+# maintenance aisles, not turbine pads — the clearings a hybrid park uses are
+# BETWEEN blocks, and this stage contains no second block. Setting `interspersed`
+# here sites zero turbines and logs why; it does not silently fall back.
 #
 # `turbine_scatter` sites them the way a wind farm is actually laid out: seeded
 # dart-throwing under a WAKE constraint, which is an ellipse (7 rotor diameters

@@ -47,7 +47,7 @@ The Spark (GB10, aarch64, unified memory) is the **development bench**, not the 
 
 **Hard constraints to design around (⚠ verify against current NVIDIA notes):**
 - aarch64 requires **CUDA ≥ 13** and the **cu13** build of PyTorch or newer. Isaac Sim is built from source and Isaac Lab symlinked to it (`_isaac_sim`).
-- **Livestream is not supported** on the Spark → plan to inspect via the local GUI or by rendering to files/video, not remote streaming.
+- ~~**Livestream is not supported** on the Spark~~ — **disproved 2026-07-30**: WebRTC livestream works on this Spark. A real client connected to `--livestream` (kit log: "Started primary stream server on signal port 49100 and stream port 47998" → "Client connected to WebRTC server"). Local GUI (`--gui`) and `--video` remain the cheaper options when you are at the machine; see `docs/ENVIRONMENT.md` for the connect procedure and the resize trap.
 - **Cosmos Transfer1 is not currently supported** on the Spark → the heavy sim2real generation is a *burst-out* workload (RTX PRO 6000 / DGX / cloud via build.nvidia.com blueprints), not a Spark job.
 - **Reported ROS 2 sensor-rendering quirks** on the Spark (camera topics not publishing / no publisher). **This is why Slice 0 defaults to the sim-native Transport** and treats ROS 2 as a seam we validate early but don't depend on until proven (§8, Day 1 + Day 9–11).
 
@@ -160,6 +160,95 @@ Attribute set (namespaced under `pv:` to avoid collisions):
 | `pv:rul_days` | `int` | predicted remaining useful life |
 | `pv:last_inspected` | `string` | ISO timestamp |
 | `pv:inspection_log` | `string[]` | append-only history |
+
+#### The `grid:` namespace — dispatch cells (added 2026-07-30, `SLICE-4b`)
+
+One attribute, in its **own** namespace *above* `pv:`, so the panel contract is
+untouched:
+
+| Attribute | USD type | Meaning |
+|---|---|---|
+| `grid:id` | `string` | the dispatch cell this panel rolls up to, e.g. `G-0258` |
+
+It is a **join key**, nothing more: it lets coarse cell-level telemetry and fine
+panel-level verdicts meet on the same object. Roll-up runs both ways — simulated
+SCADA gives a cell a **prior**, the fleet's `FaultReport`s give it a **posterior**,
+and a cell whose panels were just cleared stops ranking highly even if its PR stays
+depressed (that discrepancy is itself a finding: soiling and inter-row shading
+depress PR without any module being faulty).
+
+Separate namespace on purpose: `grid:id` describes a panel's place in an
+**electrical/dispatch grouping**, not its own physical condition, and a future real
+string map must be able to replace it without touching `pv:`. Written on the prim,
+never to a side store — a side store during sim would violate USD-as-source-of-truth
+(golden rule 3).
+
+**⚠⚠ A cell is a TABLE, and a table is NOT a string.** The design calls for cells
+aligned to electrical topology, because the coarse signal is electrical and a cell
+straddling two strings cannot be scored cleanly. **The available data cannot support
+that.** The vendor DWG is DC *hardware geometry* only: `TableSpec` carries
+`table_id`, `modules`, `module_rows`, `layer` — **no string map, no combiner
+grouping, no inverter assignment** (even the 5 inverter stations are our own
+capacity-derived inference, `world/site.py`). So the cell is the **table** — 112
+modules at Khavda, against a real string's ~20–30, i.e. one table ≈ 4–5 strings.
+Subdividing a table into N equal groups to look string-shaped was **rejected**: that
+invents electrical topology. `modules_per_cell` exists so a real string map can
+refine the cell later; its default of `0` means "the whole table".
+
+Derived in **exactly one place — `world/layout.py::cell_id_for()`** — from
+`(site.row, site.col)` = `(table index, module index)`, i.e. from the layout's own
+structure. Two callers, one convention:
+
+- `farm_builder._cell_id_for()` writes it onto the prim as `grid:id` at build time
+  (a one-line forward to `cell_id_for`, deliberately not a copy).
+- `FarmLayout.panel_records()` stamps the same value onto `PanelRecord.cell_id`,
+  which is what the mission's ranker buckets panels by.
+
+They must agree — a join key with two derivations is not a join key. (It briefly
+had one: `panel_records()` left `cell_id` blank, so the first suspicion-first demo
+had to set it by hand.)
+
+**Off unless `grid.enabled`** is set in `farm.yaml`, so a stage built without it
+authors no attribute, every `PanelRecord.cell_id` is `""`, and behaviour is
+byte-identical to before the namespace existed.
+
+Consumers: `kpi/simulated_scada.py` (⚠ **simulated** PR-anomaly ranking) and
+`orchestrator/grid_dispatch.py` (prioritisation, strictly upstream of the FSM).
+See `docs/specs/06` for `KPI-09` and why the simulated arm is circular.
+
+#### Suspicion-first dispatch in `run.py` (`grid_dispatch`)
+
+`run.py` applies `grid_dispatch.order_targets` between `layout.inspection_targets()`
+and the mission, so the layer decides **only which panels in what order** — the FSM,
+`Perception`, `Transport`, `RobotControl` and `FaultReport` are untouched.
+
+- **Off by default, and off is the identity.** With `grid_dispatch.enabled` unset,
+  `order_targets` returns the target list *itself*, builds no plan, and does not
+  even construct `panel_records()`. A run with the feature off is byte-identical to
+  one from before it existed, so every recorded KPI stays reproducible.
+- Enable per mission (`grid_dispatch:` block in `mission.yaml`) or per run
+  (`--grid-dispatch`, `--dispatch-max-cells N`). CLI merges **onto** the mission's
+  block rather than replacing it.
+- Applied **before** `--max-panels`, because `docs/specs/06` requires KPI-09's
+  ranker-ON and ranker-OFF arms to be compared at the same seed *and the same panel
+  budget* — so the budget is spent on the ranked order.
+- Cell membership comes from the stage/layout (`farm.yaml`'s `grid:` block).
+  `grid_dispatch.modules_per_cell` is a reserved stub that `order_targets` does not
+  read; a mission that sets it is warned, not silently re-grouped.
+- `plan.escalation_arm` is **recorded, not enacted** — the FSM's
+  `ADVANCE → SCREEN → CONFIRM` is ground-first by construction.
+
+**Run record.** Every record carries a `dispatch` block, including disabled runs, so
+none is ambiguous about whether a simulated prior chose the visit order:
+`enabled`, `reason`, `scada_source` (`"simulated"` when on, `"none"` when off),
+`n_targets_in`/`n_targets_out`, `plan` (solver, cell order, travel, suspicion,
+`dropped` cells **named**, never silently truncated) and `cells`. When the ranker
+ran, a `caveat` field states in prose — one shared wording,
+`simulated_scada.SIMULATED_CAVEAT` — that the prior is derived from the twin's own
+`pv:state`/`pv:iv_yield` and is therefore **circular by construction**.
+
+⚠⚠ There is **no SCADA feed**. The entry point is named `rank_cells_simulated` for
+that reason, and a `KPI-09` from this arm says nothing about a real plant.
 
 Read/write helper sketch (**⚠ verify pxr calls against your build**):
 

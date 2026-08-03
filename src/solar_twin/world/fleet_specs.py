@@ -55,6 +55,20 @@ class DroneSpec:
         This, not the body, is what must clear a panel."""
         return self.arm_m + self.rotor_diameter_m / 2.0
 
+    @property
+    def frontal_area_m2(self) -> float:
+        """Area the wind pushes on, for `control/wind_drift.py`'s drag term.
+
+        ⚠ **A lower bound, deliberately named as one.** This is the body box only
+        (`body_w_m * body_h_m`); the arms, the rotor discs edge-on, the gimbal and
+        the payload all add area a published dimension sheet does not separate out.
+        Under-stating the area under-states the drag and therefore the drift, so a
+        scenario that needs the *worst* case must set `HoldModel.drag_area_m2`
+        explicitly rather than inheriting this. It is here so the common case traces
+        to a real dimension instead of a number typed beside the model.
+        """
+        return self.body_w_m * self.body_h_m
+
 
 @dataclass(frozen=True)
 class RoverSpec:

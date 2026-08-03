@@ -14,7 +14,7 @@ So this does two things the run itself cannot:
 1. Captures the **exact frames at the exact waypoints** the mission will send to
    the VLM (same `SimRuntime`, same standoffs, same camera).
 2. Scores only **PV-glass pixels** — selected by the cell's blue cast
-   (`blue > 1.15 x red`), which the tan desert floor and grey hardware do not
+   (`blue > 2.0 x red`), which the tan desert floor and grey hardware do not
    have — so ground, sky and structure cannot be mistaken for a shaded module.
    Whole-frame statistics are also printed, precisely so the two can be compared
    and the trap stays visible rather than being quietly avoided.
@@ -35,11 +35,13 @@ import argparse
 import sys
 from pathlib import Path
 
-#: PV cells read blue relative to the desert floor; this ratio isolates glass.
-GLASS_BLUE_OVER_RED = 1.15
-#: A pixel is "dark" below this fraction of the *masked* bright reference, so the
-#: threshold follows the panel's own illumination instead of the frame's.
-DARK_FRACTION_OF_BRIGHT = 0.55
+# ⚠ Imported, not redefined: both of these must be identical in every tool that
+# scores glass. The ratio was 1.15 and a physically-based sky measurably broke it
+# (shadowed sand is sky-lit, so it turns blue and passes). See kpi/glass.py.
+from solar_twin.kpi.glass import (  # noqa: E402
+    DARK_FRACTION_OF_BRIGHT,
+    GLASS_BLUE_OVER_RED,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -105,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{'glass_dark%':>11} | {'frame_mean':>10} {'frame_dark%':>11}"
     )
     results = []
+    detail = []  # (panel, pass, glass_dark, glass_share) for the JSON sidecar
     for pid in panels:
         t = targets[pid]
         for tag, wp in (("screen", t.screen), ("confirm", t.confirm)):
@@ -132,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{g_dark * 100:11.1f} | {lum.mean():10.1f} {f_dark * 100:11.1f}"
             )
             results.append((pid, tag, g_dark))
+            detail.append((pid, tag, g_dark, share))
             if out:
                 try:
                     import imageio.v3 as iio
@@ -153,11 +157,40 @@ def main(argv: list[str] | None = None) -> int:
             f"differential vs control: "
             f"{(sum(shaded) / len(shaded) - control) * 100:+.1f} points"
         )
-        if sum(shaded) / len(shaded) - control < 0.05:
+        differential = sum(shaded) / len(shaded) - control
+        if differential < 0.05:
             print(
                 "⚠ NO STIMULUS: the shaded rows are not meaningfully darker than "
                 "the control. Do not report a KPI-03 number from this stage."
             )
+        # ⭐ ARCHIVE THE NUMBERS, not just the PNGs. Until 2026-07-31 this printed
+        # to a console and saved images, so a differential could only be re-checked
+        # by someone re-deriving it from the frames by hand -- which is exactly how
+        # a mask artifact survived long enough to be written into a session log as
+        # a headline. The mask share is recorded on purpose: it is the field that
+        # would have caught it, since a share near 1.0 means "% dark glass" has
+        # degenerated into whole-frame brightness.
+        if out:
+            import json
+
+            summary = {
+                "scenario": scn.name,
+                "sun": farm.get("sun", {}).get("timestamp"),
+                "farm_usd": args.farm_usd,
+                "glass_rule_blue_over_red": GLASS_BLUE_OVER_RED,
+                "dark_fraction_of_bright": DARK_FRACTION_OF_BRIGHT,
+                "control_panel": control_pid,
+                "control_dark": control,
+                "shaded_dark": shaded,
+                "differential": differential,
+                "has_stimulus": bool(differential >= 0.05),
+                "per_pass": [
+                    {"panel": pid, "pass": tag, "glass_share": sh, "glass_dark": d}
+                    for pid, tag, d, sh in detail
+                ],
+            }
+            (out / "stimulus.json").write_text(json.dumps(summary, indent=2))
+            print(f"\nwrote {out / 'stimulus.json'}")
     rt.close()
     return 0
 

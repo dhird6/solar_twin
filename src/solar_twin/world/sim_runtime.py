@@ -38,6 +38,7 @@ class SimRuntime:
         overview_capture: bool = True,
         overview_resolution: Optional[tuple[int, int]] = None,
         livestream: bool = False,
+        tonemap: bool = False,
     ):
         from isaacsim import SimulationApp
 
@@ -58,6 +59,9 @@ class SimRuntime:
                 window_height=1080,
             )
         self._app = SimulationApp(launch)
+        #: PhysX handle, or None when physics has never been started (the default —
+        #: every KPI on record was measured with physics inert).
+        self._world = None
         #: True when a human is watching a viewport (window or stream), which is
         #: what makes the chase camera and interpolated motion worth their cost.
         self.interactive = bool(livestream or not headless)
@@ -68,6 +72,16 @@ class SimRuntime:
 
         if livestream:
             self._app.set_setting("/app/window/drawMouse", True)
+            # The client negotiates the stream size from ITS window, but our frames
+            # come out at window_width x window_height (1920x1080). Without this the
+            # server refuses every frame — measured: "Cannot stream video frame with
+            # resolution 1920x1080 that differs from that of 1280x720 established
+            # when the client connected", i.e. a connected client sees nothing. The
+            # streaming .kit app sets this; the SimulationApp path (and NVIDIA's own
+            # livestream.py example) leaves it at false.
+            self._app.set_setting(
+                "/exts/omni.kit.livestream.app/primaryStream/allowDynamicResize", True
+            )
             app_utils.enable_extension("omni.kit.livestream.app")
             self._app.update()
             print(
@@ -96,6 +110,14 @@ class SimRuntime:
         self._app.update()
         self._stage = omni.usd.get_context().get_stage()
         assert UsdGeom.GetStageUpAxis(self._stage) == UsdGeom.Tokens.z, "farm must be Z-up"
+
+        # ⚠ AFTER the stage is open, and that ordering is the whole trick. Applied in
+        # `__init__` before `open_stage` the settings are accepted by carb and then
+        # silently reset when the renderer re-initialises for the new stage —
+        # measured: identical frame means (182.2 vs 182.3) with the tonemap
+        # "applied". Setting them here is what actually changes the picture.
+        if tonemap:
+            self._apply_tonemap()
 
         UsdGeom.Xform.Define(self._stage, "/World/Robots")
 
@@ -200,11 +222,81 @@ class SimRuntime:
             self._Gf.Vec3f(size, size, size)
         )
 
+    def start_physics(self, physics_dt: float = 1.0 / 200.0) -> bool:
+        """Bring PhysX up so the authored colliders are actually live. Returns success.
+
+        **Nothing in this project had ever stepped physics.** `step()` spun rotors,
+        turned turbine hubs and called `app.update()` — there was no
+        `SimulationContext`, no `World`, no `play()` — so `/World/PhysicsScene` and
+        every collider on the stage were inert decoration. `tools/px4_hover.py`, the
+        one place real dynamics run, flies in `add_default_ground_plane()`: an empty
+        world with its own floor. The twin's own terrain had never been stood on.
+
+        ⚠ **`play()` is not optional and its absence is silent.** Without it PhysX
+        never creates a simulation view, every prim read returns the static USD pose,
+        and a body that should be falling reports a perfect hover. That is
+        `px4_hover.py`'s "rule 2", learned the hard way, and it is why this returns a
+        bool and the caller reports it rather than assuming.
+
+        ⚠ **Costs real time at plant scale.** Measured: ~1.0x realtime at 8k prims,
+        **0.07x at 82k** — and the cost is USD scene-graph sync, not collision
+        (`docs/ENVIRONMENT.md`). A full-block mission with physics on will crawl. Use
+        it on a subset.
+        """
+        if self._world is not None:
+            return True
+        try:
+            from isaacsim.core.api import World
+
+            self._world = World(
+                physics_dt=physics_dt,
+                rendering_dt=max(physics_dt, 1.0 / 60.0),
+                stage_units_in_meters=1.0,
+            )
+            self._world.reset()
+            self._world.play()
+            self._world.step(render=False)
+            print(
+                f"  physics ON: dt={self._world.get_physics_dt()} "
+                f"playing={self._world.is_playing()} — colliders are live",
+                flush=True,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — a mission must not die for physics
+            print(
+                f"  [warn] could not start physics ({exc}); continuing WITHOUT it — "
+                "colliders are inert and the fleet is kinematic only",
+                flush=True,
+            )
+            self._world = None
+            return False
+
+    @property
+    def physics_running(self) -> bool:
+        return self._world is not None
+
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             self._spin_turbines()
             self._spin_rotors()
-            self._app.update()
+            if self._world is not None:
+                # Advances PhysX AND renders, so it replaces `app.update()` rather
+                # than joining it — calling both would draw two frames per step and
+                # halve the frame rate of every watched run.
+                self._world.step(render=True)
+            else:
+                self._app.update()
+
+    def pump(self) -> None:
+        """Draw one frame without advancing anything.
+
+        For `PumpedPerception`: while a VLM call blocks for ~12 s the window must
+        keep repainting or the compositor shows a stale/black surface and the WM
+        marks Isaac Sim "not responding". Deliberately NOT `step()` — turning the
+        rotors here would advance the world during an inspection, so the fleet
+        would drift while a panel is being judged.
+        """
+        self._app.update()
 
     def _spin_rotors(self) -> None:
         """Advance every drone rotor. Deliberately fast and NOT synced to thrust —
@@ -409,6 +501,231 @@ class SimRuntime:
         except Exception as exc:  # noqa: BLE001 — viewing is never worth the run
             print(f"  [warn] could not set viewport camera: {exc}", flush=True)
             return False
+
+    #: Kit's built-in perspective camera — the one the viewport's own navigation
+    #: (mouse orbit, WASD) drives. **Verified against this 6.0.1 build**, not
+    #: remembered: `isaacsim.core.utils.viewports.set_camera_view` defaults its
+    #: `camera_prim_path` to exactly this, and `stage.py` prints the prim at that
+    #: path. Kit also authors `/OmniverseKit_Top|Front|Right` alongside it.
+    _KIT_PERSP_CAMERA = "/OmniverseKit_Persp"
+
+    def frame_geometry(
+        self,
+        prim_path: str = "/World/Farm",
+        *,
+        camera_path: Optional[str] = None,
+        max_samples: int = 2000,
+    ) -> bool:
+        """Park the free camera where the geometry IS, not where the origin is.
+
+        Measured symptom this fixes: `assets/khavda_4block.usd` opened on empty
+        desert. `select_blocks` keeps real surveyed coordinates, so its four blocks
+        span **X 566 -> 3717 m** while Kit's perspective camera opens ~5 m from the
+        stage origin — half a kilometre short of the nearest table, looking at sand.
+        Nothing was broken; the camera was simply somewhere else.
+
+        Bounds come from the direct children's **translate**, sampled (see
+        `framing.sample_stride`): reading 117,264 attributes to place one camera costs
+        seconds for a number a couple of thousand samples already pin down. ⚠ That
+        makes the bound the extent of panel *origins*, slightly inside the true
+        geometric bound — `camera_pose_for_bounds` carries a margin to cover it.
+
+        Best-effort, like `set_viewport_camera`: a failure here costs the view, never
+        the run. Returns whether the camera was moved.
+        """
+        from pxr import UsdGeom
+
+        from solar_twin.world.framing import (
+            bounds_of,
+            camera_pose_for_bounds,
+            sample_stride,
+        )
+
+        prim = self._stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            print(
+                f"  [warn] nothing at {prim_path} to frame; leaving the camera at the "
+                "stage origin (if the stage's geometry is offset, you will be looking "
+                "at empty ground — select it in the Stage tree and press F)",
+                flush=True,
+            )
+            return False
+
+        children = prim.GetChildren()
+        stride = sample_stride(len(children), max_samples)
+        points: list[tuple[float, float, float]] = []
+        for child in children[::stride]:
+            t = child.GetAttribute("xformOp:translate")
+            if t and t.HasAuthoredValue():
+                v = t.Get()
+                if v is not None:
+                    points.append((float(v[0]), float(v[1]), float(v[2])))
+                    continue
+            # Panels authored through a different op order still have to be found.
+            xf = UsdGeom.Xformable(child)
+            if xf:
+                m = xf.ComputeLocalToWorldTransform(0)
+                p = m.ExtractTranslation()
+                points.append((float(p[0]), float(p[1]), float(p[2])))
+
+        if not points:
+            print(f"  [warn] {prim_path} has no placeable children to frame", flush=True)
+            return False
+
+        lo, hi = bounds_of(points)
+        eye, target = camera_pose_for_bounds(lo, hi)
+        try:
+            from isaacsim.core.utils.viewports import set_camera_view
+
+            set_camera_view(
+                eye=eye, target=target,
+                camera_prim_path=camera_path or self._KIT_PERSP_CAMERA,
+            )
+        except Exception as exc:  # noqa: BLE001 — viewing is never worth the run
+            print(f"  [warn] could not move the free camera: {exc}", flush=True)
+            return False
+
+        print(
+            f"  framed {prim_path}: {len(points)} samples (stride {stride}) span "
+            f"{hi[0] - lo[0]:.0f} x {hi[1] - lo[1]:.0f} m centred "
+            f"({(lo[0] + hi[0]) / 2:.0f}, {(lo[1] + hi[1]) / 2:.0f}) — camera at "
+            f"({eye[0]:.0f}, {eye[1]:.0f}, {eye[2]:.0f})",
+            flush=True,
+        )
+        return True
+
+    #: RTX post-processing for a photographic image rather than a raw radiance dump.
+    #:
+    #: Why this is needed at all: with no tonemapping the renderer maps radiance to
+    #: pixels near-linearly, so on a desert stage the bright surfaces clip and the sky
+    #: reads as a dull band — which is what made the plant look washed out and the
+    #: horizon brown. Measured symptom: a material probe under a bright key light
+    #: reported EVERY surface as pale grey, because albedo differences had saturated.
+    #:
+    #: ⚠ Every key here is a **carb setting path**, not a USD attribute, and the set
+    #: below is what a **measured sweep** on this build showed actually works — most
+    #: of the obvious knobs do nothing:
+    #:
+    #:   WORKS   fNumber, cameraShutter, filmIso  (the photographic triad)
+    #:   INERT   exposure/compensation, exposureKey, maxWhiteLuminance, whiteScale
+    #:           — all four moved the frame mean by <0.3/255 across their whole
+    #:           range, because this build's active tonemap operator (`op` = 6)
+    #:           does not consume the Reinhard parameters.
+    #:
+    #: So exposure is set photographically. Measured ground brightness on the
+    #: block02 stage at a 43 deg sun: f/5 -> 195 (blown white), f/7 -> 153,
+    #: **f/9 -> 118**, f/11 -> 91, f/16 -> 51. f/9 is where sunlit desert reads as
+    #: sunlit desert instead of paper.
+    #:
+    #: `op` is deliberately NOT set: the build's default is 6, an earlier version of
+    #: this table forced it to 1 on the strength of a docs recommendation, and that
+    #: was an unverified change to the whole tone curve.
+    _TONEMAP_SETTINGS: dict = {
+        "/rtx/post/tonemap/fNumber": 9.0,
+        "/rtx/post/tonemap/cameraShutter": 50.0,
+        "/rtx/post/tonemap/filmIso": 100.0,
+        # Auto-exposure OFF: a KPI render must not silently re-expose between frames,
+        # or a panel's measured brightness changes for reasons unrelated to the panel.
+        # Fixed photographic exposure is what makes a render comparable across runs.
+        "/rtx/post/histogram/enabled": False,
+        # Reflections deep enough for glass over cells to show anything at all.
+        "/rtx/reflections/maxReflectionBounces": 3,
+    }
+
+    def _apply_tonemap(self) -> None:
+        """Apply the photographic post-processing settings, reporting what stuck."""
+        applied, missing = [], []
+        try:
+            import carb
+
+            settings = carb.settings.get_settings()
+        except Exception as exc:  # noqa: BLE001 — the picture is never worth the run
+            print(f"  [warn] tonemap: carb settings unavailable ({exc})", flush=True)
+            return
+        for key, value in self._TONEMAP_SETTINGS.items():
+            try:
+                settings.set(key, value)
+                applied.append(key.rsplit("/", 1)[-1])
+            except Exception:  # noqa: BLE001, PERF203
+                missing.append(key)
+        print(f"  tonemap: applied {', '.join(applied)}", flush=True)
+        if missing:
+            print(
+                f"  [warn] tonemap: {len(missing)} setting(s) not accepted by this "
+                f"Kit build — {', '.join(missing)}",
+                flush=True,
+            )
+
+    def hold(
+        self,
+        *,
+        free_camera: bool = True,
+        spin_turbines: bool = True,
+        frame: Optional[str] = "/World/Farm",
+    ) -> None:
+        """Keep the app alive and interactive until the window is closed.
+
+        Why this exists: `run.py` closed the app the moment the mission ended, so the
+        only way to look at the built plant was to watch a run go past. Everything the
+        twin knows — the real terrain, the tables where they really stand, the turbine,
+        and now the verdicts written onto `pv:state` — was unreachable a second after
+        it finished being true.
+
+        Two things have to happen for "roam around and inspect" to actually work, and
+        neither is the loop:
+
+        * **Hand the camera back.** A watched run points the viewport at
+          `/World/Overview` and `chase()` rewrites that camera's transform every step,
+          so mouse navigation is overwritten on the next frame — the viewport looks
+          frozen and fighting it feels broken. `free_camera` switches to Kit's own
+          perspective camera, which nothing in this project drives.
+        * **Keep pumping the app.** `app.update()` is what draws frames and services
+          input; without it the window is a dead surface the compositor marks "not
+          responding" (the same reason `pump()` exists for blocking VLM calls).
+
+        `spin_turbines` leaves the rotors turning so the blade shadow keeps sweeping
+        while you fly — the point of `SC-14`, and the one thing a static USD open in
+        the editor cannot show you. Drone rotors are deliberately left still: the
+        fleet is parked, and `_spin_rotors` is cosmetic anyway (`NFR-07`).
+
+        ⚠ Advancing the world here is safe *because nothing is being measured*: the
+        run record and every verdict are already written by the time this is called.
+        Do not call it before a measurement.
+        """
+        if free_camera:
+            cam = self._stage.GetPrimAtPath(self._KIT_PERSP_CAMERA)
+            if cam and cam.IsValid():
+                if self.set_viewport_camera(self._KIT_PERSP_CAMERA):
+                    print(
+                        f"  viewport handed to {self._KIT_PERSP_CAMERA} — the camera is "
+                        "yours; orbit/WASD to fly the plant",
+                        flush=True,
+                    )
+                # AFTER the handover: framing the geometry is pointless while the
+                # viewport still looks through a camera this code does not drive.
+                if frame:
+                    self.frame_geometry(frame)
+            else:
+                # Say so rather than silently leaving the chase camera bound, which
+                # would look like the navigation is broken.
+                print(
+                    f"  [warn] no camera at {self._KIT_PERSP_CAMERA} on this stage; the "
+                    "viewport is still on the chase camera and will fight your mouse. "
+                    "Switch it by hand in the viewport's camera menu.",
+                    flush=True,
+                )
+        print(
+            "  holding the stage open — close the Isaac Sim window (or Ctrl-C here) "
+            "to exit.",
+            flush=True,
+        )
+        try:
+            while self._app.is_running():
+                if spin_turbines:
+                    self._spin_turbines()
+                self._app.update()
+        except KeyboardInterrupt:
+            print("\n  interrupted — closing.", flush=True)
 
     def export(self, path: str) -> None:
         """Save the current (post-run) stage — panels now hold verdicts."""

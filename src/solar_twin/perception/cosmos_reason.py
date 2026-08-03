@@ -148,6 +148,53 @@ class _HttpChatClient:
         return body["choices"][0]["message"]["content"]
 
 
+def centre_crop(frame: Frame, fraction: float) -> Frame:
+    """Keep the central `fraction` of a frame's width and height.
+
+    **Why a crop belongs in perception at all.** Measured 2026-07-29 on `SC-01`:
+    every false alarm across three prompt versions and nine repeats sat beside a
+    panel that really was faulted, and no clean-neighbourhood panel ever produced
+    one (`kpi/confound.py`). At the confirm standoff the target module is tilted
+    ~46 deg to the camera and foreshortened, so the **neighbouring module is in
+    shot** — the model reports soiling that is genuinely there and ground truth
+    scores it against the wrong panel. That is a framing defect, and no prompt
+    wording fixes it (two were tried; see `PROMPT_VERSION`).
+
+    Centre, not a projected bounding box, because the confirm waypoint is placed
+    directly over the target panel — so the target is central by construction and
+    the neighbours are peripheral. A true projection would be more exact and needs
+    camera intrinsics threaded out of the runtime; this is the cheap version of the
+    same idea, and it is measurable, which the exact version is not yet.
+
+    ⚠ `fraction=1.0` (the default everywhere) is a no-op. This is **not** enabled by
+    default and is **not yet validated against a KPI** — the vLLM server went down
+    before it could be measured. Do not describe it as a fix until a
+    `--repeat N` comparison on `SC-01` says so.
+    """
+    if frame is None:
+        return None
+    if not 0.0 < float(fraction) <= 1.0:
+        raise ValueError("crop fraction must be in (0, 1]")
+    if float(fraction) == 1.0:
+        return frame
+    try:
+        import numpy as np  # noqa: PLC0415 — lazy: the module imports without it
+
+        arr = np.asarray(frame)
+        if arr.ndim < 2:
+            return frame
+        h, w = arr.shape[0], arr.shape[1]
+        # At least one pixel each way, so a tiny frame or a small fraction cannot
+        # produce an empty image that would silently become a text-only prompt.
+        kh = max(1, int(round(h * float(fraction))))
+        kw = max(1, int(round(w * float(fraction))))
+        top = (h - kh) // 2
+        left = (w - kw) // 2
+        return arr[top : top + kh, left : left + kw]
+    except Exception:  # noqa: BLE001 — a failed crop must not lose the frame
+        return frame
+
+
 def _frame_to_data_url(frame: Frame) -> str | None:
     """Encode a raw camera frame as a PNG ``data:`` URL for an OpenAI-style
     ``image_url`` content part, or return None (caller sends text-only).
@@ -382,6 +429,11 @@ class CosmosReasonPerception(Perception):
     #: replacing it, so a config that sets one knob cannot silently drop the
     #: greedy-decoding guarantee the other three provide.
     sampling: dict[str, Any] = field(default_factory=dict)
+    #: Central fraction of each frame actually shown to the model. 1.0 = the whole
+    #: frame, which is the default and the behaviour every KPI on record was
+    #: measured under. Lower it to exclude the neighbouring module (`centre_crop`,
+    #: `kpi/confound.py`) — **unvalidated against a KPI, so opt-in only.**
+    crop_fraction: float = 1.0
 
     def __post_init__(self) -> None:
         if self.client is None:
@@ -402,13 +454,20 @@ class CosmosReasonPerception(Perception):
             # decoding config is. Without this, changing a taxonomy definition
             # silently makes every earlier KPI non-comparable with no trace.
             "prompt_version": PROMPT_VERSION,
+            # What the model was actually shown. 1.0 = the whole frame, which is
+            # what every recorded KPI used; anything else makes a number
+            # non-comparable with them, so it is named rather than assumed.
+            "crop_fraction": float(self.crop_fraction),
             # Honesty, not decoration: serial requests were measured repeatable
             # on this build, concurrent ones were not (see DEFAULT_SAMPLING).
             "determinism": "serial-only; continuous batching is not reproducible",
         }
 
     def _messages(self, prompt: str, frame: Frame) -> list[dict]:
-        data_url = _frame_to_data_url(frame)
+        # Crop before encoding, so the model and the recorded frame digest agree
+        # about what was judged. Cropping after would make `screen_frame_sha`
+        # describe pixels the model never saw.
+        data_url = _frame_to_data_url(centre_crop(frame, self.crop_fraction))
         if data_url is None:
             # No frame (or no codec) — text-only, as in Slice 0.
             return [{"role": "user", "content": prompt}]

@@ -25,9 +25,13 @@ from pathlib import Path
 import yaml
 
 from solar_twin.control.safe import SafeControl
+from solar_twin.control.wind_drift import WindDisturbedControl
+from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
+from solar_twin.orchestrator import grid_dispatch
 from solar_twin.orchestrator.mission import Fleet, Mission
+from solar_twin.orchestrator.scout_dispatch import BEAT_LABELS, ScoutDispatchMission
 from solar_twin.world.keepout import build_keepouts
 from solar_twin.world.layout import FarmLayout
 
@@ -39,6 +43,9 @@ _PHASE_LABELS = {
     "SCREEN": "screening pass",
     "CONFIRM": "close confirm pass",
     "WRITEBACK": "writing verdict to USD",
+    # The scout->dispatch beats share this table so the overlay and the live
+    # narration caption either mission without knowing which one is running.
+    **BEAT_LABELS,
 }
 
 
@@ -88,7 +95,12 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             overview_pose=overview_pose,
             overview_capture=capture_overview,
             livestream=bool(sim_opts.get("livestream")),
+            tonemap=bool(sim_opts.get("tonemap")),
         )
+        # Opt-in PhysX. OFF by default: every KPI on record was measured with physics
+        # inert, and it costs ~1x realtime at 8k prims but 0.07x at 82k.
+        if sim_opts.get("physics"):
+            runtime.start_physics()
         panel_paths = {
             s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
             for s in layout.sites
@@ -99,15 +111,115 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
         # silently pick up the extra steps.
         kin = mission_cfg.get("kinematics", {}) or {}
         speeds = {}
+        cruise: dict[str, float] = {}
         if sim_opts.get("video") or sim_opts.get("live"):
             speeds = {
                 fleet["ground_bot"]: float(kin.get("bot_speed", 1.0)),
                 fleet["screen_drone"]: float(kin.get("drone_speed", 2.0)),
                 fleet["confirm_drone"]: float(kin.get("drone_speed", 2.0)),
             }
-        control = KinematicControl(runtime, speeds=speeds, dt=float(kin.get("dt", 0.1)))
+            # `cruise_speeds` existed in KinematicControl and was exercised only by
+            # tests — this call never passed it, so every commute ran at inspection
+            # speed. That is not a cosmetic loss: at 1.0 m/s and dt=0.1 the
+            # interpolator's `_MAX_TICKS` budget of 4000 covers just 400 m, while the
+            # first table of the full block sits ~490 m from the origin, so the ground
+            # bot burned the whole budget, warned, and snapped to the waypoint. On the
+            # whole plot (4.84 x 1.97 km) that failure is the normal case, not an edge.
+            cruise = {
+                fleet["ground_bot"]: float(kin.get("bot_cruise", 6.0)),
+                fleet["screen_drone"]: float(kin.get("drone_cruise", 18.0)),
+                fleet["confirm_drone"]: float(kin.get("drone_cruise", 18.0)),
+            }
+        control = KinematicControl(
+            runtime,
+            speeds=speeds,
+            cruise_speeds=cruise,
+            cruise_above_m=float(kin.get("cruise_above_m", 6.0)),
+            dt=float(kin.get("dt", 0.1)),
+            max_ticks=int(kin.get("max_ticks", 4000)),
+        )
         return SimNativeTransport(runtime, panel_paths), control
     raise ValueError(f"unknown backend: {name!r}")
+
+
+def _wrapper(control, cls):
+    """First wrapper of type `cls` in a decorator chain, or None.
+
+    `SafeControl` and `WindDisturbedControl` both wrap a `RobotControl` and both
+    expose `.inner`, so the outermost object is no longer a reliable `isinstance`
+    target. Walking the chain is what stops adding a wrapper from silently dropping
+    another's contribution to the run record — which is exactly what an
+    `isinstance(control, SafeControl)` check does the moment anything wraps it.
+    """
+    seen = 0
+    while control is not None and seen < 8:  # 8 = a chain depth nothing should reach
+        if isinstance(control, cls):
+            return control
+        control = getattr(control, "inner", None)
+        seen += 1
+    return None
+
+
+def _wrap_wind(control, farm_cfg: dict, mission_cfg: dict, layout: FarmLayout):
+    """Opt-in: let the wind push the drones off their commanded pose.
+
+    OFF by default and off is the identity — a run without
+    `kinematics.wind_disturbance` gets the same object back, so every KPI recorded
+    before this existed stays reproducible.
+
+    ⚠ This disturbs the **camera pose**, not the airframe. It is not flight dynamics
+    and `KPI-05` does not come from it (see `control/wind_drift.py`, and
+    `tools/px4_hover.py` for the real-dynamics measurement). It is wrapped OUTSIDE
+    `SafeControl` on purpose so the keep-out layer vets the pose the drone will
+    actually hold rather than the one the mission wished for.
+    """
+    kin = mission_cfg.get("kinematics", {}) or {}
+    if not kin.get("wind_disturbance"):
+        return control
+
+    # `WindDisturbedControl` is already imported at module scope (the run record
+    # needs it to find the wrapper); these two are only needed on the opt-in path.
+    from solar_twin.control.wind_drift import DEFAULT_HOLD_STIFFNESS_N_PER_M, HoldModel
+    from solar_twin.world.fleet_specs import DRONES
+    from solar_twin.world.siting import resolve_turbines
+    from solar_twin.world.windfield import from_cfg as wind_from_cfg
+
+    # Wake sources must be the turbines the stage was BUILT with, not the config's
+    # explicit list — a scattered field wakes (and shelters) the drone somewhere else.
+    field = wind_from_cfg(farm_cfg, resolve_turbines(farm_cfg, layout))
+    if field.mean_speed_ms <= 0.0:
+        print(
+            "  [warn] kinematics.wind_disturbance is ON but this farm config declares "
+            "no wind (mean_speed 0) — the fleet will fly undisturbed and any KPI will "
+            "read as a calm-air result. This is the NFR-07 failure mode: asking for a "
+            "hazard and then measuring without it.",
+            flush=True,
+        )
+        return control
+
+    spec_name = str(kin.get("wind_drone_spec", "m350"))
+    if spec_name not in DRONES:
+        raise ValueError(
+            f"kinematics.wind_drone_spec={spec_name!r} is not one of {sorted(DRONES)}"
+        )
+    spec = DRONES[spec_name]
+    stiffness = float(
+        kin.get("wind_hold_stiffness_n_per_m", DEFAULT_HOLD_STIFFNESS_N_PER_M)
+    )
+    model = HoldModel.for_drone(spec, hold_stiffness_n_per_m=stiffness)
+
+    # Drones only. The ground bot is deliberately left undisturbed: `HoldModel`'s
+    # stiffness is a rotor position-hold figure, and applying it to a 50 kg wheeled
+    # rover held on the terrain by friction would invent a number, not model one.
+    fleet = mission_cfg["fleet"]
+    models = {fleet["screen_drone"]: model, fleet["confirm_drone"]: model}
+    print(
+        f"  wind disturbance ON: {field.mean_speed_ms:.1f} m/s from "
+        f"{field.wind_dir_deg:.0f} deg, gust {100 * field.speed_variation:.0f}%, "
+        f"{spec.name} @ {stiffness:.0f} N/m (camera pose only — NOT flight dynamics)",
+        flush=True,
+    )
+    return WindDisturbedControl(control, field, models)
 
 
 def _perception(name: str, opts: dict | None = None):
@@ -134,10 +246,90 @@ def _perception(name: str, opts: dict | None = None):
             # Decoding is pinned greedy by default; `sampling:` in
             # perception_opts merges onto those defaults (never replaces them).
             sampling=dict(opts.get("sampling") or {}),
+            # 1.0 = show the whole frame, which is what every recorded KPI used.
+            # Lowering it excludes the neighbouring module from the confirm frame
+            # (`kpi/confound.py`) — ⚠ not yet validated against a KPI, so the
+            # default must stay 1.0 until a --repeat comparison says otherwise.
+            crop_fraction=float(opts.get("crop_fraction", 1.0)),
         )
     raise NotImplementedError(
         f"perception {name!r} not wired yet (Slice 0 uses ground_truth)."
     )
+
+
+def _dispatch(layout: FarmLayout, farm_cfg: dict, mission_cfg: dict, targets: list):
+    """Apply the suspicion-first prioritisation layer. Returns (targets, result).
+
+    ⚠⚠ **The prior is SIMULATED and circular by construction.** There is no SCADA
+    feed on this project: `kpi/simulated_scada.rank_cells_simulated` derives a
+    cell's "measured" output from the twin's own `pv:state`/`pv:iv_yield` — the
+    very ground truth the mission is sent out to discover. A run with this on
+    therefore says nothing about a real plant, and `dispatch.scada_source` /
+    `dispatch.caveat` in the run record say so in words.
+
+    **Off by default, and off is the identity.** `order_targets` returns `targets`
+    itself when disabled (see its docstring and
+    `test_disabled_reproduces_layout_order_exactly`), so a run with
+    `grid_dispatch.enabled` unset is byte-identical to one from before this layer
+    existed — every recorded KPI stays reproducible. `panel_records()` is not even
+    built in that case: on the full plot that is 30k records, and a disabled run
+    must cost what it costs today.
+
+    ⚠ Cell membership comes from the LAYOUT/STAGE (`farm.yaml`'s `grid:` block,
+    via `layout.cell_id_for`), never from the mission. `grid_dispatch.
+    modules_per_cell` is a stub reserved for a real string map and is *not* read
+    by `order_targets`, so a mission that sets it is warned rather than silently
+    ranked against a different grouping than the stage was authored with.
+
+    ⚠ **Why the input is `layout.panel_records()` and not `transport.read_panel`,
+    given that the USD stage is the source of truth (golden rule 3).** That rule
+    governs panel state *during* sim — the FSM still reads and writes every verdict
+    through the Transport, untouched. This runs strictly BEFORE the mission starts,
+    and it needs the same seeded layout the builder authored the stage from:
+    `layout.cell_id_for` is the single derivation both use, so the `cell_id` here
+    and the `grid:id` on the prim are the same string by construction. Reading it
+    back off the stage instead would be N USD attribute reads (30k on the full
+    plot) to recover what the config already determines. If the ranker ever needs
+    *live* panel state — a mid-mission re-rank from accumulated verdicts — that
+    must come through the Transport, and this is the line to revisit.
+    """
+    cfg = grid_dispatch.DispatchConfig.from_mission_cfg(mission_cfg)
+    if not cfg.enabled:
+        return grid_dispatch.order_targets(targets, {}, cfg)
+
+    farm_grouping = int((farm_cfg.get("grid", {}) or {}).get("modules_per_cell", 0))
+    mission_grouping = int(
+        ((mission_cfg or {}).get("grid_dispatch", {}) or {}).get("modules_per_cell", 0)
+    )
+    if mission_grouping and mission_grouping != farm_grouping:
+        print(
+            f"  [warn] mission grid_dispatch.modules_per_cell={mission_grouping} is "
+            f"IGNORED: cells come from the stage (farm.yaml grid.modules_per_cell="
+            f"{farm_grouping}), so the ranker and the authored grid:id agree. Change "
+            "it in farm.yaml and rebuild the stage.",
+            flush=True,
+        )
+
+    records_by_panel = {r.panel_id: r for r in layout.panel_records()}
+    ordered, result = grid_dispatch.order_targets(targets, records_by_panel, cfg)
+    print(
+        "  [note] grid_dispatch enabled: "
+        f"{result.reason}. ⚠ The prior is SIMULATED — derived from the twin's own "
+        "pv:state/pv:iv_yield, i.e. from the ground truth being sought. Circular by "
+        "construction; do NOT read KPI-09 from this as a claim about a plant.",
+        flush=True,
+    )
+    if result.plan is not None:
+        print(
+            f"  [note] dispatch plan: solver={result.plan.solver} "
+            f"cells={len(result.plan.cell_order)} dropped={len(result.plan.dropped)} "
+            f"travel={result.plan.travel_m:.1f} m "
+            f"suspicion/m={result.plan.suspicion_per_m:.6f} (KPI-09, SIMULATED). "
+            f"escalation_arm={result.plan.escalation_arm} is RECORDED, not enacted — "
+            "the FSM's ADVANCE->SCREEN->CONFIRM is ground-first by construction.",
+            flush=True,
+        )
+    return ordered, result
 
 
 def _perception_provenance(name: str, perception) -> dict:
@@ -176,6 +368,10 @@ def run(
     keepouts = build_keepouts(farm_cfg, layout)
     if keepouts:
         control = SafeControl(control, keepouts)
+    # Wind on the camera, OUTSIDE the keep-out clamp so a gust cannot push an
+    # already-vetted waypoint back into the rotor volume unchecked. No-op unless
+    # `kinematics.wind_disturbance` is set.
+    control = _wrap_wind(control, farm_cfg, mission_cfg, layout)
     perception = _perception(
         mission_cfg.get("perception", "ground_truth"),
         mission_cfg.get("perception_opts", {}),
@@ -189,6 +385,14 @@ def run(
 
     targets = layout.inspection_targets(mission_cfg)
     faults = layout.seeded_faults()
+
+    # Prioritisation, strictly UPSTREAM of the FSM: it only decides which panels in
+    # what order. Placed BEFORE --max-panels on purpose — `docs/specs/06` requires
+    # KPI-09's ranker-ON and ranker-OFF arms to be compared at the same seed and
+    # the same *panel budget*, so the budget must bite after the ranking, not
+    # before it. Disabled (the default) this is the identity, so the truncation
+    # below sees exactly the list it sees today.
+    targets, dispatch = _dispatch(layout, farm_cfg, mission_cfg, targets)
 
     sim_opts = sim_opts or {}
     max_panels = int(sim_opts.get("max_panels") or 0)
@@ -222,9 +426,32 @@ def run(
                 "injected_state in the record is wrong."
             )
 
-    # --- optional demo video (chase view + drone camera, captioned) --------
     recorder = None
     runtime = getattr(transport, "runtime", None)
+
+    # Keep the viewport painting through a slow perception call. Only when a human is
+    # watching AND the backend is slow enough to matter: `cosmos_reason` blocks ~12 s
+    # per panel, and without a pump the window shows a stale/black surface and the WM
+    # reports Isaac Sim "not responding" for that whole time. A measurement run is
+    # untouched — headless has no interactive runtime, and the stub returns in
+    # microseconds. Placed HERE, not next to `_perception()`: `runtime` is resolved
+    # off the transport above and does not exist earlier in this function.
+    if (
+        runtime is not None
+        and getattr(runtime, "interactive", False)
+        and hasattr(runtime, "pump")
+        and mission_cfg.get("perception") == "cosmos_reason"
+    ):
+        from solar_twin.perception.pumped import PumpedPerception
+
+        perception = PumpedPerception(perception, pump=runtime.pump)
+        print(
+            "  [note] perception wrapped in PumpedPerception: the viewport keeps "
+            "repainting while each panel is judged.",
+            flush=True,
+        )
+
+    # --- optional demo video (chase view + drone camera, captioned) --------
     if sim_opts.get("video") and runtime is not None and hasattr(runtime, "capture_pair"):
         from solar_twin.world.recorder import Caption, RunRecorder
 
@@ -313,6 +540,18 @@ def run(
             if fr is not None:
                 frames.append(fr[..., :3])
 
+    def _surveyed(i: int, panel_id: str, suspect: bool) -> None:
+        """Progress during a scout_dispatch survey.
+
+        `_progress` cannot serve here: that mission files every result after the
+        whole survey and all responses are done, so without this the terminal is
+        silent for the entire sweep and then prints everything at once.
+        """
+        mark = "FLAGGED" if suspect else "clean"
+        print(f"  [scout {i + 1}/{len(targets)}] {panel_id}: {mark}", flush=True)
+        if live_view:
+            runtime.step(2)
+
     if recorder is not None and targets:
         # Deploy the fleet AT the first panel instead of flying it there from the
         # stage origin. On the full block that origin is ~490 m from the first
@@ -331,7 +570,24 @@ def run(
             fleet_cfg["confirm_drone"], first.confirm.x, first.confirm.y, first.confirm.z
         )
 
-    mission = Mission(transport, control, perception, fleet)
+    # Two mission shapes, chosen by config. `sweep` is the measurement FSM and the
+    # default — every KPI on record was produced by it, so it must stay reachable
+    # unchanged. `scout_dispatch` is the demonstration: survey, then send the fleet
+    # to what the survey found (see orchestrator/scout_dispatch.py).
+    mode = str(mission_cfg.get("mission_mode", "sweep"))
+    if mode == "scout_dispatch":
+        mission = ScoutDispatchMission(transport, control, perception, fleet)
+        print(
+            "  [note] mission_mode: scout_dispatch — survey sweep, then dispatch to "
+            "flagged panels. A demo shape: do NOT quote KPIs from this run.",
+            flush=True,
+        )
+    elif mode == "sweep":
+        mission = Mission(transport, control, perception, fleet)
+    else:
+        raise ValueError(
+            f"unknown mission_mode: {mode!r} (expected 'sweep' or 'scout_dispatch')"
+        )
     provenance = _perception_provenance(
         str(mission_cfg.get("perception", "ground_truth")), perception
     )
@@ -355,10 +611,18 @@ def run(
             # as ground truth (see pv_module.restore_state).
             transport.restore_panels(snapshot)
             print(f"  --- repeat {rep + 1}/{n_repeats} ---", flush=True)
-            if isinstance(control, SafeControl):
-                control.reset()  # per-repeat keep-out tally, not cumulative
+            # Per-repeat tallies, not cumulative. Called on the OUTERMOST wrapper:
+            # each `reset` delegates inward, so one call clears the keep-out tally
+            # and rewinds the gust clock (repeat 2 must see repeat 1's weather, or
+            # `variance.json` would read the wind as a decoding spread — RISK-23).
+            _reset = getattr(control, "reset", None)
+            if callable(_reset):
+                _reset()
         t0 = time.perf_counter()
-        result = mission.run(targets, on_result=_progress, on_phase=_on_phase)
+        run_kw = (
+            {"on_scouted": _surveyed} if isinstance(mission, ScoutDispatchMission) else {}
+        )
+        result = mission.run(targets, on_result=_progress, on_phase=_on_phase, **run_kw)
         wall_s = time.perf_counter() - t0
 
         # ---- run record ------------------------------------------------ #
@@ -378,11 +642,24 @@ def run(
             # Stated explicitly: with --max-panels the stage holds more panels than
             # the mission visited, so `n_panels` is NOT the metric denominator.
             "panels_targeted": len(targets),
+            # What decided the visit ORDER. Present on every record, including
+            # disabled runs (`scada_source: "none"`), so no record is ambiguous
+            # about whether a simulated prior influenced what got inspected first.
+            "dispatch": dispatch.to_dict(),
             "injected_faults": {pid: s.value for pid, s in faults.items()},
             "metrics": {
                 "panels_inspected": result.panels_inspected,
                 "faults_detected": result.faults_detected,
                 "detection_rate": result.detection_rate,
+                # ⚠ `detection_rate` is ACCURACY over every panel, so on a mostly
+                # healthy scenario it flatters a model that finds nothing. These
+                # four make that impossible to miss in a run record: the null
+                # baseline it must beat, recall on faulted panels only (named and
+                # flagged), and the per-state split the pooled number hides.
+                "healthy_fraction": result.healthy_fraction,
+                "fault_recall": result.fault_recall,
+                "fault_flagged_rate": result.fault_flagged_rate,
+                "recall_by_state": result.recall_by_state(),
                 "false_fault_rate": result.false_fault_rate,  # KPI-03
                 # KPI-03's two halves, reported so "called a fault that isn't
                 # there" and "we lost the answer" stop being one number with
@@ -396,16 +673,30 @@ def run(
             "panels": [asdict(r) for r in result.results],
             "fault_events": [e.to_dict() for e in result.fault_events],
         }
-        if isinstance(control, SafeControl):
+        # Is a "false fault" actually the panel next door? Measured on SC-01: every
+        # false alarm across three prompt versions and nine repeats sat beside a
+        # faulted panel, and none of the clean-neighbourhood panels ever produced
+        # one. The confirm frame shows more than one module, so KPI-03 can be
+        # scoring a real defect against the wrong panel — recorded per run rather
+        # than left for someone to notice (`kpi/confound.py`).
+        record["confound"] = kpi_confound.analyse(record).to_dict()
+        safe = _wrapper(control, SafeControl)
+        if safe is not None:
             record["keepout"] = {
                 "turbines": len(keepouts),
-                "waypoints_clamped": len(control.events),
+                "waypoints_clamped": len(safe.events),
                 "min_clearance_m": (
-                    None if control.min_clearance_m == float("inf")
-                    else round(control.min_clearance_m, 3)
+                    None if safe.min_clearance_m == float("inf")
+                    else round(safe.min_clearance_m, 3)
                 ),
-                "events": [e.to_dict() for e in control.events],
+                "events": [e.to_dict() for e in safe.events],
             }
+        # How much wind actually reached the camera. Present only when the
+        # disturbance is on, and it names its own limits in `model` so a reader
+        # cannot mistake a drift figure for a flight-dynamics result.
+        wind_ctl = _wrapper(control, WindDisturbedControl)
+        if wind_ctl is not None:
+            record["wind_disturbance"] = wind_ctl.summary()
         records.append(record)
 
         # Single run keeps the historic layout (results.json at the top); repeats
@@ -427,6 +718,10 @@ def run(
             f"injected={len(record['injected_faults'])}",
             flush=True,
         )
+        # Same reasoning as the line above: if the false-fault rate is the panel
+        # next door, that has to be visible where the number is, not in a JSON file.
+        if record["confound"]["false_alarms"]:
+            print(f"  confound: {record['confound']['verdict']}", flush=True)
 
     # ---- variance across repeats ---------------------------------------- #
     var_report = None
@@ -498,6 +793,29 @@ def run(
         except Exception as exc:  # noqa: BLE001 — video is a nice-to-have
             print(f"[warn] video write failed: {exc}", flush=True)
 
+    # ---- optionally stay open so the plant can be inspected by hand ------ #
+    # Deliberately after every artefact is written and before `close()`: the run
+    # record must not depend on how long someone flies around, and `close()` may
+    # terminate the process outright.
+    if sim_opts.get("hold"):
+        runtime = getattr(transport, "runtime", None)
+        if runtime is not None and hasattr(runtime, "hold"):
+            if sim_opts.get("headless") and not sim_opts.get("livestream"):
+                print(
+                    "  [warn] --hold does nothing headless: there is no window to hold "
+                    "open and no stream to watch. Pair it with --gui (a window on this "
+                    "machine's display) or --livestream (WebRTC).",
+                    flush=True,
+                )
+            else:
+                runtime.hold()
+        else:
+            print(
+                "  [warn] --hold needs the sim_native backend (this one has no "
+                "runtime to hold open).",
+                flush=True,
+            )
+
     # Close the sim LAST (may terminate the process).
     if hasattr(transport, "close"):
         transport.close()
@@ -547,6 +865,27 @@ def main(argv: list[str] | None = None) -> int:
         "Streaming Client to this host (signal 49100 / stream 47998).",
     )
     ap.add_argument(
+        "--physics",
+        action="store_true",
+        help="step PhysX during the mission so the authored colliders are live. "
+        "⚠ OFF by default — every recorded KPI was measured with physics inert, and "
+        "it costs ~1x realtime on a ~24-table subset but 0.07x on the full block.",
+    )
+    ap.add_argument(
+        "--tonemap",
+        action="store_true",
+        help="apply the measured photographic exposure (f/9). Off for KPI runs so a "
+        "pixel-scored metric cannot move because of a render setting.",
+    )
+    ap.add_argument(
+        "--hold",
+        action="store_true",
+        help="sim_native + --gui/--livestream: when the mission ends, DON'T close — "
+        "hand the camera back and keep the stage open so you can fly around the "
+        "plant with the fleet parked and the verdicts already on the prims. "
+        "Turbines keep turning, so the blade shadow keeps sweeping.",
+    )
+    ap.add_argument(
         "--live",
         action="store_true",
         help="interpolated motion WITHOUT recording a video: the fleet actually "
@@ -576,10 +915,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
     ap.add_argument(
         "--route",
-        choices=["linear", "serpentine"],
+        choices=["linear", "serpentine", "fault_zone"],
         help="panel visit order. serpentine turns round at the end of each table "
-        "instead of deadheading 128 m back to the next row's start. Overrides "
-        "mission.yaml's `route`.",
+        "instead of deadheading 128 m back to the next row's start. fault_zone "
+        "surveys a compact window centred on a seeded fault (for "
+        "mission_mode: scout_dispatch) and is NOT a measurement route — it picks "
+        "the window using ground truth. Overrides mission.yaml's `route`.",
     )
     ap.add_argument(
         "--panel-stride",
@@ -587,6 +928,26 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="inspect every Nth panel — a coverage sweep rather than a census. "
         "⚠ changes what the run measures (denominator = panels VISITED).",
+    )
+    ap.add_argument(
+        "--grid-dispatch",
+        action="store_true",
+        help="order panels suspicion-first instead of in layout order: rank "
+        "`grid:id` cells by PR anomaly, then sweep the worst cells first. "
+        "⚠⚠ THE RANKING IS SIMULATED — derived from the twin's own "
+        "pv:state/pv:iv_yield, i.e. from the ground truth being sought — so it is "
+        "circular by construction and proves nothing about a real plant. OFF by "
+        "default; off is the identity, so every recorded KPI stays reproducible. "
+        "Needs a stage built with `grid.enabled: true` in farm.yaml. "
+        "Overrides mission.yaml's `grid_dispatch.enabled`.",
+    )
+    ap.add_argument(
+        "--dispatch-max-cells",
+        type=int,
+        default=0,
+        help="--grid-dispatch only: visit at most N cells (0 = all). Dropped cells "
+        "are NAMED in the run record, never silently truncated. This is the panel "
+        "budget KPI-09's ranker-ON/ranker-OFF arms must share.",
     )
     ap.add_argument(
         "--max-panels",
@@ -597,6 +958,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--repeat",
+        "--repeats",
+        dest="repeat",
         type=int,
         default=1,
         help="run the SAME scenario N times and report the spread instead of one "
@@ -611,6 +974,9 @@ def main(argv: list[str] | None = None) -> int:
         "headless": not args.gui,
         "livestream": args.livestream,
         "live": args.live,
+        "hold": args.hold,
+        "physics": args.physics,
+        "tonemap": args.tonemap,
         "resolution": (args.width, args.height),
         "save_usd": args.save_usd,
         "record": args.record,
@@ -650,6 +1016,29 @@ def main(argv: list[str] | None = None) -> int:
         mission_cfg = {**mission_cfg, **route_overrides}
         print(f"  route: {mission_cfg.get('route', 'linear')} "
               f"stride={mission_cfg.get('panel_stride', 1)}", flush=True)
+
+    # Suspicion-first ordering, same CLI-overrides-config shape as `route`. Merged
+    # ONTO the mission's own `grid_dispatch` block rather than replacing it, so a
+    # mission that pins `min_anomaly`/`escalation_arm`/`solver` keeps them when the
+    # flag turns the layer on. Nothing is written unless a flag was actually
+    # passed — a run without them must not gain a `grid_dispatch` key it did not
+    # have, since the mission config is copied verbatim into the run dir.
+    if args.grid_dispatch or args.dispatch_max_cells:
+        if mission_cfg is None:
+            mission_cfg = _load_yaml(args.mission)
+        dispatch_cfg = dict(mission_cfg.get("grid_dispatch") or {})
+        if args.grid_dispatch:
+            dispatch_cfg["enabled"] = True
+        if args.dispatch_max_cells:
+            dispatch_cfg["max_cells"] = args.dispatch_max_cells
+        mission_cfg = {**mission_cfg, "grid_dispatch": dispatch_cfg}
+        if args.dispatch_max_cells and not dispatch_cfg.get("enabled"):
+            print(
+                "  [warn] --dispatch-max-cells without --grid-dispatch (and no "
+                "`grid_dispatch.enabled` in the mission): the ranker is off, so the "
+                "cell budget does nothing.",
+                flush=True,
+            )
 
     if args.subset:
         # Must mirror farm_builder's --subset: the mission may only target panels

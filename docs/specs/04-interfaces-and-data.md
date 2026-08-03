@@ -265,6 +265,58 @@ module number.
 
 **Status:** Locked (DXF path). **Slice:** delivered ahead of `SLICE-6`.
 
+### IF-11 — Real OSM geography as a third provenance class (SHIPPED)
+
+**Need:** `FR-27` — the plant has to stand in the real landscape, and a viewer has
+to be able to tell which of it is real.
+
+**What shipped:**
+
+- **`tools/osm_fetch.py`** — ingest-time only. Fetches the official **OSM API 0.6
+  `/map`** call for the site's padded bbox, projects WGS84 → the site's own CRS
+  with `pyproj`, subtracts the site anchor, and bakes a YAML of stage-local
+  metres. Deliberately **not Overpass**: its main instance answered every request
+  during this ingest with `504 … dispatcher timeout`, and two mirrors were
+  unreachable. Cost of `/map` is a hard **0.25 sq deg** bbox limit, which the tool
+  fails loud on rather than truncating.
+- **`world/osm_features.py`** — pure python, no network and no `pyproj`, same split
+  `world/dem.py` has against `tools/dem_fetch.py`. Ribbon extrusion (mitered, so a
+  road does not pinch on a bend), per-vertex terrain drape, radius clip and
+  box clip.
+- **`farm_builder._build_osm_layer`** — authors `/World/OSM/{Roads,Power,Boundaries}`.
+  Plant boundaries are `purpose = "guide"`: they are annotation, so they must never
+  shadow a sensor frame.
+- **A third provenance value.** `site.py` has `derived` (read out of the vendor CAD)
+  and `inferred` (ours). OSM is neither, so prims carry `st:provenance = "mapped"`,
+  plus `st:osm_id`, `st:width_source` and the license. Measured on the S05b
+  `--subset 200` stage: **17 derived, 106 inferred, 10 mapped**.
+
+**Registration is by construction, not by fitting.** The bake and the CAD layout
+share one anchor and one CRS, so an OSM road and a tracker table land in the same
+frame because both are real survey metres. `tests/test_osm_features.py` asserts the
+two anchors match.
+
+**⚠ Three limits, all measured, none of them cosmetic:**
+
+1. **No internal plant roads exist in OSM here.** The real footprint returns
+   **5 ways** — two unpaved `highway=track`, two `power=plant` polygons, one 765 kV
+   line. Internal access roads are private and unmapped, so they stay
+   `derived`/`inferred` and the build prints the two tallies separately.
+2. **Widths and sag are conventions.** OSM tags no width out here, so ribbons use
+   per-class defaults and record `st:width_source`; conductor sag is not modelled,
+   so a span is a straight chord between mapped tower positions.
+3. **Clipping must be to the ground mesh, not just a radius.** `clip_to_radius`
+   keeps whole ways so a road never ends in mid-desert — but that dragged all
+   108 km of a transmission line on stage from one nearby vertex, giving an OSM
+   layer spanning **−23…+31 km** against a **1.5 km** ground mesh, with **582
+   towers standing in the void**. `clip_to_box` against the ground's own extent
+   fixes it (582 → 93 towers), inset by the miter bound so a ribbon's *edge* also
+   stays on terrain. A small subset may then legitimately carry **no** mapped
+   geography — `--subset 20` does not, `--subset 50` picks up 2 roads — and the
+   build warns rather than implying otherwise.
+
+**Status:** Locked. **Slice:** delivered ahead of `SLICE-6`.
+
 ### IF-09 — Tracker tilt is dynamic, not a config constant (design constraint)
 
 **Finding:** the Khavda site is **HSAT** (horizontal single-axis tracker) — the

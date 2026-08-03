@@ -1,0 +1,73 @@
+# fault_response_demo_vlm — fault_response_demo with the REAL VLM brain.
+# NOT A MEASUREMENT (same three reasons as the stub version — see that file).
+#
+# Identical to `fault_response_demo.yaml` in every way that touches the STAGE, so
+# it deliberately reuses the same USD instead of authoring a second 712,795-prim
+# copy of the same plant:
+#
+#   tools/run_livestream.sh 24 mission \
+#       --scenario configs/scenarios/fault_response_demo_vlm.yaml \
+#       --usd assets/fault_response_demo.usd
+#
+# ⚠ `--usd` is REQUIRED here, and the script will otherwise spend ~5 min building
+# `assets/fault_response_demo_vlm.usd` byte-for-byte identically. Perception is a
+# mission concern; it changes nothing the builder authors.
+#
+# ⚠⚠ **THE VIEWPORT FREEZES ~12 s PER PANEL.** `cosmos_reason` does a blocking
+# `urllib` request on the main thread and Kit only repaints inside `app.update()`,
+# so a watcher sees a still image for the whole inference (docs/ENVIRONMENT.md).
+# Over a 24-panel survey that is ~5 minutes of mostly-frozen stream, in ~12 s
+# steps. This is a known limitation, not a stream fault: making it smooth needs
+# perception on a worker thread with the app pumped on the main thread (not done).
+# If you want to WATCH the choreography, run the stub version; if you want to see
+# the VLM actually judging this plant, run this one and expect the stutter.
+#
+# ⚠ Needs the vLLM server up on :8000 — `docker start vllm-cosmos`, ~3 min to load
+# weights. On this GB10 (sm_121) it MUST be vLLM cu130-nightly; the 1.4.x NIM
+# crashes on this architecture (docs/ENVIRONMENT.md).
+
+name: fault_response_demo_vlm
+seed: 20260730
+
+extends:
+  farm: configs/farm_khavda_s05b_full.yaml
+  # The cosmos mission instead of the stub one — this is the only difference from
+  # `fault_response_demo.yaml`, mirroring how nominal_calm / nominal_calm_vlm pair.
+  mission: configs/mission_cosmos.yaml
+
+farm_overrides:
+  # ⚠ MUST stay byte-identical to fault_response_demo.yaml's farm_overrides, or the
+  # shared USD is the wrong stage for one of them. Same seed + same overrides =>
+  # the same seeded faults, so `fault_zone` centres on the same panel.
+  #
+  # ⚠⚠ `max_tables` is not tuning — the whole plot (712,795 prims) was OOM-killed
+  # on this box at anon-rss 73.7 GB, twice. See fault_response_demo.yaml's header
+  # for the kernel evidence and the subset-vs-turbines table.
+  layout:
+    max_tables: 600
+  faults:
+    rate: 0.0005
+    states: [hotspot, soiled]
+  turbine_scatter:
+    enabled: true
+    placement: interspersed
+
+mission_overrides:
+  mission_mode: scout_dispatch
+  route: fault_zone
+  zone_panels: 24
+  zone_index: 0
+
+  kinematics:
+    scout_standoff: 12.0
+    screen_standoff: 2.5
+    confirm_standoff: 0.8
+    bot_speed: 1.0
+    drone_speed: 2.0
+    bot_cruise: 6.0
+    drone_cruise: 18.0
+    cruise_above_m: 6.0
+    max_ticks: 12000
+
+# Deliberately absent: `kpi_gates`. See fault_response_demo.yaml's header — a gate
+# would imply this measures something.

@@ -313,3 +313,98 @@ def test_the_prompt_does_not_tell_the_model_to_ignore_ground():
     sent = json.dumps(client.last_messages).lower()
     assert "never a fault" not in sent
     assert "module's own boundary" not in sent
+
+
+# ------------------------------------------------------- framing (the real fix)
+# Measured 2026-07-29: every false alarm on `SC-01`, across three prompt versions
+# and nine repeats, sat beside a panel that really was faulted, and no
+# clean-neighbourhood panel produced one (`kpi/confound.py`). The neighbouring
+# module is in the confirm frame. That is a framing defect, not a prompt one.
+#
+# ⚠ These test the mechanism, NOT that it improves a KPI. The vLLM server went down
+# before that could be measured, so the default stays 1.0 (no crop).
+
+
+def test_the_default_shows_the_whole_frame():
+    """Every KPI on record was measured with the full frame. A default that cropped
+    would silently make all of them non-comparable."""
+    assert CosmosReasonPerception(client=FakeChatClient("{}")).crop_fraction == 1.0
+
+
+def test_provenance_names_the_crop():
+    prov = CosmosReasonPerception(client=FakeChatClient("{}"), crop_fraction=0.5).provenance()
+    assert prov["crop_fraction"] == 0.5
+
+
+def test_a_full_crop_is_an_exact_no_op():
+    from solar_twin.perception.cosmos_reason import centre_crop
+
+    np = __import__("pytest").importorskip("numpy")
+    frame = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
+    assert centre_crop(frame, 1.0) is frame
+
+
+def test_a_crop_keeps_the_centre():
+    import pytest as _pytest
+
+    np = _pytest.importorskip("numpy")
+    from solar_twin.perception.cosmos_reason import centre_crop
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    frame[4:6, 4:6] = 255  # a 2x2 mark dead centre
+    out = centre_crop(frame, 0.4)
+    assert out.shape == (4, 4, 3)
+    assert out.max() == 255  # the centre survived
+    # ...and the periphery, where the neighbouring module sits, is gone.
+    assert out.size < frame.size
+
+
+def test_a_crop_never_produces_an_empty_frame():
+    """An empty array would encode to nothing and silently downgrade the request to
+    a text-only prompt — a verdict with no image, scored as if it had one."""
+    import pytest as _pytest
+
+    np = _pytest.importorskip("numpy")
+    from solar_twin.perception.cosmos_reason import centre_crop
+
+    tiny = np.zeros((2, 2, 3), dtype=np.uint8)
+    out = centre_crop(tiny, 0.01)
+    assert out.shape[0] >= 1 and out.shape[1] >= 1
+
+
+def test_a_nonsense_fraction_is_refused():
+    from solar_twin.perception.cosmos_reason import centre_crop
+
+    for bad in (0.0, -0.5, 1.5):
+        try:
+            centre_crop([[1]], bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"fraction {bad} should have been refused")
+
+
+def test_cropping_none_stays_none():
+    from solar_twin.perception.cosmos_reason import centre_crop
+
+    assert centre_crop(None, 0.5) is None
+
+
+def test_the_cropped_frame_is_what_gets_sent():
+    """The crop must happen before encoding, or `screen_frame_sha` would describe
+    pixels the model never saw."""
+    import pytest as _pytest
+
+    np = _pytest.importorskip("numpy")
+    client = FakeChatClient(
+        json.dumps({"fault_type": "healthy", "confidence": 1.0, "note": "n"})
+    )
+    big = np.zeros((64, 64, 3), dtype=np.uint8)
+    full = CosmosReasonPerception(client=FakeChatClient(client.response))
+    cropped = CosmosReasonPerception(client=client, crop_fraction=0.25)
+    full.diagnose(big, CONTEXT)
+    cropped.diagnose(big, CONTEXT)
+    # A smaller image encodes to a shorter data URL — crude, but it proves the
+    # crop reached the wire rather than being computed and discarded.
+    a = json.dumps(full.client.last_messages)
+    b = json.dumps(client.last_messages)
+    assert len(b) < len(a)

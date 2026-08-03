@@ -72,6 +72,67 @@ ATTR_LAST_INSPECTED = f"{PREFIX}:last_inspected"
 ATTR_INSPECTION_LOG = f"{PREFIX}:inspection_log"
 
 
+# --------------------------------------------------------------------------- #
+# `grid:` — the dispatch-cell namespace, deliberately ABOVE `pv:` (§6.1).
+#
+# A panel keeps everything it already has; `grid:id` is only a JOIN KEY, so that
+# coarse cell-level telemetry and fine panel-level verdicts roll up to the same
+# object. It is a separate namespace, not a `pv:` attribute, because it describes
+# the panel's place in an ELECTRICAL/dispatch grouping rather than its own
+# physical condition — and because a future real string map should be able to
+# replace it without touching the panel contract.
+#
+# ⚠⚠ **A CELL IS A TABLE, AND A TABLE IS NOT A STRING.** The design calls for cells
+# aligned to electrical topology (a string, or strings on one combiner) because
+# the coarse signal is electrical and a cell straddling two strings can never be
+# scored cleanly. **We cannot satisfy that with the data we have.** The vendor DWG
+# is DC *hardware geometry* only: `TableSpec` carries `table_id`, `modules`,
+# `module_rows`, `layer` — and **no string map, no combiner grouping, no inverter
+# assignment**. Even the 5 inverter stations are our own capacity-derived
+# INFERENCE (`world/site.py`), not the drawing's. So the finest unit the real data
+# actually gives is the **table** (112 modules at Khavda), while a real string is
+# ~20-30 modules — i.e. one table is roughly 4-5 strings.
+#
+# Subdividing a table into N equal groups to *look* string-shaped was rejected:
+# that invents electrical topology, which is exactly what this must not do.
+# `modules_per_cell` exists so a REAL string map can refine the cell later; its
+# default of 0 means "the whole table", which is the only honest grouping today.
+# --------------------------------------------------------------------------- #
+
+GRID_PREFIX = "grid"
+
+ATTR_GRID_ID = f"{GRID_PREFIX}:id"
+
+
+def grid_id(table_index: int, sub: int = 0) -> str:
+    """Dispatch-cell ID for a panel, e.g. ``G-0258`` or ``G-0258-01``.
+
+    `table_index` is the panel's table — which is `grid_index[0]`, since
+    `layout_import.expand_sites` sets `(row, col) = (table index, module index)`.
+    `sub` is a sub-table group and is only meaningful once a real string map
+    exists; `sub=0` (the default) means the cell IS the whole table and no
+    sub-group suffix is emitted.
+    """
+    if sub:
+        return f"G-{table_index:04d}-{sub:02d}"
+    return f"G-{table_index:04d}"
+
+
+def cell_for_panel(
+    grid_index: tuple[int, int], modules_per_cell: int = 0
+) -> str:
+    """The cell a panel belongs to, from its `(table, module)` index.
+
+    `modules_per_cell=0` (default) → one cell per table, the only grouping the
+    CAD supports. A positive value subdivides a table and is reserved for a real
+    string map; see the namespace note above for why it is not the default.
+    """
+    table, module = grid_index
+    if modules_per_cell and modules_per_cell > 0:
+        return grid_id(table, sub=module // modules_per_cell + 1)
+    return grid_id(table)
+
+
 def panel_id(row: int, col: int) -> str:
     """Stable panel ID, e.g. ``R12-C047`` (row 2-wide, col 3-wide)."""
     return f"R{row:02d}-C{col:03d}"
@@ -99,6 +160,10 @@ class PanelRecord:
     last_inspected: str = ""
     inspection_log: list[str] = field(default_factory=list)
     geo_position: Optional[tuple[float, float, float]] = None  # (lat, lon, elev)
+    #: `grid:id` — the dispatch cell this panel rolls up to. Empty means the stage
+    #: was built before the grid namespace existed, or the build disabled it; the
+    #: ranker must treat "" as "not in any cell" rather than inventing one.
+    cell_id: str = ""
 
     @property
     def is_healthy(self) -> bool:
@@ -225,8 +290,14 @@ def create_panel(
     row: int,
     col: int,
     geo_position: Optional[tuple[float, float, float]] = None,
+    cell_id: str = "",
 ):
-    """Define a panel Xform prim and stamp the initial ``pv:`` attributes."""
+    """Define a panel Xform prim and stamp the initial ``pv:`` attributes.
+
+    `cell_id` stamps the `grid:id` join key when given. Omitted -> the attribute is
+    not authored at all, so a stage built without the grid layer is byte-identical
+    to one built before it existed.
+    """
     from pxr import Gf, Sdf, UsdGeom  # noqa: PLC0415 — lazy Isaac import
 
     prim = UsdGeom.Xform.Define(stage, path).GetPrim()
@@ -247,7 +318,67 @@ def create_panel(
         prim.CreateAttribute(ATTR_GEO_POSITION, Sdf.ValueTypeNames.Double3).Set(
             Gf.Vec3d(*(float(v) for v in geo_position))
         )
+    if cell_id:
+        prim.CreateAttribute(ATTR_GRID_ID, Sdf.ValueTypeNames.String).Set(cell_id)
     return prim
+
+
+def author_panel_spec(
+    parent_spec,
+    name: str,
+    pid: str,
+    row: int,
+    col: int,
+    geo_position: Optional[tuple[float, float, float]] = None,
+    cell_id: str = "",
+):
+    """Author a panel as an **Sdf PrimSpec** and return it — the bulk-build twin of
+    `create_panel`, stamping the identical ``pv:`` contract.
+
+    Why this exists, measured rather than assumed
+    ---------------------------------------------
+    `create_panel` goes through `UsdStage`, and every `UsdStage::DefinePrim` fires a
+    change notification that recomposes the parent's children. Authoring N panels
+    one at a time under one parent is therefore **quadratic**, and it was: profiled
+    on this build, plain `Xform.Define` + these attributes scaled **n^1.70** — before
+    any reference or instancing — and the whole `farm_builder` measured **n^2.39**,
+    which put the 679,616-panel S05b plot at ~55 hours.
+
+    Authoring `Sdf.PrimSpec`s straight into the layer inside one `Sdf.ChangeBlock`
+    defers composition to the end, so the stage composes once instead of N times.
+    Measured on the same profile: **n^1.03, and 60x faster at 32k panels** (1.63 s
+    against 98.28 s).
+
+    ⚠ `UsdStage::DefinePrim` CANNOT be used inside a `ChangeBlock` — the stage never
+    recomposes, so the prim is not there to return and it raises. That is why this
+    is an Sdf-level function and not a flag on `create_panel`.
+
+    ⚠ Keep this in lockstep with `create_panel`. Two authoring paths for one contract
+    is a real hazard; `tests/test_schema_usd.py` asserts the two produce identical
+    prims, which is the only thing making the duplication safe.
+    """
+    from pxr import Gf, Sdf  # noqa: PLC0415 — lazy Isaac import
+
+    spec = Sdf.PrimSpec(parent_spec, name, Sdf.SpecifierDef, "Xform")
+    # Same explicit Gf types as `create_panel`: a bare tuple makes USD infer double
+    # vectors and mismatch the declared Int2 (GfVec2i) / Double3 (GfVec3d) types.
+    for attr_name, type_name, value in (
+        (ATTR_PANEL_ID, Sdf.ValueTypeNames.String, pid),
+        (ATTR_GRID_INDEX, Sdf.ValueTypeNames.Int2, Gf.Vec2i(int(row), int(col))),
+        (ATTR_STATE, Sdf.ValueTypeNames.Token, PanelState.HEALTHY.value),
+        (ATTR_IV_YIELD, Sdf.ValueTypeNames.Float, 1.0),
+        (ATTR_RUL_DAYS, Sdf.ValueTypeNames.Int, -1),
+        (ATTR_LAST_INSPECTED, Sdf.ValueTypeNames.String, ""),
+        (ATTR_INSPECTION_LOG, Sdf.ValueTypeNames.StringArray, []),
+    ):
+        Sdf.AttributeSpec(spec, attr_name, type_name).default = value
+    if cell_id:
+        Sdf.AttributeSpec(spec, ATTR_GRID_ID, Sdf.ValueTypeNames.String).default = cell_id
+    if geo_position is not None:
+        Sdf.AttributeSpec(spec, ATTR_GEO_POSITION, Sdf.ValueTypeNames.Double3).default = (
+            Gf.Vec3d(*(float(v) for v in geo_position))
+        )
+    return spec
 
 
 def read_panel(prim) -> PanelRecord:
@@ -268,6 +399,7 @@ def read_panel(prim) -> PanelRecord:
         last_inspected=_get(ATTR_LAST_INSPECTED, "") or "",
         inspection_log=list(_get(ATTR_INSPECTION_LOG, []) or []),
         geo_position=tuple(geo) if geo is not None else None,
+        cell_id=_get(ATTR_GRID_ID, "") or "",
     )
 
 

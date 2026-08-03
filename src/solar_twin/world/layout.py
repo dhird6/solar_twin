@@ -19,6 +19,7 @@ from solar_twin.schema.pv_module import (
     GeoAnchor,
     PanelRecord,
     PanelState,
+    cell_for_panel,
     coerce_state,
     local_to_geo,
     panel_id,
@@ -65,6 +66,46 @@ def _dem_for(cfg: dict):
     return _DEM_CACHE[key]
 
 
+def _pad_for(cfg: dict, dem):
+    """The `GradedPad` for this config, or None when grading is off.
+
+    Cached like the DEM: fitting samples the terrain on a grid, and
+    `terrain_height` is called per module, per waypoint and per ground-mesh
+    vertex — refitting there would be a quadratic cost in the hot path.
+
+    ⚠ The footprint comes from `terrain.pad_bounds` when given, else the DEM
+    patch's own extent. It deliberately does NOT come from the panel positions:
+    those are derived from terrain, so asking terrain to depend on them is
+    circular — the same trap `_dem_for` calls out for the datum.
+    """
+    spec = cfg.get("terrain", {}) or {}
+    if not spec.get("graded"):
+        return None
+    b = spec.get("pad_bounds")
+    if b:
+        min_x, max_x, min_y, max_y = (float(v) for v in b)
+    else:
+        # The baked patch is the site plus a margin; shrink it so the pad covers
+        # the hardware rather than the margin, and the blend has somewhere to go.
+        span_x = (dem.grid.shape[1] - 1) * dem.step_m
+        span_y = (dem.grid.shape[0] - 1) * dem.step_m
+        off_e = dem.origin_e - dem.site_origin_e
+        off_n = dem.origin_n - dem.site_origin_n
+        margin = float(spec.get("pad_margin_m", 60.0))
+        min_x, max_x = off_e + margin, off_e + span_x - margin
+        min_y, max_y = off_n + margin, off_n + span_y - margin
+    key = ("pad", id(dem), min_x, max_x, min_y, max_y,
+           spec.get("pad_tolerance_m"), spec.get("pad_blend_m"))
+    if key not in _DEM_CACHE:
+        from solar_twin.world.grading import fit_pad
+
+        pad = fit_pad(dem, min_x, max_x, min_y, max_y,
+                      blend_m=float(spec.get("pad_blend_m", 40.0)))
+        pad.tolerance_m = float(spec.get("pad_tolerance_m", 0.025))
+        _DEM_CACHE[key] = pad
+    return _DEM_CACHE[key]
+
+
 def terrain_height(x: float, y: float, cfg: dict) -> float:
     """Ground elevation (meters) at stage-local (x, y). Pure + deterministic so
     the farm builder (mesh), the panel mounts, and the drone waypoints all agree
@@ -77,18 +118,89 @@ def terrain_height(x: float, y: float, cfg: dict) -> float:
     - `dem` samples a real Copernicus GLO-30 patch baked by `tools/dem_fetch.py`
       (see `world/dem.py`). Heights are relative to a datum so the plant still
       straddles z=0 rather than sitting at its true 4 m above sea level.
+
+    On top of `dem`, `terrain.graded: true` returns the **engineered civil pad**
+    (`world/grading.py`) instead of raw satellite ground. GLO-30 is a pre-grading
+    DSM, and building on it makes the worst Khavda row need 0.53 m of pile-height
+    variation — a real plant graded that away. Off by default so every previously
+    recorded number stays reproducible.
     """
     spec = cfg.get("terrain", {}) or {}
     kind = spec.get("kind", "flat")
     if kind == "dem":
         dem = _dem_for(cfg)
-        return dem.height(x, y) if dem else 0.0
+        if dem is None:
+            return 0.0
+        pad = _pad_for(cfg, dem)
+        return pad.height(x, y) if pad is not None else dem.height(x, y)
     if kind != "heightfield":
         return 0.0
     amp = float(spec.get("amplitude", 0.0))
     wl = float(spec.get("wavelength", 12.0)) or 12.0
     k = 2.0 * math.pi / wl
     return amp * 0.5 * (math.sin(k * x) + math.cos(k * y * 0.75))
+
+
+def terrain_feature_step(cfg: dict) -> float:
+    """The finest horizontal detail `terrain_height` actually carries, in metres.
+
+    This is the spacing a ground MESH has to be tessellated at to represent the
+    terrain it is drawing. Sampling coarser than this aliases: the drawn surface
+    then disagrees with the `terrain_height` that panels and waypoints were
+    mounted from, so a panel can clear the terrain function and still be buried by
+    the triangle rendered beneath it.
+
+    ⚠ That is not hypothetical. The ground mesh used to be a fixed 48-160 verts
+    stretched across a horizon-sized sheet — 40 m spacing over a 14 m-wavelength
+    heightfield on the procedural farm (a 3x undersample, measured: panel bottom
+    z=0.254 against a drawn ground of 0.412, i.e. **buried by 158 mm**), and 65 m
+    over Khavda's 20 m DEM posts. `world/farm_builder` now grades its ground mesh
+    off this value.
+
+    A `dem` returns its own post spacing: the mesh interpolates bilinearly between
+    posts and so does `DemTerrain.height`, so vertices AT the posts reproduce the
+    real surface exactly and anything finer buys nothing.
+    """
+    spec = cfg.get("terrain", {}) or {}
+    kind = spec.get("kind", "flat")
+    if kind == "dem":
+        dem = _dem_for(cfg)
+        if dem is None:
+            return 0.0
+        # A graded pad is a plane plus a blended residual; the residual is sampled
+        # from the DEM, so the DEM's step still bounds the detail.
+        return float(dem.step_m)
+    if kind == "heightfield":
+        # Four samples per hump — enough to carry a sine's peak and trough. Two
+        # would alias a hump into a straight line at the wrong height.
+        return float(spec.get("wavelength", 12.0) or 12.0) / 4.0
+    return 0.0  # flat: no detail to lose at any spacing
+
+
+def cell_id_for(site, farm_cfg: dict) -> str:
+    """`grid:id` — the dispatch cell a panel site rolls up to, or `""` when off.
+
+    **The one place this is derived.** `farm_builder._cell_id_for` delegates here
+    and `FarmLayout.panel_records` calls it, so the USD stage and the in-memory
+    records the mission ranks can never disagree about which cell a panel is in.
+    Two implementations of this would be two conventions, and a join key with two
+    conventions is not a join key.
+
+    `(site.row, site.col)` is `(table index, module index)` — set by
+    `layout_import.expand_sites`, and the procedural grid's own (row, col) — so
+    the cell falls out of the layout's OWN structure. Nothing is invented here:
+    no geometric grid is imposed, and the table is used because it is the finest
+    unit the vendor DWG actually carries (see `schema.pv_module`'s `grid:`
+    namespace note — a cell is a table, and a table is NOT a string).
+
+    Off unless `grid.enabled` is set in `farm.yaml`, so a stage built without it
+    is byte-identical to one built before the namespace existed, and a mission
+    over such a stage sees `cell_id == ""` on every record.
+    """
+    g = farm_cfg.get("grid", {}) or {}
+    if not g.get("enabled", False):
+        return ""
+    return cell_for_panel((site.row, site.col), int(g.get("modules_per_cell", 0)))
 
 
 def fault_cells(
@@ -227,6 +339,8 @@ class FarmLayout:
             self._init_from_file(
                 str(layout_cfg["path"]),
                 max_tables=int(layout_cfg.get("max_tables", 0) or 0),
+                blocks=int(layout_cfg.get("blocks", 0) or 0),
+                block_names=list(layout_cfg.get("block_names") or []),
             )
             return
 
@@ -238,17 +352,40 @@ class FarmLayout:
         self.origin = tuple(float(v) for v in grid.get("origin", [0.0, 0.0, 0.0]))
         self.sites = self._build_sites()
 
-    def _init_from_file(self, path: str, max_tables: int = 0) -> None:
+    def _init_from_file(
+        self,
+        path: str,
+        max_tables: int = 0,
+        blocks: int = 0,
+        block_names: list | None = None,
+    ) -> None:
         """Expand a CAD-derived site file into per-module panel sites.
 
-        `max_tables > 0` renders only a contiguous southern band of the site —
-        essential while the full 273-table block is ~2.2M USD prims (`IF-09`).
-        Panel coordinates are unchanged by subsetting, so a subset is a genuine
-        crop of the real site rather than a different one.
+        Two ways to render less than the whole plot, and they answer different
+        questions:
+
+        * `max_tables > 0` crops a radius of tables around the south-west corner —
+          right for "prove the pipeline cheaply", wrong for a wide shot, because it
+          cuts blocks in half and the result reads as one ragged field.
+        * `blocks > 0` keeps whole surveyed **DC blocks**, so four blocks look like
+          four blocks with the real aisles between them. This is what makes the plant
+          read at its true scale without inventing anything: every position comes from
+          the S05b digest, nothing is tiled or mirrored.
+
+        Panel coordinates are unchanged by either, so a selection is a genuine crop of
+        the real site rather than a different one. `blocks` is applied first; a
+        `max_tables` after it then crops within the chosen blocks.
         """
-        from solar_twin.world.layout_import import expand_sites, load_site, subset_site
+        from solar_twin.world.layout_import import (
+            expand_sites,
+            load_site,
+            select_blocks,
+            subset_site,
+        )
 
         site = load_site(path)
+        if blocks or block_names:
+            site = select_blocks(site, blocks, block_names or None)
         if max_tables:
             site = subset_site(site, max_tables)
         self.site = site
@@ -342,7 +479,16 @@ class FarmLayout:
         return {site.panel_id: rng.choice(states) for site in chosen}
 
     def panel_records(self) -> list[PanelRecord]:
-        """Panels as records with seeded faults applied (for the fake backend)."""
+        """Panels as records with seeded faults applied (for the fake backend).
+
+        `cell_id` is stamped from `cell_id_for` — the SAME derivation
+        `farm_builder` writes onto the prim as `grid:id` — so the ranker that
+        reads these records buckets panels exactly the way the stage does. It was
+        left blank here at first and the suspicion-first demo had to set it by
+        hand, which is precisely how the mission and the stage would drift apart.
+
+        Empty (and behaviour byte-identical to before) unless `grid.enabled`.
+        """
         faults = self.seeded_faults()
         return [
             PanelRecord(
@@ -350,6 +496,7 @@ class FarmLayout:
                 grid_index=(s.row, s.col),
                 state=faults.get(s.panel_id, PanelState.HEALTHY),
                 geo_position=s.geo_position,
+                cell_id=cell_id_for(s, self.cfg),
             )
             for s in self.sites
         ]
@@ -449,11 +596,27 @@ class FarmLayout:
         `stride` samples every Nth module — a coverage sweep rather than a census.
         ⚠ It changes what the run measures: the denominator is the panels VISITED,
         not the panels on site.
+
+        `route: fault_zone` returns a contiguous window of `zone_panels` panels
+        centred on a seeded fault, for `ScoutDispatchMission`. It exists because a
+        watchable survey and a sparse fault rate are otherwise incompatible: on the
+        whole plot at `faults.rate` 5e-4 a 24-panel window has a ~1% chance of
+        containing anything to find, so a sweep from panel 0 shows a drone flying
+        over healthy glass forever. Centring the window on a fault is the sim
+        standing in for the string-level telemetry a real plant uses to pick which
+        zone to survey — the drone still has to find the panel visually.
+
+        ⚠⚠ `fault_zone` is NOT a measurement route. It selects on ground truth, so
+        its fault prevalence is set by the window, not the site: every rate-style
+        KPI (`KPI-01`, `KPI-03`) is meaningless under it. It also ignores `stride`,
+        because subsampling can drop the very panel the window was built around.
         """
         route = str(mission_cfg.get("route", "linear"))
         stride = max(1, int(mission_cfg.get("panel_stride", 1)))
 
         sites = list(self.sites)
+        if route == "fault_zone":
+            return self._fault_zone_sites(mission_cfg, sites)
         if stride > 1:
             sites = sites[::stride]
         if route != "serpentine":
@@ -469,6 +632,43 @@ class FarmLayout:
             out.extend(reversed(group) if i % 2 else group)
         return out
 
+    def _fault_zone_sites(self, mission_cfg: dict, sites: list) -> list:
+        """A contiguous window of panels centred on the `zone_index`-th seeded fault.
+
+        Contiguous in `self.sites` order (table by table, module 0 upward) rather
+        than by euclidean distance, so the window is physically compact and the
+        fleet's commutes inside it stay short — which is the whole point of
+        surveying a zone instead of a plot.
+        """
+        zone = max(1, int(mission_cfg.get("zone_panels", 24)))
+        which = max(0, int(mission_cfg.get("zone_index", 0)))
+        faults = self.seeded_faults()
+
+        fault_positions = [i for i, s in enumerate(sites) if s.panel_id in faults]
+        if not fault_positions:
+            # Loud, not silent: without this the caller gets a plausible-looking
+            # window of healthy panels and concludes the escalation path is broken.
+            print(
+                f"  [warn] route: fault_zone but this stage has no seeded faults "
+                f"(faults.rate is 0?) — falling back to the first {zone} panels; "
+                "nothing will escalate",
+                flush=True,
+            )
+            return sites[:zone]
+
+        centre = fault_positions[min(which, len(fault_positions) - 1)]
+        start = max(0, min(centre - zone // 2, len(sites) - zone))
+        window = sites[start : start + zone]
+        in_window = sum(1 for s in window if s.panel_id in faults)
+        print(
+            f"  [note] route: fault_zone — {len(window)} panels around "
+            f"{sites[centre].panel_id} ({in_window} seeded fault"
+            f"{'' if in_window == 1 else 's'} inside; "
+            f"{len(fault_positions)} on the stage). Not a KPI route.",
+            flush=True,
+        )
+        return window
+
     def inspection_targets(self, mission_cfg: dict) -> list[InspectionTarget]:
         """Waypoints per panel derived from layout + mission kinematics.
 
@@ -477,6 +677,11 @@ class FarmLayout:
         kin = mission_cfg.get("kinematics", {})
         screen_z = float(kin.get("screen_standoff", 2.5))
         confirm_z = float(kin.get("confirm_standoff", 0.8))
+        # The survey pass flies higher than the screening pass so the scout sees a
+        # panel plus its neighbours; the drop to `screen_z` is what makes the
+        # converge beat visible. Defaults to the screening standoff, which makes the
+        # scout a no-op change for any config that does not set it.
+        scout_z = float(kin.get("scout_standoff", screen_z))
         approach_offset = self.row_pitch / 2.0
         targets: list[InspectionTarget] = []
         for s in self.route_sites(mission_cfg):
@@ -488,6 +693,7 @@ class FarmLayout:
                     approach=Waypoint(x, y - approach_offset, z),
                     screen=Waypoint(x, y, top + screen_z),
                     confirm=Waypoint(x, y, top + confirm_z),
+                    scout=Waypoint(x, y, top + scout_z),
                 )
             )
         return targets

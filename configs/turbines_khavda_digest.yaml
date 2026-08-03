@@ -1,0 +1,81 @@
+_provenance:
+  source: GatiShakti plot digest S05b (Plot-S05b.json)
+  chain: vendor DWG -> their build_gis_digest.py (not held) -> JSON -> here
+  positions: REAL (surveyed, EPSG:32642), second-hand
+  geometry: "INFERRED from the MW rating \u2014 the digest carries no hub height or\
+    \ rotor diameter"
+  radius_m: 3000.0
+  anchor:
+    easting: 542440.651
+    northing: 2664033.041
+turbines:
+- pos:
+  - 866.349
+  - 440.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 546.2
+- pos:
+  - 676.349
+  - 1426.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 858.1
+- pos:
+  - 1510.349
+  - 1161.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 1297.1
+- pos:
+  - 1700.349
+  - 175.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 1380.2
+- pos:
+  - 2351.349
+  - 857.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 2042.2
+- pos:
+  - 2995.349
+  - 1579.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 2833.5
+- pos:
+  - 3185.349
+  - 592.959
+  hub_height: 120.0
+  blade_len: 70.0
+  rpm: 11.5
+  provenance: digest
+  geometry_provenance: INFERRED
+  rating_mw: 5.2
+  distance_to_site_m: 2865.2

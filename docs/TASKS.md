@@ -7,19 +7,90 @@
 > `plan.md`, `docs/ENVIRONMENT.md`. Update the `[ ]` boxes here **and** in
 > `plan.md` when something completes (same commit).
 
-## ⇢ NEXT SESSION — start here (updated 2026-07-29, Session 11c)
+## ⇢ NEXT SESSION — start here (updated 2026-07-31, Session 17)
+
+**Do these first, in this order. Rationale in `SESSIONS.md` Session 17 (top entry).**
+
+1. **Black ground: test the UV wrap mode — it is the last of three causes.** The bisect was
+   re-run (`58b18a8`) and **two causes are fixed and confirmed**: the normal-map `fallback`
+   (a failed read decoded to a normal of `(0,0,0)` → degenerate → **exactly zero**), worth a
+   ~24× brightness recovery, and the missing `sourceColorSpace: raw` on albedo (`795ae33`),
+   worth a further 2.4×. Ground is now `(70.5, 66.4, 62.9)` R−B **+7.6** against the flat
+   material's `(119.5, 108.6, 95.4)` R−B **+24.1**.
+   **The residual, and the one build that settles it:** the ground's `st` is world-metres ÷
+   tile size, i.e. **±62**, almost entirely outside the unit square; `wrapS`/`wrapT` are
+   authored `repeat`, but `UsdPreviewSurfaceLib.mdl`'s `useMetadata` path falls back to
+   **`wrap_clip`, which returns BLACK outside [0,1]** — which would be both darker *and*
+   pulled toward R−B 0, the shape of both residuals. ⚠ An inference, not a measurement.
+   **Clamp `_planar_uvs` into `[0,1)` (or drop tiling for a single non-repeating map),
+   rebuild, and re-run the same check with `tools/inspect_frame.py`. If the ground jumps to
+   ~+24, it is the wrap mode.** The isolating arm is `--pbr albedo_only` (`155e789`), one of
+   five now: `{on, off, albedo, albedo_only, primvar}`.
+   Free extra check in the same frame — road/concrete/equipment/structure/fence should be
+   black too if the mechanism is right; every saved frame so far is a panel close-up, so
+   nobody has looked. ⚠ The last two arms have **no saved frames** (nothing was written to
+   `runs/` after 07:59), so this is a rebuild, not a re-read.
+2. **Chase HOTSPOT recall, not aggregate recall.** Measured over 20 archived VLM runs:
+   soiled flagged **0.984** / named 0.516, hotspot flagged **0.397** / named 0.379.
+   Injected soiling was called `hotspot` 29 times in 62; injected hotspots were called
+   `healthy` 35 times in 58. Different failures, different fixes.
+   `python3 tools/kpi_recall.py runs/ --perception cosmos_reason` reproduces all of it.
+3. **Re-gate on `KPI-01a` (`fault_recall`) against `KPI-01n` (the null baseline).**
+   `nominal_calm_vlm` is 82.5% healthy against a `detection_rate_min: 0.80` gate, so a
+   model that finds nothing scores 0.825 and passes. Metrics ship in the run record now;
+   the gates still need pointing at them.
+4. **Re-render the stale video set.** Every `.mp4` in `assets/` misrepresents the twin in
+   at least one documented way, and `plant_status_tour.mp4` is a *status* video whose
+   status is wrong in four. `assets/fault_response_demo_pbr.usd` is the current stage.
+5. **Record the stage path in the run record.** It archives `farm.yaml`/`mission.yaml` but
+   names no USD, so "which stage produced this KPI" is an inference from file mtimes.
+
+**Terrain (2026-07-31, Session 17 §11):** ✅ REAL and PROVED IN PIXELS on BLOCK-02.
+`tools/terrain_proof.py` rebuilds the same config with `terrain.kind: flat` and diffs the
+renders — verdict `TERRAIN CHANGES THE RENDER`, up to **24.5%** of pixels moved; the flat
+control reads **exactly 0.0 m**. Ground mesh spans **1.9508 m** (3,710 verts at the DEM's
+own 20 m post spacing), panels **1.1009 m** over 30,016 modules. The GLO-30 patch re-bakes
+**byte-identical** from the documented command.
+⚠⚠ **But the relief sits inside GLO-30's own error bars** — 2.173 m total against a
+published **< 4 m LE90**, lag-1 autocorrelation **0.45/0.50** (1.0 = landform, 0 = noise).
+Real data, correctly plumbed; **not survey-grade micro-topography.** So `terrain.graded`
+stays **OFF**, and the 0.461 m worst pile-height is provisional until a civil survey exists.
+
+**State (2026-07-31):** KPI-03 = **0.000** on two independent runs under two different
+skies — `runs/20260730T145823` (N=5, legacy sky) and `runs/20260731T024941` (N=3, physical
+sky), both stdev 0.0, agreement 1.0, gates PASS. Shading stimulus **+12.6 points** under
+the corrected glass mask. ⚠ Both runs carry the same caveat: frames are **not
+bit-reproducible** (560/560 differ between repeats) and **1 of 560 panels (`R258-C000`)
+shows a materially different picture** — the verdict agreed anyway, so it does not move the
+0.00, but for that one panel the model was not shown the same thing twice. Black ground:
+**two of three causes fixed and confirmed, the third narrowed to UV wrap mode**; the
+textured layer stays OFF. Work is on `overnight/session-17`, pushed to
+`ID-3-Testing-and-new-features-addin`; PR #10 is open from that branch and now carries
+Sessions 16 **and** 17.
+
+---
+
+## ⇢ Previous front of work (updated 2026-07-29, Session 13b)
 
 Everything below this block is the older two-track plan and is still valid; this
-is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-11c.
+is just the current front of work. Full detail in `SESSIONS.md` Sessions 10d-13.
 
-**State:** branch `ID-2-Layout-Integration` — **integrated**: Sessions 10e, 11, 11b
-and 11c are merged in (PRs #7 and #8, plus 11c's KPI-harness work rebased on top),
-so there is ONE trunk again rather than divergent worktrees. **396 Isaac-free
-tests** collected off-Isaac — 3 more need `pxr` and do not collect without it, and
-`tests/test_docs_fresh.py` now **enforces this number** so it cannot rot a fourth
-time. **PR #9 is open against `main`**, and `main` is an ancestor of this branch,
-so it is a clean fast-forward with no conflicts — what remains is the merge
-decision, not the PR itself. CI (`.github/workflows/ci.yml`) gates it. The twin
+**State:** ✅ **`main` IS the trunk again — PR #9 merged 2026-07-29 as `71625a8`.**
+That was the largest outstanding structural item for four sessions ("no PR to
+`main`"), and it is closed: `main` fast-forwarded from `86dc834` to the integrated
+branch, **71 commits**, and its test count went **74 → 396**. Merged only after
+`mergeable: CLEAN`, a verified fast-forward, and **CI green on py3.10 + py3.12**.
+Work now happens on **`ID-3-Testing-and-new-features-addin`**, cut from the merged
+`main` (hyphens not spaces — a branch name with spaces needs quoting in every
+command and breaks CI matrices; matches `ID-2-Layout-Integration`'s convention).
+**823 Isaac-free tests** collected off-Isaac — **42 more** run only under
+Isaac Sim's own Python (`pytest.importorskip("pxr")` across 5 modules), and are
+therefore SKIPPED by both system `python3` and the Isaac-free CI job. Measured
+2026-07-31: Isaac-free **803 passed / 6 skipped**, under Isaac **737 passed / 3
+skipped** (the Isaac figure predates the 3 DEM-coverage tests added the same day;
+they are pure YAML and run off-Isaac, so it is 740 there). ⚠ One of those 42 had been failing unnoticed because that run had
+never happened, and `tests/test_docs_fresh.py` **enforces this number** so it cannot rot
+a fourth time. CI (`.github/workflows/ci.yml`) gates every push. The twin
 runs on the real Khavda
 BLOCK-02 layout, on **real Copernicus GLO-30 terrain**, and KPI-03 now has **two
 verified-stimulus points, both 0.00** — 560 healthy panels at 02:00Z
@@ -87,6 +158,25 @@ with N and a gate from here on, not from a single run.
   `git log`, `gh pr list` and `SESSIONS.md` before trusting any of it.
 
 **Do these first, in this order:**
+
+-1. **Finish the reference-repo integration (Session 13).** Three ingredients landed
+   — real surveyed turbines, `tools/digest_to_site.py`, and the whole 24-block S05b
+   plot (6,213 tables / 679,616 panels). What remains, cheapest first:
+   (a) ~~re-bake the DEM for S05b's extent~~ ✅ **done**: `assets/dem/khavda_s05b.yaml`
+   (284x140 @ 20 m, relief 5.4 m). The bug it fixed is worth remembering — `dem._raw`
+   CLAMPS outside its grid *by design*, so a plot pointed at the wrong patch sits at
+   one flat elevation **while looking like real terrain** (`NFR-07`);
+   (b) ~~build a few-block subset~~ ✅ **done (Session 13b)**: 20 S05b tables ->
+   1,904 panels / 3,535 prims (`assets/khavda_s05b.usd`), flown as
+   `assets/khavda_s05b_tour.mp4` (769 frames). Worst pile deviation 0.324 m on the
+   re-baked DEM. ⚠ `faults.rate 0.0` is what keeps it sane — the full 6,213-table
+   plot is ~1.69M prims because faulted panels cannot be instanced;
+   (c) **get a blob URL/SAS for `imagery_near.png`** — the ~1 m imagery is the single
+   biggest remaining visual gap and is NOT in the archive (Azure blob only).
+   ⚠ Do not inherit their `resolutionMeters: 1` claim: it is upsampled 30 m plus
+   semi-manual corrections, not a survey. Everything imported is `provenance:
+   digest` (second-hand), never `derived`.
+
 
 0. **Perception robustness, now that the flip is explained (`RISK-25`).** Two
    `--repeat 3` sets on `demo_video` reproduced and attributed it: the model reads
@@ -162,27 +252,24 @@ with N and a gate from here on, not from a single run.
    ⚠ The headline stays conservative on purpose — an abstention still counts
    against `KPI-03`, so the metric can never flatter the system. And a `KPI-03` of
    0.00 on a run with **no healthy panels** is vacuous; check `KPI-03b`.
-2. **Pegasus / PX4 flight dynamics (`FR-06`) — investigated 2026-07-29; the work
-   left is a bounded port, not an unknown.** ✅ **PX4 SITL runs natively on this
-   box**: `px4io/px4-sitl` publishes an arm64 container (119 MB), it boots to
-   `Waiting for simulator to accept connection on TCP port 4560`, and the host can
-   reach it — `python3 tools/px4_sitl_smoke.py` (exit 0 = seam open). No apt, no
-   source build, nothing in Isaac's Python. `RISK-02`(a) closed.
-   ⚠ **Do not read that as "we have flight dynamics."** The Isaac-side bridge is
-   missing and Pegasus does not support Isaac 6.x. Measured port size: of 26
-   `omni.*`/`isaacsim.*` imports, 21 resolve on 6.0.1; three of the failures are
-   just extensions that were not *enabled*; only `omni.isaac.dynamic_control`
-   (load-bearing) and `omni.isaac.sensor` (peripheral) are truly gone. That is
-   **17 call sites in 2 files** (`vehicle.py`, `multirotor.py`) behind one
-   accessor, all mapping onto `isaacsim.core.prims`/`omni.physics.tensors` —
-   verified present. Recommended next step: a **time-boxed fork-and-patch spike**,
-   because what Pegasus really gives us is the multirotor dynamics + HIL sensor
-   models PX4's EKF needs; writing those from scratch is the expensive path. Also
-   watch `RISK-26`: that backend was written for PX4 v1.14.3 and the container
-   ships ~v1.18-beta, so verify the HIL handshake before trusting any hover.
-   Two golden-rule conflicts to plan around, not discover: Pegasus installs via
-   `ISAACSIM_PYTHON -m pip install --editable` (needs an `ENVIRONMENT.md` note) and
-   its docs add the extension **via the GUI** (use `--ext-folder` instead).
+2. **`FR-06` FLIES ✅ — wrap it behind `RobotControl` next.** PX4 SITL governs a
+   Pegasus Iris in Isaac 6.0.1 and holds a hover: **2.562 m within 43 mm over 35 s**,
+   worst |vz| 0.023 m/s (`tools/px4_hover.py`; start PX4 first with
+   `python3 tools/px4_sitl_smoke.py`). `RISK-26` resolved — the v1.14.3-era MAVLink
+   backend interoperates with ~v1.18-beta PX4 unchanged. Remaining:
+   (a) implement `control/px4.py` behind the existing `RobotControl` ABC — deferred
+   until now on purpose, because an unproven controller behind the ABC makes every
+   failure look like an orchestration bug; `FR-07` keeps `kinematic.py` as fallback;
+   (b) re-measure `KPI-05` under a real wind field (`FR-12`, blocked on `RISK-27`) —
+   the 43 mm figure is a **calm-air baseline**, not the KPI.
+   ⚠ **Operational facts that will waste an hour if forgotten:** PX4 SITL never
+   recovers from a simulator disconnect (restart the container per flight); PX4 is
+   the TCP *client* so the simulator must bind 4560 — publishing the port makes
+   docker-proxy steal it and Pegasus dies with `EADDRINUSE`; and Pegasus's own
+   physics callbacks do not reliably fire on 6.0.1, so its four update methods are
+   driven explicitly from our loop (`RISK-28` residual — the freeze is SILENT).
+   ⚠ **Compute `KPI-05` from Isaac ground truth, never PX4's estimate** — they
+   differ by ~0.23 m and the autopilot is what is under test (`RISK-29`).
 3. **More balance-of-plant** — substation / control room, module-level torque
    tube and pile geometry, cable trenches. `world/site.py` is the place, and
    anything not in the drawing must be tagged `INFERRED` like the rest. The
@@ -231,6 +318,30 @@ bitten by one.
   as a giant area light and turns the desert floor blue (R-B +16 → -38).
 
 **Known ⚠ to resolve, not to forget:**
+- ⚠⚠ **The TEXTURED-PBR layer (`world/textures.py`) is OFF by default and must stay
+  off until a render measurement clears it.** Distinct from the 10c work above,
+  which is flat materials + the generated sky and is fine. Measured 2026-07-31
+  (Session 17): with the textured materials bound, SC-11's ground rendered
+  **(1.1, 1.2, 1.2), R−B −0.1** — achromatic and near-black — against
+  **(77.6, 68.0, 54.1), R−B +23.5** with it off (`runs/inspect_legacy`-era camera).
+  **This is the SAME R−B invariant, and the SAME class of failure, as the
+  emissive-dome bug directly above — the project has now been bitten by "the
+  ground stopped reading warm" twice.**
+  ⚠⚠ **The first bisect's conclusion — "neither the normal map nor the diffuse
+  source; `albedo` and `primvar` render identically, so the diffuse input is
+  ignored outright" — was RETRACTED (`0c229e5`) and then DISPROVED (`58b18a8`).**
+  `/World/Looks/ground_pbr` had been authored twice, so all four arms rendered the
+  same network; it *was* the normal map. **Do not quote that sentence.**
+  **Current, measured 2026-07-31 on the same panel and camera:** ground
+  **(70.5, 66.4, 62.9), R−B +7.6** against the flat material's
+  **(119.5, 108.6, 95.4), R−B +24.1** — the like-for-like pair; the +23.5 above is
+  an earlier, differently-framed measurement and the two must not be mixed.
+  **Two of three causes are fixed and confirmed** (normal-map `fallback`; albedo
+  `sourceColorSpace: raw`); **the third is narrowed to UV wrap mode** — see
+  NEXT SESSION item 1 for the one build that settles it. The generated maps are
+  correct (ground albedo R−B +28.04, re-confirmed at +28.1). The layer **stays
+  off**: the bar is ground R−B back above **+20**, and +7.6 does not meet it.
+  Guarded by `tests/test_textures.py::TestPbrIsOffUntilItRendersCorrectly`.
 - `panel.mount_height: 1.5` in `configs/farm_khavda_block02.yaml` is a guess —
   needs the MMS/tracker datasheet.
 - Module width `1.134 m` is inferred from pitch minus a standard ~14 mm gap.

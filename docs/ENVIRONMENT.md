@@ -16,7 +16,18 @@
   paths differ — **verify every Isaac snippet against 6.0, not 5.1**, and treat
   the bible's 5.1-specific paths as hints, not truth. (Decide whether to update
   the 5.1 references in CLAUDE.md/bible to 6.0.1.)
-- **Isaac Lab:** not yet verified (symlink `_isaac_sim`).
+- **Isaac Lab:** `/home/simulationhub/IsaacLab`, **git tag `v3.0.0-beta2.patch1`**
+  (commit `ffff603eaf`), with `_isaac_sim` →
+  `/home/simulationhub/IsaacSim/_build/linux-aarch64/release`, i.e. paired with the
+  **6.0.1-rc.7** build above. Verified 2026-07-30.
+  ⚠⚠ **IT IS A BETA, AND `VERSION` HIDES THAT.** The `IsaacLab/VERSION` file reads a
+  bare **`3.0.0`**, so anything quoting that file — including CLAUDE.md's "Isaac Lab
+  3.0" — reads as a stable release. The git tag is the truth: `3.0.0-beta2.patch1`.
+  ⚠ **And it cannot simply be downgraded.** Isaac Lab **2.3.0** is the current stable
+  line but is built on **Isaac Sim 5.1**, while this box runs Isaac Sim 6.0.1-rc.7.
+  So on this machine the only Isaac Lab that pairs with the installed Isaac Sim is a
+  beta — an RL result from here carries *two* pre-release dependencies (Isaac Sim RC
+  + Isaac Lab beta) and must be reported as such.
 - **PyTorch (cu13):** lives in Isaac's bundled Python — not yet captured.
 - **Isaac Sim build commit:** `045ca8b` ("Isaac Sim Update 6.0.1", 2026-06-22).
 - **ROS 2 bridge extension:** `isaacsim.ros2.bridge-5.1.2` (loads system rclpy).
@@ -207,6 +218,68 @@ Notes, each of which was a real trap:
   per this build's `standalone_examples/api/isaacsim.simulation_app/livestream.py`.
   Ports come from `apps/isaacsim.exp.full.streaming.kit`: signal **49100**,
   stream **47998**.
+- **A clean zone shows you one robot.** Measured 2026-07-30: a 12-panel run of
+  BLOCK-02 escalated **0 of 12** (`--max-panels` takes the first N panels, and at
+  `faults.rate: 0.02` R00-C000…C011 are all healthy), so the `CONFIRM` phase never
+  ran and the confirm drone never moved. Nothing was broken — the sweep FSM only
+  moves drone 2 on a suspect verdict. To watch the full ground-bot-then-drones
+  choreography use `mission_mode: scout_dispatch` (below), not a longer sweep.
+- **`mission_mode: scout_dispatch`** (added 2026-07-30,
+  `orchestrator/scout_dispatch.py`) is the watchable mission, in four beats:
+  SCOUT (one drone surveys the zone and flags suspects) → DISPATCH (ground bot
+  drives to a flagged panel) → CONVERGE (both drones take station) → INSPECT
+  (close pass, `diagnose`, verdict written). `mission_mode: sweep` is the default
+  and is the measurement FSM — unchanged, because every recorded KPI came from it.
+  ```bash
+  tools/run_livestream.sh 24 mission \
+      --scenario configs/scenarios/fault_response_demo.yaml
+  ```
+  ⚠ **Not a measurement.** It pairs with `route: fault_zone`, which centres the
+  survey window on a seeded fault *using ground truth*, and it judges a flagged
+  panel twice (survey standoff + close standoff). Both break the denominators
+  `KPI-01`/`KPI-03` are defined over. Measurement stays `nominal_calm` (SC-01) and
+  `khavda_selfshade{,_lowsun}` (SC-11/SC-12).
+- **A scenario that overrides `faults.rate` or `turbine_scatter` needs its OWN
+  USD.** Both are baked in at build time. `fault_response_demo` raises the whole
+  plot's rate from 0.0 to 5e-4, so it builds `assets/fault_response_demo.usd` —
+  **measured 2026-07-30: 679,616 panels (340 faulted), 8 turbines, 712,795 prims
+  on stage, ~5 min**. Two corrections to what was assumed: the faulted panels cost
+  ~33k prims (~97 each, not ~75), and the build is longer than the wide shot's
+  documented **176 s** because that figure is for `rate: 0.0` and faulted panels
+  take the slow per-prim path. Pointed at `assets/khavda_s05b_full.usd`
+  instead, the survey flies a stage with zero faults and flags nothing — which
+  looks exactly like a broken escalation path. `tools/run_livestream.sh` derives
+  the USD name from the scenario to make this unmissable.
+- **`cruise_speeds` was dead in the real path** (fixed 2026-07-30). `run.py` built
+  `KinematicControl` without it, so every commute ran at inspection speed and only
+  the tests ever exercised cruise. That is a distance ceiling, not just a slow
+  transit: one `move_to` reaches `max_ticks * dt * speed`, so at 1.0 m/s and
+  dt 0.1 the ground bot could cover **400 m** before the "did not reach" warning
+  fired and it snapped to the waypoint — against a ~490 m first commute on
+  BLOCK-02, and a 4.84 × 1.97 km whole plot. `bot_cruise`/`drone_cruise`/
+  `max_ticks` are now read from `kinematics`.
+- **A stale farm USD makes a code change look like a no-op.** `--farm-usd` loads
+  whatever is on disk; it does not check that the stage is newer than the code
+  that authored it. This bit: the interspersed turbine field was committed while
+  every USD on disk predated it, so a run would have shown the old layout and
+  "disproved" a working change. `tools/run_livestream.sh` now compares the USD's
+  mtime against the farm config *and* `world/`+`schema/` sources, rebuilds when
+  stale, and takes `--farm block02|s05b_full|s05b` / `--no-build`.
+- **The client is not in the build.** This build ships only the *server*
+  (`omni.kit.livestream.webrtc`, "Kit Livestream WebRTC Server"). There is no
+  browser client and nothing on port 8211 — a plain `GET :49100` returns 501
+  because it is a signalling endpoint. Install the **Isaac Sim WebRTC Streaming
+  Client** on the machine you watch from, then Connect to this host's LAN IP
+  with signal **49100**.
+- **`allowDynamicResize` must be on, or a connected client sees nothing**
+  (fixed 2026-07-30). The client negotiates the stream size from *its* window
+  (e.g. 1280x720) while our frames come out at `window_width x window_height`
+  (1920x1080), and the server then drops every frame: *"Cannot stream video
+  frame with resolution 1920x1080 that differs from that of 1280x720 established
+  when the client connected"*. `isaacsim.exp.full.streaming.kit` sets
+  `primaryStream.allowDynamicResize = true`, but the `SimulationApp` path — and
+  NVIDIA's own `livestream.py` example — leaves it false, so `sim_runtime.py`
+  sets it explicitly before enabling `omni.kit.livestream.app`.
 - **Kit only repaints when `app.update()` is called.** With
   `perception: cosmos_reason` each panel blocks ~12 s inside a `urllib` request
   and the window is frozen for that whole time. For a watchable run use
@@ -289,6 +362,47 @@ about it is downstream of "can PX4 run on this box at all".
   container's much newer PX4 (`RISK-26`). Do not read "PX4 runs" as "we have
   flight dynamics".
 
+## Pegasus Simulator — ported to Isaac 6.0.1 (2026-07-29)
+
+Installed with `bash tools/install_pegasus_isaac6.sh` (idempotent). Layout mirrors
+Isaac itself: an external pinned clone at `/home/simulationhub/PegasusSimulator`
+(v5.1.0, commit `644da37`), plus one reviewable patch in-repo at
+`tools/patches/pegasus-v5.1.0-isaac6.patch`. Pegasus is ~240 MB of BSD-3-Clause
+third-party code, so it is deliberately NOT vendored.
+
+- **⚠ One package added to Isaac's bundled Python** (this is the note
+  `CLAUDE.md` requires): `pymavlink 2.4.49`, aarch64 wheel, installed
+  `--no-deps`. It is the only Pegasus dependency missing — numpy 2.5.1, scipy
+  1.17.0 and pyyaml are already in the 6.0.1 bundle. `--no-deps` is deliberate:
+  a transitive numpy upgrade already broke scipy on this box once (Session 10d).
+  **Verified after install: numpy and scipy were unchanged.**
+- **⚠ Do NOT run `ISAACSIM_PYTHON -m pip install --editable pegasus.simulator`**,
+  which is what Pegasus's own install guide tells you to do. Its `setup.py`
+  carries a `PatchIsaacSimKitApp` hook that **rewrites Isaac's `.kit` app files**
+  to inject a replicator extension — i.e. it mutates our source-built Isaac
+  install as a side effect of a pip command. Use PYTHONPATH / `--ext-folder`
+  instead; the installer never pip-installs Pegasus itself.
+- **What the patch changes:** `omni.isaac.dynamic_control` was retired in the
+  4.5/5.0 API migration and is absent from this build, so Pegasus's
+  `Vehicle`/`Multirotor` could not even be constructed. All of its legacy calls
+  funnel through one accessor, so the patch adds `dc_compat.py` (the same ten
+  methods on `isaacsim.core.prims`) and touches only two imports plus that
+  accessor — upstream call sites stay byte-identical so future merges stay clean.
+
+**Two bootstrap traps, both measured, both silent:**
+
+1. A standalone app must give Pegasus's singleton the World **before**
+   constructing any vehicle, or `Vehicle.__init__` dies on `self._world.stage`:
+   `pg = PegasusInterface(); pg._world = World(**pg._world_settings)`.
+2. **`world.play()` before stepping.** Without it there is no physics simulation
+   view, and every prim read returns the **static USD pose** — no exception, no
+   warning that matters. It looks exactly like working code with a frozen drone.
+
+**Status — what is and is not proven.** Imports: ✅ all vehicle/backend modules.
+Physics through the shim: ✅ reads tracked a falling Iris exactly (matched a
+direct `SingleRigidPrim` read to 4 dp), and `update_state` writes correct state
+when invoked. **A PX4-governed hover is NOT yet demonstrated** — see `RISK-28`.
+
 ## ROS 2 status (updated 2026-07-21)
 - **Distro: Jazzy** (Ubuntu 24.04 native; Isaac 6.0 bridge bundles jazzy+humble).
   Installed via `tools/install_ros2_jazzy.sh` → `/opt/ros/jazzy`, 201 pkgs.
@@ -329,3 +443,288 @@ defaults to sim-native for simplicity, but the seam is proven.
 Note: sourcing system ROS 2 Jazzy before launch makes the bridge + `ros2` CLI
 share middleware. RViz2 image display still needs the deferred VTK/paraview fix;
 `ros2 topic echo/hz` is sufficient for verification.
+
+## Looks: what this build has for materials, lighting and CAD (verified 2026-07-31)
+
+Established while fixing the "it looks nothing like real" problem. Every line here
+was measured or listed on this box, not read from docs.
+
+### MDL materials — available, and by bare name
+
+The build ships **zero `.mdl` files** (`find / -name '*.mdl'` → none outside test
+fixtures) and configures no MDL search path in any `.kit`. That is why the project
+never moved off `UsdPreviewSurface`. But a render probe
+(`tools/material_probe.py`, `mdl_probe`) settled it:
+
+| binding | result |
+|---|---|
+| `OmniPBR.mdl` / `OmniGlass.mdl` by **bare name** | ✅ resolve and render — built into the RTX renderer, **no download, no network** |
+| library MDL over **https** (`.../Materials/Base/Metals/Aluminum_Anodized.mdl`) | ✅ resolves and renders (adds a network dependency at render time) |
+| `UsdPreviewSurface` | renders, but RTX only *translates* it — this is why the textured path's diffuse input was "ignored outright" |
+
+The contract is `SetSourceAsset(file, "mdl")` + `SetSourceAssetSubIdentifier(fn, "mdl")`
++ the material's **`mdl`** surface output. Get any one wrong and you get a silent
+default grey, indistinguishable from "the material is just flat".
+
+⚠ Honest scope: for rough dielectrics (sand, concrete, asphalt) MDL and
+`UsdPreviewSurface` render nearly identically — both are Lambert+GGX. The real wins
+are **glass** (measured 111 vs 67 on a sphere) and texture inputs that work.
+
+Asset root that resolves: `https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/`
+(`SimReady/ Environments/ Props/ Materials/ Robots/ People/ Sensors/ Samples/`).
+`Materials/vMaterials_2/` has Metal, Stone, Masonry, Paint, Plastic, Ceramic, Wood —
+**no ground/sand/gravel**, so the desert floor stays OmniPBR + our own maps.
+**There is no PV module, tracker or inverter asset in any NVIDIA library.**
+
+### Exposure — only the photographic triad works
+
+| key | effect |
+|---|---|
+| `/rtx/post/tonemap/fNumber`, `cameraShutter`, `filmIso` | ✅ strong |
+| `exposure/compensation`, `exposureKey`, `maxWhiteLuminance`, `whiteScale` | ❌ **inert** (<0.3/255 across their range) |
+
+The active tonemap `op` is **6**, which ignores the Reinhard parameters. Measured
+ground brightness on block02 at a 43° sun: f/5 → 195 (blown white), f/7 → 153,
+**f/9 → 118**, f/11 → 91, f/16 → 51.
+
+⚠⚠ **Apply these AFTER `open_stage`.** Set in `SimulationApp` construction they are
+accepted by carb and then reset when the renderer re-initialises for the new stage —
+measured as identical frame means (182.2 vs 182.3) with the tonemap "applied".
+
+### The sky is the remaining defect
+
+At the shipped `DomeLight` 300 / `DistantLight` 2400 the sky renders **0.16× the
+ground** — six times darker than the desert it supposedly lights, which is the dark
+brown band at the top of every render. Measured at f/9:
+
+| dome | sun | sky | ground | sky/ground |
+|---|---|---|---|---|
+| 300 | 2400 | 15.5 | 100.1 | **0.16** (shipped) |
+| 3000 | 2400 | 109.1 | 131.0 | 0.83 |
+| 6000 | 1200 | 156.8 | 135.8 | 1.15 (realistic) |
+
+Raising the dome fixes the sky and floods the ground with blue skylight, attacking
+the Session-10c warm-ground invariant. **Not tunable:** a `DomeLight`'s texture is
+both background and fill, and ours is an 8-bit LDR PNG where a real HDRI spans
+~1e3–1e5. The fix is an HDRI or NVIDIA's dynamic sky —
+`Assets/Skies/2022_1/Skies/Dynamic/ClearSky.usd` returns **HTTP 200**, and
+`omni.kit.environment.core-1.4.2` (with `sunstudy_player/`) plus
+`omni.usd.schema.physical_lighting-0.1.0` are **already installed**. ⚠ `SkyHelper`'s
+API is unverified against 6.0.1.
+
+### CAD → USD — installed and working
+
+`tools/cad_to_usd.py`, verified end to end on this box (STL → USD).
+
+    omni.kit.converter.cad 209.4.0    bundle
+    omni.kit.converter.hoops 510.3.0  step stp iges igs sldprt sldasm catpart
+                                      catproduct prt asm x_t x_b jt dwg dxf 3dm
+                                      ipt iam dgn obj stl glb gltf fbx
+    omni.kit.converter.dgn 510.1.5    MicroStation
+    omni.kit.converter.jt 509.1.2     Siemens JT
+    omni.kit.asset_converter 6.0.1    OBJ/STL/glTF/FBX
+    omni.importer.onshape 2.0.3
+    omni.kit.converter.gsplat 0.1.14  Gaussian splats (the NuRec path)
+
+API: enable `omni.kit.converter.{common,hoops_core,hoops}`, then
+`hoops_core.get_instance().create_converter_task(src, dst, config_path_to_args(json))`.
+
+⚠ **`.dwg`/`.dxf` is the important one** — the Khavda vendor drawing is already in
+that format (we currently parse it for coordinates and discard the geometry), and it
+is what PVcase and RatedPower export.
+
+⚠ A raw import is **not** SimReady. The STL test came back `metersPerUnit=0.001`
+against our metres/Z-up convention; expect to rescale, decimate and re-bind
+materials. The tool prints prim count, units and up-axis so those show up
+immediately rather than after the asset is instanced 30,016 times.
+
+## Physics on a farm stage — measured 2026-07-31 (`tools/physics_probe.py`)
+
+The inspection mission has never stepped physics: `SimRuntime.step()` spins rotors,
+turns turbine hubs and calls `app.update()` — no `SimulationContext`, no `World`, no
+`play()`. And `tools/px4_hover.py`, the one place real dynamics run, flies in
+`world.scene.add_default_ground_plane()` — an **empty world**. So the twin's own
+terrain had never been stood on. Two findings, both blocking, both now measured.
+
+### 1. There was no floor — only 25 colliders in 81,961 prims
+
+| | |
+|---|---|
+| prims (full block, realism) | 81,961 |
+| `CollisionAPI` | **25 — all on turbines** |
+| `RigidBodyAPI` | **0** |
+| `/World/Ground` collision | **none** |
+
+A 6.47 kg body dropped from 12 m over the array fell **44.66 m** against a 44.15 m
+free-fall prediction — it hit nothing and kept going to z = −32 m. Panels, racking,
+roads and fence have no colliders either.
+
+**Fixed for the ground:** `_build_ground_heightfield` now applies `CollisionAPI` +
+`MeshCollisionAPI` with `approximation = meshSimplification` (a `convexHull` over a
+320 × 647 m heightfield is a blob that would put the drone metres off the grade).
+Verified by drop test: 12.0 m → **rests at z = 0.073 m**.
+
+⚠ Still absent: colliders on panels, racking, roads, fence. A drone can fly through
+a module. And a trimesh collider is static-only and can be tunnelled at speed — see
+the Isaac trimesh fall-through issue; this is verified by drop test, not assumed.
+
+### 2. Physics does not scale to the full plant
+
+| stage | prims | steps/s | realtime |
+|---|---|---|---|
+| block02 subset, 24 tables (flat) | 7,053 | 217 | **1.09×** |
+| block02 subset, 24 tables (realism) | 7,614 | 200–211 | **1.00–1.06×** |
+| **block02 full** | **81,961** | **14** | **0.07×** |
+
+At `physics_dt = 1/200` and render off. The realism layer costs ~8% — **it is not the
+problem**; plant scale is. ~11× the prims gave ~14× the slowdown.
+
+**Consequence for PX4 in the mission:** feasible on a **subset** (≈8k prims, ~24
+tables) at ~1× realtime; **not feasible on the full 30,016-module block**, because a
+flight controller runs on wall-clock and at 0.07× the sim and PX4 disagree about time.
+
+### 3. The cost is scene-graph sync, NOT collision — confirmed
+
+Same stage, same body, branches progressively deactivated:
+
+| configuration | live prims | steps/s | realtime |
+|---|---|---|---|
+| all active (baseline) | 81,974 | 13 | 0.07× |
+| deactivate `/World/Farm` | 7,270 | **288** | **1.44×** |
+| + `/World/Site` | 236 | 966 | 4.83× |
+| + `/World/OSM` | 96 | 1,077 | 5.38× |
+| + `/World/Turbines` | 55 | 1,241 | 6.20× |
+| all reactivated | 81,974 | 11 | 0.05× |
+
+**`/World/Farm` alone costs 22×, and it carries ZERO colliders.** PhysX is colliding
+against 25 turbine prims plus one ground mesh; the 30,016 physically-inert panel
+Xforms are what the time goes to. Reactivating restores the baseline, so the effect is
+causal and not a warming cache.
+
+⚠ **Fabric does not fix it — measured, not assumed.** Enabling `omni.physx.fabric` at
+runtime (reports `True`), setting `/physics/updateToUsd = False`, and
+`omnihydra.useFastSceneDelegate` at launch each left the rate at **13–14 steps/s**.
+Untested: launching the dedicated `isaac-sim.fabric.sh` app, where those are set
+before app init rather than after.
+
+So full-plant physics is **not currently available**, and the practical answer is to
+run physics on a subset (~24 tables, ~8k prims, ~1× realtime) while rendering and
+KPI-scoring on the full block, which needs no physics. Panel-level instancing is
+already in place (29,416 modules from 1 prototype) — the residual cost is the
+per-panel Xform each module needs to carry its `pv:` state.
+
+## Isaac ROS on this Spark — ✅ GO, but containers only (verified 2026-08-03)
+
+The feasibility check that gates the localization/navigation arc (cuVSLAM → nvblox →
+Nav2). Verdict: **available and supported**, with one route and two real constraints.
+
+### Platform check — every requirement met
+
+| requirement | needed | this box |
+|---|---|---|
+| platform | DGX Spark is **in the official test matrix** | DGX Spark (GB10) ✅ |
+| ROS 2 | Jazzy | Jazzy, sourceable ✅ |
+| CUDA | 13.0+ | 13.0.88 ✅ |
+| driver | 580+ | 580.142 ✅ |
+| Docker + NVIDIA container toolkit | required | 27.5.1, `nvidia` runtime present ✅ |
+| `nvcr.io` access | required | authenticated, verified against a public image ✅ |
+
+### ⚠ The apt debs are x86_64-ONLY — the container route is mandatory
+
+Repo `deb https://isaac.download.nvidia.com/isaac-ros/release-4.5 noble main` is live
+and advertises `Architectures: amd64 arm64`. That advertisement is misleading:
+
+| | amd64 | arm64 |
+|---|---|---|
+| total packages | **392** | **50** |
+| `isaac-ros-visual-slam` | 3 | **0** |
+| `isaac-ros-nvblox` | 13 | **0** |
+| `isaac-ros-nitros` | 33 | **0** |
+
+Every one of the 50 arm64 entries is a `python3-*-pip-shim` or a dependency, plus
+`isaac-ros-cli` — which is `Architecture: all`, i.e. a pure-Python launcher, not a
+build. **There is no compiled Isaac ROS package for aarch64 in apt.**
+
+That is not a blocker, it is the wrong route. NVIDIA's documented path for Spark is
+the **Isaac ROS CLI driving arm64v8 Docker containers**, and the images are real:
+
+    nvcr.io/nvidia/isaac/ros    267 tags, 31 aarch64
+
+Verified to resolve (manifest inspected, not guessed):
+
+    noble-ros2_jazzy_<hash>-arm64            18.0 GB compressed, 91 layers
+    isaac_ros_<hash>-arm64-fastos             0.5 GB compressed, 25 layers
+
+Tag suffixes distinguish the aarch64 targets: **`-fastos`** (DGX OS / Spark) vs
+**`-jetpack`** (Jetson).
+
+### ⚠ Two constraints that change the plan
+
+1. **cuVSLAM needs STEREO, and our drone is monocular.** `isaac_ros_visual_slam`
+   requires "one or more stereo cameras and optionally an IMU" (RGBD also supported;
+   **monocular is not**), at ≥30 Hz with ≤±100 µs stereo sync and ≤±2 ms jitter.
+   `SimRuntime` authors ONE RGB camera per drone. Publishing a synchronised stereo
+   pair out of Isaac is a prerequisite task that was not in the original estimate.
+2. **Known DGX Spark issue:** `rosdep install` fails with package-downgrade errors on
+   bare-metal/venv workflows, because DGX OS ships newer packages than Isaac ROS pins.
+   Another reason to stay in the container.
+
+### Not yet done
+
+The 18 GB image has **not** been pulled — that is a large download and a system
+change, so it needs a decision rather than an assumption. Nothing above required it:
+every line here is from repo metadata and registry manifests.
+
+## PX4 flies inside the plant — ✅ first flight, with a hard caveat (2026-08-03)
+
+`tools/px4_in_plant.py`. Until now `tools/px4_hover.py` was the only real-dynamics
+flight and it flies in `world.scene.add_default_ground_plane()` — an **empty world
+with its own floor**. So the twin's own terrain, racking and modules had never been
+flown over, and the project's one flight number (43 mm altitude hold) was measured in
+a void.
+
+**Result on a 24-table block02 stage (7,638 prims):**
+
+    0.0 s   spawned 8.77 m
+    4.2 s   0.209 m        (unarmed: falls, lands on OUR terrain collider)
+   12.0 s   preflight OK -> armed, auto:takeoff
+   20.8 s   2.382 m        (climbing)
+   25-50 s  2.67 - 2.73 m  (holding)
+
+So PX4 governs a drone over the real hardware, and the terrain mesh collider added the
+same day is what catches it before takeoff.
+
+### ⚠ 0.11x realtime — this is NOT a KPI-05 sample
+
+12,500 steps took 459 s. PX4's control loops run on wall-clock, so at 0.11x the
+autopilot and the sim disagree about time. Compare:
+
+| | realtime |
+|---|---|
+| bare physics, 7.6k prims | 1.06x |
+| + Pegasus/PX4, same stage | **0.11x** |
+| bare physics, 82k prims | 0.07x |
+
+Pegasus + PX4 costs ~10x on top of physics. Flight numbers must still come from
+`px4_hover.py`, which runs near realtime in the empty world.
+
+### Three failures on the way, each silent
+
+1. **No sensor stream.** `world.step()` advances PhysX but does NOT update the Pegasus
+   vehicle. Without `drone.update_state / update_sensors / update / update_sim_state`
+   each step, PX4 logs `Simulator connected on TCP port 4560` and then
+   `poll timeout 0, 25` forever while the drone free-falls. A connected socket looks
+   exactly like a working link.
+2. **Wrong arm path.** `docker exec … /opt/px4/bin/px4-commander`, not a pipe into
+   `./build/px4_sitl_default/bin/px4-shell` (which does not exist in this image). The
+   wrong path fails silently and reads as a controls problem.
+3. **Handle pre-warm** (`px4_hover`'s "rule 3") is still required — all five handles
+   report `bound` before flight. It was not sufficient on its own, though: pre-warming
+   alone still gave poll timeouts until (1) was fixed.
+
+⚠ PX4 auto:takeoff climbs to **its own** altitude (~2.5 m AGL), not `--altitude`. On
+this site that is just below panel height. Raise `MIS_TAKEOFF_ALT` or send position
+setpoints to inspect from above — waypoint following is authored but not yet flown.
+
+⚠ PX4 SITL does not recover from a simulator disconnect: restart the container for
+every flight.

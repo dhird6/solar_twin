@@ -481,17 +481,42 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
     Camera moves are fractions of the site for the same reason `flythrough.py`'s
     are: this has to frame a 10-panel test row and a 273-table block.
     """
-    from solar_twin.world.flythrough import Key
+    from solar_twin.world.flythrough import Key, footprint_frame
 
     min_x, min_y, max_x, max_y = bounds
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
     span_x = max_x - min_x
     span_y = max_y - min_y
-    high = max(150.0, 0.72 * max(span_x, span_y))
+    # Shots are placed in the footprint's own long/short frame, not in x/y — see
+    # `flythrough.footprint_frame` for the measurement that forced this. `high` is
+    # capped against the SHORT span for the same reason: scaling standoff off the
+    # long axis alone put the camera 1,251 m above a 127 m-wide strip here.
+    place, fwd, span_along, span_across = footprint_frame(bounds)
+    high = max(150.0, min(0.72 * span_along, 2.9 * span_across))
+
+    def key(along, across, z, pitch, dh, focal, secs, label="") -> Key:
+        x, y = place(along, across)
+        return Key(x, y, z, pitch, (fwd + dh) % 360.0, focal, secs, label)
 
     n_panels = facts.get("panels", 0)
     n_tables = facts.get("tables", 0)
+    # ⚠ Every table figure in this tour must describe the STAGE, and say so when the
+    # stage is a crop. A subset build once captioned itself "6213 tracker tables,
+    # 22,064 modules" — the whole plot's tables beside the subset's modules, a 22x
+    # mismatch worn as a single fact (`NFR-07`). `plant_tour` now counts tables off
+    # the stage and passes `subset_of` when the layout holds more.
+    n_of = facts.get("subset_of", 0)
+    tables_text = (
+        f"{n_tables} of {n_of:,} tracker tables ({100 * n_tables / n_of:.0f}% of the plot)"
+        if n_of and n_tables < n_of
+        else f"{n_tables} tracker tables"
+    )
+    # Which site this actually is, rather than a name baked in when there was only
+    # one. Supplied by the caller from the layout it built with.
+    site_name = str(facts.get("site_name") or "Khavda")
+    site_desc = str(facts.get("site_desc") or "Adani Khavda, Gujarat")
+    config_name = str(facts.get("config_name") or "a config in configs/")
     n_prims = facts.get("prims", 0)
     n_inst = facts.get("instanced", 0)
     n_hot = facts.get("hotspot", 0)
@@ -504,19 +529,19 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
 
     chapters: list[Chapter] = [
         Chapter(
-            title="Khavda BLOCK-02 — the digital twin so far",
+            title=f"{site_name} — the digital twin so far",
             subtitle="what is built, what is inferred, what is still missing",
             seconds=7.0,
             items=[
                 Item(
                     "Real site, real survey coordinates",
                     BUILT,
-                    f"Adani Khavda PLOT A10b BLOCK-02, EPSG:32642 · {n_tables} tables · {n_panels:,} modules",
+                    f"{site_desc}, EPSG:32642 · {tables_text} · {n_panels:,} modules",
                 ),
                 Item(
                     "Everything here is built from a script + a config",
                     BUILT,
-                    "no GUI steps — farm_builder.py + configs/farm_khavda_block02.yaml",
+                    f"no GUI steps — farm_builder.py + {config_name}",
                 ),
                 Item(
                     "Status of each part is labelled in the shot it appears in",
@@ -531,15 +556,25 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
             subtitle=f"{span_x:.0f} m x {span_y:.0f} m of real layout, straight off the vendor drawing",
             seconds=11.0,
             items=[
-                Item("Layout ingested from vendor CAD", BUILT, f"{n_tables} tracker tables, {n_panels:,} modules"),
+                Item("Layout ingested from vendor CAD", BUILT, f"{tables_text}, {n_panels:,} modules"),
                 Item("Instanced so the whole plant fits", BUILT, f"{n_inst:,} instanced · {n_prims:,} prims total"),
                 Item("USD stage is the source of truth", BUILT, "Z-up, metres, pv: attributes on every module"),
-                Item("Second block / full 30 GW site", TODO, "one DC block ingested; the plot has many"),
+                Item(
+                    "Full 30 GW site",
+                    TODO,
+                    f"this stage is {n_tables} of {n_of:,} tables in ONE plot; the park has many plots"
+                    if n_of and n_tables < n_of
+                    else "this plot is ingested; the park has many plots",
+                ),
             ],
             keys=[
-                Key(cx, min_y - span_y * 0.55, high, 56.0, 0.0, 24.0, 0.0, ""),
-                Key(cx, min_y - span_y * 0.30, high * 0.80, 54.0, 0.0, 24.0, 6.0, ""),
-                Key(cx * 0.80, min_y - span_y * 0.18, high * 0.62, 58.0, 12.0, 22.0, 5.0, ""),
+                key(-0.55, 0.0, high, 56.0, 0.0, 24.0, 0.0),
+                key(-0.30, 0.0, high * 0.80, 54.0, 0.0, 24.0, 6.0),
+                # The lateral step is measured from the footprint CENTRE. It was
+                # `cx * 0.80`, which scales a world coordinate: identical to this
+                # for BLOCK-02 (cx 160 -> 128, i.e. -0.10 of the span) and wrong
+                # for any site not straddling the origin.
+                key(-0.18, -0.10, high * 0.62, 58.0, 12.0, 22.0, 5.0),
             ],
         ),
         # 2. Terrain. Shot from low and raking so relief is legible; a nadir view
@@ -575,9 +610,9 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
                 # Pitched DOWN harder than feels natural: at 89 deg most of the
                 # frame was sky and horizon haze, and 2.2 m of relief over 1.4 km
                 # only reads when the rows themselves fill the picture.
-                Key(min_x - span_x * 0.10, min_y + span_y * 0.10, 14.0, 80.0, 22.0, 28.0, 0.0, ""),
-                Key(min_x + span_x * 0.18, min_y + span_y * 0.34, 8.0, 83.0, 20.0, 28.0, 5.0, ""),
-                Key(min_x + span_x * 0.30, min_y + span_y * 0.52, 20.0, 74.0, 8.0, 24.0, 5.0, ""),
+                key(0.10, -0.60, 14.0, 80.0, 22.0, 28.0, 0.0),
+                key(0.34, -0.32, 8.0, 83.0, 20.0, 28.0, 5.0),
+                key(0.52, -0.20, 20.0, 74.0, 8.0, 24.0, 5.0),
             ],
         ),
         # 3. Balance of plant, at road level where the furniture is.
@@ -610,9 +645,9 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
                 Item("Tracker backtracking", TODO, "not modelled, so self-shading is worst-case"),
             ],
             keys=[
-                Key(min_x + span_x * 0.42, cy - span_y * 0.16, 4.0, 84.0, 0.0, 35.0, 0.0, ""),
-                Key(min_x + span_x * 0.46, cy + span_y * 0.02, 3.2, 86.0, 8.0, 35.0, 5.0, ""),
-                Key(min_x + span_x * 0.52, cy + span_y * 0.14, 9.0, 78.0, 20.0, 28.0, 5.0, ""),
+                key(0.34, -0.08, 4.0, 84.0, 0.0, 35.0, 0.0),
+                key(0.52, -0.04, 3.2, 86.0, 8.0, 35.0, 5.0),
+                key(0.64, 0.02, 9.0, 78.0, 20.0, 28.0, 5.0),
             ],
         ),
         # 5. Turbines. Framed from inside the site looking out, because the point
@@ -665,10 +700,26 @@ def build_chapters(bounds: tuple[float, float, float, float], facts: dict) -> li
             subtitle="the honest backlog, in the order it matters",
             seconds=13.0,
             items=[
-                Item("Flight dynamics: Pegasus Simulator / PX4", TODO, "v5.1.0 targets Isaac 5.1; this box runs 6.0.1"),
-                Item("ROS 2 bridge as a Transport", TODO, "camera->ROS 2 is proven on this box; the bridge is unwritten"),
-                Item("VLM run-to-run variance is unquantified", TODO, "two identical runs disagreed on one panel — no KPI is a constant yet"),
-                Item("Rest of the balance of plant + graded surface", TODO, "substation, control room, trenches, piles"),
+                # ⚠ This card is the one place the tour states its own backlog, so a
+                # stale entry here is an honesty defect, not a typo — it under-claims
+                # work that shipped and misdirects whoever watches it. Two entries
+                # were exactly that: PX4 now flies (Session 12b, hover 2.562 m
+                # +/- 43 mm) and the VLM variance IS quantified (Session 12: byte-
+                # repeatable served serially, flips come from continuous batching).
+                # Check this list against `SESSIONS.md` before rendering a tour.
+                Item(
+                    "Flight dynamics under the mission",
+                    TODO,
+                    "PX4 flies a hover (43 mm hold); the INSPECTION fleet is still kinematic",
+                ),
+                Item("ROS 2 bridge as a Transport", TODO, "bridge is built + smoke-tested; not the default Transport"),
+                Item(
+                    "VLM decoding is pinned, but batching is not",
+                    TODO,
+                    "byte-repeatable served serially; concurrent batching still flips a verdict (RISK-23)",
+                ),
+                Item("Rest of the balance of plant", TODO, "substation, control room, trenches, piles"),
+                Item("~1 m satellite imagery on the terrain", TODO, "the biggest remaining visual gap; GLO-30 is 30 m"),
                 Item("Closed maintenance loop", TODO, "verdicts are written; nothing is dispatched to act on them"),
             ],
         )

@@ -92,11 +92,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"⚠ image is {arch}, not arm64 — this proves nothing about this box")
 
     _kill()  # a stale container from a previous run would hold the port
+    # ⚠ `--network host`, NOT `-p 4560:4560`. PX4 is the CLIENT here: it dials out
+    # to the simulator, which listens. Publishing the port made docker-proxy bind
+    # 4560 on the host, which (a) gave this script a FALSE PASS — the TCP connect
+    # below reached docker-proxy, not PX4 — and (b) then blocked the real simulator
+    # from binding it (`OSError: [Errno 98] Address already in use` inside
+    # Pegasus's MAVLink backend). Sharing the host loopback lets PX4 reach a
+    # simulator listening on 127.0.0.1.
     start = _run([
         "docker", "run", "-d", "--rm", "--name", NAME,
-        "--platform", "linux/arm64",
-        "-p", f"{SIM_PORT}:{SIM_PORT}", "-p", f"{GCS_PORT}:{GCS_PORT}/udp",
-        "-e", f"PX4_SIM_MODEL={args.model}", IMAGE,
+        "--platform", "linux/arm64", "--network", "host",
+        "-e", f"PX4_SIM_MODEL={args.model}",
+        "-e", "PX4_SIM_HOSTNAME=localhost", IMAGE,
     ])
     if start.returncode:
         print(f"FAIL: could not start container\n{start.stderr[-500:]}", file=sys.stderr)
@@ -123,20 +130,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"  PX4 booted: {READY_LINE} {SIM_PORT}")
 
-    # The seam has to be reachable from where Isaac runs — the host — not just
-    # inside the container's namespace.
-    try:
-        with socket.create_connection(("127.0.0.1", SIM_PORT), timeout=10):
-            print(f"  TCP {SIM_PORT} reachable from the host — the MAVLink sim seam is open")
-    except OSError as exc:
-        print(f"FAIL: cannot reach TCP {SIM_PORT} from the host: {exc}", file=sys.stderr)
+    # PX4 dials OUT, so nothing should be listening on 4560 yet — the simulator
+    # binds it. Asserting that is the real check; an earlier version connected to
+    # the port and called it a pass, which only proved docker-proxy was up.
+    listening = _run(["bash", "-c", f"ss -ltn 2>/dev/null | grep -c ':{SIM_PORT} '"]).stdout.strip()
+    if listening not in ("", "0"):
+        print(f"⚠ something is ALREADY listening on {SIM_PORT}. Pegasus needs to bind it;"
+              f" a publisher/proxy there will fail the sim with EADDRINUSE.", file=sys.stderr)
         _kill()
         return 1
+    print(f"  port {SIM_PORT} is free for the simulator to bind, and PX4 is dialing it")
 
-    print("\nPASS — PX4 SITL runs natively on this aarch64 Spark and its simulator\n"
-          "       seam is reachable. RISK-02's PX4 half is closed; what remains is\n"
-          "       the Isaac-side bridge (see RISK-02 / RISK-26 in\n"
-          "       docs/specs/08-platform-and-risk-register.md).")
+    print("\nPASS — PX4 SITL runs natively on this aarch64 Spark and is waiting for a\n"
+          "       simulator to connect. Next: `tools/px4_hover.py` flies the Iris\n"
+          "       against it (FR-06). ⚠ PX4 SITL does NOT recover from a simulator\n"
+          "       disconnect — restart this container for every flight.")
     if args.keep:
         print(f"\n(container `{NAME}` left running — `docker kill {NAME}` when done)")
     else:

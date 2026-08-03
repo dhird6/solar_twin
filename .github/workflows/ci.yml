@@ -14,8 +14,12 @@ name: CI
 
 on:
   pull_request:
+  # Every branch, not just `main`. Gating only at PR time left work on a
+  # long-lived feature branch unverified for as long as nobody opened one — which
+  # is the same shape as the "no PR to main for four sessions" problem this repo
+  # already had. The suite runs in ~6 s, so the extra minutes are not the
+  # constraint; `concurrency` below cancels superseded runs.
   push:
-    branches: [main]
 
 # A superseded run on the same branch is wasted minutes.
 concurrency:

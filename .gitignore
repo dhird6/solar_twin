@@ -57,3 +57,8 @@ NvStreamer-*.etli
 # Claude Code: machine-local settings and git worktrees, never shared
 .claude/settings.local.json
 .claude/worktrees/
+
+# Ad-hoc PDFs/exports dropped into docs/ by hand (test reports, vendor sheets).
+# Tracked docs are markdown; a broad `git add docs` has swept a 560 KB PDF into a
+# commit once already, and CLAUDE.md forbids committing large binaries.
+docs/*.pdf

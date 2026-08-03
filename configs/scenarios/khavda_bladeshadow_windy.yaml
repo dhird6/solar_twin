@@ -1,0 +1,119 @@
+# khavda_bladeshadow_windy — KPI-03 with the camera being pushed as well as shaded.
+#
+# The TREATMENT arm of a pair. `khavda_bladeshadow.yaml` is the control: identical
+# stage, identical sun, identical single real turbine, no wind. Run both and the
+# difference in `false_fault_rate` attributes to **wind reaching the camera** and to
+# nothing else — which is the only way this measures anything, because a blade shadow
+# and a shifted viewpoint are separately capable of producing a false hotspot.
+#
+# Read `khavda_bladeshadow.yaml`'s header first: the geometry, the 40-minute window,
+# the coverage figures and the run-sizing arithmetic all live there and are not
+# repeated here. Everything below is the delta.
+#
+# ## Why the two hazards belong in one scene
+#
+# The trackers are stowed FLAT in both arms. In the control that is an isolation
+# device (a tracking HSAT would add self-shading and make a false fault
+# unattributable). Here it is also the physically coherent state: flat IS the
+# high-wind stow pose, so "the trackers are stowed and the turbines beside us are
+# working hard" is one consistent operating condition rather than two settings that
+# happen to be on together.
+#
+# ## ⚠⚠ WHAT THE WIND DOES HERE, AND WHAT IT DOES NOT
+#
+# `kinematics.wind_disturbance` offsets the drone's **achieved camera pose** from its
+# commanded one by a quasi-static drag/stiffness drift (~0.2 m at 12 m/s for an
+# M350-class machine). That is the EYES half of the thesis: does Cosmos Reason still
+# read a healthy panel correctly when the frame is not where the mission aimed it.
+#
+# It is **not flight dynamics** — no mass, no thrust limit, no attitude loop, so the
+# camera translates but never tilts (`NFR-07`, `control/wind_drift.py`). Therefore:
+#
+#   * **Do not quote `KPI-05` from this scenario.** Altitude/station-keeping is a
+#     flight-control measurement and belongs to `SC-13` / `khavda_windy_hover.yaml`,
+#     which has real PX4 dynamics and a measured calm-air baseline (43 mm over 35 s).
+#     A number from here would be an artefact of `wind_hold_stiffness_n_per_m`.
+#   * `wind_hold_stiffness_n_per_m` is **INFERRED** and scales every drift figure
+#     linearly. Calibrate it against `px4_hover.py --wind-scenario` under this same
+#     wind — `k = drag / measured excursion` — before treating any drift as measured.
+#   * The run record stamps `wind_disturbance.max_drift_m`, so how much wind actually
+#     reached the camera is on the record rather than inferred from the config.
+#
+#   ISAAC=/home/simulationhub/IsaacSim/_build/linux-aarch64/release/python.sh
+#   # The stage is byte-identical to the control arm's, so REUSE it — building a
+#   # second copy of the same USD wastes ~5 min and invites the two arms to drift.
+#   PYTHONPATH=src $ISAAC -m solar_twin.run \
+#       --scenario configs/scenarios/khavda_bladeshadow_windy.yaml \
+#       --farm-usd assets/khavda_bladeshadow.usd --max-panels 120
+#
+# ⚠ Reusing the control's stage is only correct while the two files' `farm_overrides`
+# stay identical apart from `wind:`. Wind is consumed at RUN time, not baked into the
+# USD, so it does not change the stage — but sun, trackers and turbines do. If you
+# edit either arm's geometry, rebuild.
+
+name: khavda_bladeshadow_windy
+seed: 20260731   # ⚠ same seed as the control arm: the pair must differ ONLY in wind
+
+extends:
+  farm: configs/farm_khavda_block02.yaml
+  mission: configs/mission_cosmos.yaml   # live VLM — the whole point of KPI-03
+
+farm_overrides:
+  # ---- identical to khavda_bladeshadow.yaml (the control arm) ---------------
+  faults:
+    rate: 0.0        # every panel HEALTHY -> any fault verdict is a FALSE fault
+    states: []
+  sun:
+    timestamp: "2026-06-21T01:20:00Z"
+    tracker_max_rotation_deg: 0.0   # stowed flat: isolates the blade shadow, and is
+                                    # the real high-wind stow pose
+  # ⚠ BOTH keys required: `turbine_scatter.enabled` is checked FIRST and WINS, so an
+  # explicit list alone is silently replaced by scattered positions — which moves the
+  # shadow off the array and reproduces the SC-05 null.
+  turbine_scatter:
+    enabled: false
+  turbines:
+    - pos: [866.349, 440.959]      # nearest REAL surveyed machine, 546.2 m off the
+      hub_height: 120.0            # footprint (GatiShakti digest, plot S05b)
+      blade_len: 70.0
+      blade_chord: 4.0
+      rpm: 11.5
+      rating_mw: 5.2
+      provenance: digest
+      geometry_provenance: INFERRED
+  turbines_articulated: false
+
+  # ---- THE DELTA: wind (FR-12 / FR-13) -------------------------------------
+  # The same air as SC-13, so the two scenarios cannot disagree about the weather.
+  # Khavda is a monsoon-belt site with a strong, steady south-westerly; 12 m/s with
+  # 35% gusting is a windy-but-flyable day, not a storm.
+  # ⚠ NOT CFD: the wake is an analytical Jensen top-hat and the gusts are
+  # band-limited noise — a repeatable disturbance of about the right shape and
+  # magnitude, explicitly not a loads analysis.
+  wind:
+    mean_speed: 12.0
+    direction_deg: 225.0          # south-westerly, met convention (FROM)
+    speed_variation: 0.35
+    direction_variation_deg: 15.0
+    gust_period_s: 4.0
+    # seed defaults to the scenario seed, so the gust is part of this scenario's
+    # identity — the same gust every run, which is what `RISK-23` requires of a
+    # KPI measured under gust.
+
+mission_overrides:
+  kinematics:
+    # ⭐ The switch. Without this the `wind:` block above is inert: the inspection
+    # mission drives its robots kinematically and wind is a force (`NFR-07`). The run
+    # warns loudly if this is on and no wind is declared.
+    wind_disturbance: true
+    wind_drone_spec: m350
+    wind_hold_stiffness_n_per_m: 80.0   # ⚠ INFERRED — see the header
+
+kpi_gates:
+  # One-sided, exactly as in the control arm: a **breach** is real evidence, a
+  # **pass** is not evidence until the run is sized per the control arm's dwell
+  # arithmetic. With 24 panels the expected number of shadowed observations is under
+  # one, and a gate cannot be cleared by a hazard that never arrived.
+  false_fault_rate_max: 0.05
+  false_alarm_rate_max: 0.05
+  abstention_rate_max: 0.0
