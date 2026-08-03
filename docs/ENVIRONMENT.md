@@ -612,3 +612,65 @@ run physics on a subset (~24 tables, ~8k prims, ~1× realtime) while rendering a
 KPI-scoring on the full block, which needs no physics. Panel-level instancing is
 already in place (29,416 modules from 1 prototype) — the residual cost is the
 per-panel Xform each module needs to carry its `pv:` state.
+
+## Isaac ROS on this Spark — ✅ GO, but containers only (verified 2026-08-03)
+
+The feasibility check that gates the localization/navigation arc (cuVSLAM → nvblox →
+Nav2). Verdict: **available and supported**, with one route and two real constraints.
+
+### Platform check — every requirement met
+
+| requirement | needed | this box |
+|---|---|---|
+| platform | DGX Spark is **in the official test matrix** | DGX Spark (GB10) ✅ |
+| ROS 2 | Jazzy | Jazzy, sourceable ✅ |
+| CUDA | 13.0+ | 13.0.88 ✅ |
+| driver | 580+ | 580.142 ✅ |
+| Docker + NVIDIA container toolkit | required | 27.5.1, `nvidia` runtime present ✅ |
+| `nvcr.io` access | required | authenticated, verified against a public image ✅ |
+
+### ⚠ The apt debs are x86_64-ONLY — the container route is mandatory
+
+Repo `deb https://isaac.download.nvidia.com/isaac-ros/release-4.5 noble main` is live
+and advertises `Architectures: amd64 arm64`. That advertisement is misleading:
+
+| | amd64 | arm64 |
+|---|---|---|
+| total packages | **392** | **50** |
+| `isaac-ros-visual-slam` | 3 | **0** |
+| `isaac-ros-nvblox` | 13 | **0** |
+| `isaac-ros-nitros` | 33 | **0** |
+
+Every one of the 50 arm64 entries is a `python3-*-pip-shim` or a dependency, plus
+`isaac-ros-cli` — which is `Architecture: all`, i.e. a pure-Python launcher, not a
+build. **There is no compiled Isaac ROS package for aarch64 in apt.**
+
+That is not a blocker, it is the wrong route. NVIDIA's documented path for Spark is
+the **Isaac ROS CLI driving arm64v8 Docker containers**, and the images are real:
+
+    nvcr.io/nvidia/isaac/ros    267 tags, 31 aarch64
+
+Verified to resolve (manifest inspected, not guessed):
+
+    noble-ros2_jazzy_<hash>-arm64            18.0 GB compressed, 91 layers
+    isaac_ros_<hash>-arm64-fastos             0.5 GB compressed, 25 layers
+
+Tag suffixes distinguish the aarch64 targets: **`-fastos`** (DGX OS / Spark) vs
+**`-jetpack`** (Jetson).
+
+### ⚠ Two constraints that change the plan
+
+1. **cuVSLAM needs STEREO, and our drone is monocular.** `isaac_ros_visual_slam`
+   requires "one or more stereo cameras and optionally an IMU" (RGBD also supported;
+   **monocular is not**), at ≥30 Hz with ≤±100 µs stereo sync and ≤±2 ms jitter.
+   `SimRuntime` authors ONE RGB camera per drone. Publishing a synchronised stereo
+   pair out of Isaac is a prerequisite task that was not in the original estimate.
+2. **Known DGX Spark issue:** `rosdep install` fails with package-downgrade errors on
+   bare-metal/venv workflows, because DGX OS ships newer packages than Isaac ROS pins.
+   Another reason to stay in the container.
+
+### Not yet done
+
+The 18 GB image has **not** been pulled — that is a large download and a system
+change, so it needs a decision rather than an assumption. Nothing above required it:
+every line here is from repo metadata and registry manifests.

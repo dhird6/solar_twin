@@ -97,6 +97,12 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - Measured the physics ceiling: 1.0× realtime at 8k prims, **0.07× at 82k** — and it's scene-graph sync, not collision.
 - **Conditions reel** — 45 s, six lighting/weather conditions, every shot labelled.
 
+### 3 Aug: Isaac ROS feasibility
+- Verified Isaac ROS on this Spark: **GO** — official test matrix, all version requirements met.
+- Found the apt debs are **x86_64-only** (arm64 ships 50 shim packages and zero compiled ones) — containers are the only route.
+- Confirmed 31 aarch64 container tags exist and resolve; `-fastos` is the DGX-OS variant, `-jetpack` the Jetson one.
+- Found cuVSLAM needs **stereo** — our drone is monocular, so a synced stereo pair is a new prerequisite.
+
 ---
 
 ## Next
@@ -108,8 +114,10 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - Fly one PX4-governed drone through a real inspection pass on a ~24-table subset.
 - Make ROS 2 the live transport instead of an interface that is never exercised.
 
-### Then — perception and navigation (2–3 months, HIGH risk)
-- **One-day feasibility check: does Isaac ROS run on this Spark at all?** Everything below rests on it.
+### Then — perception and navigation (2–3 months, risk now MEDIUM)
+- ~~Feasibility check: does Isaac ROS run on this Spark?~~ ✅ **GO** — Spark is in the official test matrix; CUDA/driver/ROS/Docker all satisfied.
+- Pull the arm64 Isaac ROS container (18 GB) — needs a decision, not yet done.
+- **Publish a synchronised STEREO pair from Isaac** — cuVSLAM will not take our single mono camera. New prerequisite, found by the check.
 - cuVSLAM for visual odometry — the first time a robot estimates where it is.
 - nvblox for a 3D costmap.
 - Nav2 for the ground bot — plan around obstacles instead of being clamped away from a sphere.
