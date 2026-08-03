@@ -97,12 +97,14 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - Measured the physics ceiling: 1.0× realtime at 8k prims, **0.07× at 82k** — and it's scene-graph sync, not collision.
 - **Conditions reel** — 45 s, six lighting/weather conditions, every shot labelled.
 
-### 3 Aug: physics, colliders, a bigger plant
+### 3 Aug: physics, colliders, a bigger plant, first flight in the plant
 - **Gave the hardware colliders** — per-table boxes + piles; verified by drop test (rests at 1.816 m, predicted 1.815).
 - Removed a `module` collider option that silently did nothing — instancing blocks prototype colliders.
 - Measured that collider count costs nothing: 16 → 568 colliders, 212 → 211 steps/s.
 - **Physics now steps during a mission** (`--physics`), and turning it on changes no verdict.
 - **Four-block plant** — 117,264 modules over 3.15 km, all real surveyed positions, nothing tiled.
+- **PX4 flew inside the real plant for the first time** — armed, took off, held 2.7 m over the array.
+- Found three silent PX4 failures: no sensor stream from `world.step()` alone, a wrong arm binary path, and pre-warm being necessary but not sufficient.
 
 ### 3 Aug: Isaac ROS feasibility
 - Verified Isaac ROS on this Spark: **GO** — official test matrix, all version requirements met.
@@ -118,7 +120,9 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - ~~Colliders on panels and racking~~ ✅ per-table boxes + piles; drop test lands at 1.816 m vs 1.815 predicted.
 - ~~Collider granularity~~ ✅ per-table; `module` removed (instancing blocks it), and count costs nothing measurable.
 - ~~Step physics in the mission loop~~ ✅ `--physics`; verified identical verdicts with it on.
-- Fly one PX4-governed drone through a real inspection pass on a ~24-table subset.
+- ~~Fly a PX4-governed drone in the real plant~~ ✅ armed, took off, held 2.7 m over the array (`tools/px4_in_plant.py`). ⚠ 0.11× realtime — not a KPI-05 sample.
+- Fly a WAYPOINT PASS, not just a hover — needs `MIS_TAKEOFF_ALT` or position setpoints.
+- Cut the ~10× Pegasus/PX4 overhead, or accept flight only on small stages.
 - Make ROS 2 the live transport instead of an interface that is never exercised.
 
 ### Then — perception and navigation (2–3 months, risk now MEDIUM)
