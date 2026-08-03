@@ -279,7 +279,9 @@ def _set_uvs(mesh, pts, tile_m: float) -> None:
 _PROTO_ROOT = "/__Prototypes"
 
 
-def _author_mounting(stage, layout, mount_h: float, ground, looks, tracker_rot) -> dict:
+def _author_mounting(
+    stage, layout, mount_h: float, ground, looks, tracker_rot, colliders: str = "table"
+) -> dict:
     """Author the torque tube and piles each tracker table stands on.
 
     **The plant had no mounting structure at all.** Measured on the shipped stage:
@@ -316,7 +318,7 @@ def _author_mounting(stage, layout, mount_h: float, ground, looks, tracker_rot) 
     for s in layout.sites:
         rows[s.row].append(s)
 
-    n_tube = n_pile = 0
+    n_tube = n_pile = n_coll = 0
     for row, sites in sorted(rows.items()):
         xs = [float(s.position[0]) for s in sites]
         ys = [float(s.position[1]) for s in sites]
@@ -338,6 +340,41 @@ def _author_mounting(stage, layout, mount_h: float, ground, looks, tracker_rot) 
         _bind(tube.GetPrim(), looks["galv_steel"])
         n_tube += 1
 
+        # ---- one collision proxy per TABLE ------------------------------------
+        # ⭐ Granularity is the whole design decision here, so: a drone must not fly
+        # through a *table*, not through a *module*. A table is a rigid row of modules
+        # on one tube and behaves as a single obstacle, so 273 box colliders express
+        # the same constraint as 30,016 and are ~110x cheaper. Collider count is the
+        # one thing that genuinely should cost PhysX time (see `tools/physics_probe.py`
+        # — the 82k-prim slowdown was scene-graph sync, not collision, precisely
+        # because almost nothing had a collider).
+        #
+        # INVISIBLE on purpose: `visibility = invisible` hides it from the renderer
+        # while `CollisionAPI` keeps it solid, so nothing in any camera frame changes
+        # and no KPI measured on pixels can move because of it.
+        if colliders == "table":
+            chord = float(sites[0].size_x_m or 2.0)
+            box = UsdGeom.Cube.Define(stage, f"{root}/table_collider_{row:04d}")
+            box.CreateSizeAttr(1.0)
+            bapi = UsdGeom.XformCommonAPI(box)
+            bapi.SetTranslate(Gf.Vec3d(cx, cy, ground(cx, cy) + mount_h))
+            if tracker_rot is not None:
+                # Match the tracker: a stowed-flat table and a table at its 60 deg stop
+                # occupy very different volumes, and a box authored flat would let a
+                # drone clip the raised edge.
+                bapi.SetRotate(
+                    (0.0, float(tracker_rot), 0.0),
+                    UsdGeom.XformCommonAPI.RotationOrderXYZ,
+                )
+            span_along = float(length)
+            bapi.SetScale(
+                Gf.Vec3f(chord, span_along, 0.12) if along_y
+                else Gf.Vec3f(span_along, chord, 0.12)
+            )
+            box.GetPrim().GetAttribute("visibility").Set("invisible")
+            _add_collision(box.GetPrim())
+            n_coll += 1
+
         # Piles march along the tube; each one stands on its own ground sample.
         steps = max(2, int(length // PILE_SPACING) + 1)
         for i in range(steps):
@@ -348,12 +385,15 @@ def _author_mounting(stage, layout, mount_h: float, ground, looks, tracker_rot) 
             h = (ground(cx, cy) + mount_h) - gz
             if h <= 0.05:
                 continue
-            _box(
+            pile = _box(
                 stage, f"{root}/pile_{row:04d}_{i:03d}",
                 PILE_W, PILE_W, h, px, py, gz, looks["galv_steel"],
             )
+            # Piles are what a GROUND bot hits; the table box is above its head.
+            if colliders == "table":
+                _add_collision(pile.GetPrim())
             n_pile += 1
-    return {"tubes": n_tube, "piles": n_pile}
+    return {"tubes": n_tube, "piles": n_pile, "table_colliders": n_coll}
 
 
 def _panel_prototype_real(
@@ -435,6 +475,7 @@ def _panel_prototype_real(
     gapi.SetTranslate(Gf.Vec3d(0.0, 0.0, top + _GLASS_T / 2))
     gapi.SetScale(Gf.Vec3f(ap_x, ap_y, _GLASS_T))
     _bind(glass.GetPrim(), looks["panel_glass"])
+
 
     cache[key] = path
     return path
@@ -1558,6 +1599,35 @@ def build(farm_cfg: dict, out_path: str) -> str:
     # Resolved BEFORE the lighting block, because the procedural sky below is part
     # of the realism layer and the dome is authored there.
     realism = bool((farm_cfg.get("realism", {}) or {}).get("enabled", False))
+    # `physics.colliders`: what a drone can actually hit.
+    #   table  (default) one invisible box per TABLE, plus the piles
+    #   none              geometry only, as every stage before 2026-08-03
+    #
+    # Measured on the shipped stage BEFORE this landed: 25 colliders in 81,961 prims,
+    # all on turbines, and the terrain had none — a body dropped over the array fell
+    # clean through to z = -32 m. There was no floor and no hardware.
+    #
+    # ⭐ Why per-TABLE and not per-module. A table is a rigid row of modules on one
+    # torque tube and behaves as a single obstacle, so 273 boxes express the same
+    # constraint as 30,016. Verified by drop test on a stowed-flat stage: a body
+    # released at 6 m rests at 1.816 m, against a predicted 1.63 + 0.06 + 0.125 =
+    # 1.815. With `none` the same body falls past to the ground at 0.306 m.
+    #
+    # ⚠ A `module` option existed briefly and was REMOVED because it silently did
+    # nothing: applying `CollisionAPI` to the panel prototype does not propagate to
+    # instanceable references, so it produced 544 colliders rather than 30,016 while
+    # reporting success. A knob that lies is worse than no knob.
+    #
+    # ⚠ And collider COUNT is not what costs: 16 -> 568 colliders measured 212 vs 211
+    # steps/s, i.e. no change. The physics ceiling is USD scene-graph sync (see
+    # `docs/ENVIRONMENT.md`), so there is no performance argument for coarser
+    # colliders — only a modelling one.
+    colliders = str((farm_cfg.get("physics", {}) or {}).get("colliders", "table"))
+    if colliders not in ("table", "none"):
+        raise ValueError(
+            f"physics.colliders={colliders!r} is not one of table / none "
+            "(`module` was removed: instancing blocks it — see the note above)"
+        )
 
     # --- lighting: a directional sun (relief/shadows) + dome ambient fill ----
     sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
@@ -2061,7 +2131,7 @@ def build(farm_cfg: dict, out_path: str) -> str:
         rack_stats = _author_mounting(
             stage, layout, mount_h,
             lambda x, y: terrain_height(x, y, farm_cfg),
-            looks, tracker_rot,
+            looks, tracker_rot, colliders=colliders,
         )
 
     # --- wind turbines: proxies with a spin-able Hub (runtime turns the blades) -

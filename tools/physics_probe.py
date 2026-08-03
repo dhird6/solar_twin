@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         "--drop-z", type=float, default=12.0, help="spawn height for the test body"
     )
     ap.add_argument("--out", default="", help="directory for a JSON record")
+    ap.add_argument("--at", default="", help="drop over 'x,y' instead of the array centre")
     args = ap.parse_args(argv)
 
     src = Path(args.usd)
@@ -89,7 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     cube.CreateSizeAttr(1.0)
     capi = UsdGeom.XformCommonAPI(cube)
     # Over the middle of the array, so it falls toward real hardware and terrain.
-    capi.SetTranslate(Gf.Vec3d(160.0, 300.0, float(args.drop_z)))
+    _dx, _dy = (160.0, 300.0)
+    if args.at:
+        _dx, _dy = (float(v) for v in args.at.split(","))
+    capi.SetTranslate(Gf.Vec3d(_dx, _dy, float(args.drop_z)))
     capi.SetScale(Gf.Vec3f(0.45, 0.45, 0.25))
     UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
