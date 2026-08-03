@@ -18,6 +18,171 @@ run record; orchestration covered by Isaac-free tests. It splits in two:
 ---
 
 
+## 2026-08-03 — Session 18: the twin got a skin, a floor, and its first flight in the plant
+
+**The one-line version: the owner opened the stage in the GUI and said it "looks
+nothing like real". It didn't. The cause was one architectural mistake — 100% of the
+geometry was boxes our own code emits, painted with 13 constant colours — and fixing
+it exposed that the world also had no floor, that a "verified" blade-shadow stimulus
+does not exist in pixels, and that PX4 had never flown over our own terrain. All four
+are now fixed or measured. 18 commits, 654 → 808 tests.**
+
+### 1. ⭐ The look: it was the wrong SHADER, not a lack of effort
+
+Measured on the shipped stage first: **44,469 `Cube` prims, 5 `Cylinder`, 13 constant
+`UsdPreviewSurface` materials for a 30,016-module plant, and ZERO prims matching
+torque/pile/pier/mount/glass** — every module floated 1.5 m above the desert on
+nothing.
+
+Research (13-agent sweep + live web) settled the architecture question the owner
+actually asked, which was "why can't we do the NVIDIA data-centre twin?":
+
+* That demo is **Omniverse DSX**, built on Kit SDK — **not Isaac Sim**, and it streams
+  over **WebRTC to a React portal** (the transport he had just rejected).
+* **Omniverse does not compute the power.** The repo ships *sample* CFD data; Cadence
+  and ETAP compute it. Omniverse is the aggregation + visualisation layer. So the gap
+  collapses from quarters to weeks — see [[missing-energy-pillar]], pvlib is our ETAP.
+
+The fix, all measured rather than assumed:
+
+| | |
+|---|---|
+| MDL | `OmniPBR`/`OmniGlass` resolve **by bare name** — built into the renderer, no download, no network. A library MDL over https also resolved. |
+| honest scope | for rough dielectrics MDL ≈ flat (both Lambert+GGX). The wins are **glass** (111 vs 67) and texture inputs that work. |
+| the module | rebuilt: dark laminate, cells **flush** with a 2 mm kerf, 35 mm perimeter frame, glass sheet. The old model floated each cell above a *bright aluminium slab*, so metal showed between cells as grout — the bathroom-tile look. |
+| racking | 273 torque tubes + 5,900 piles. They never existed. |
+| exposure | only `fNumber`/`cameraShutter`/`filmIso` work; `exposureKey`/`compensation`/`maxWhiteLuminance`/`whiteScale` are **inert** (op=6 ignores Reinhard). **f/9** is the daylight stop. ⚠ Must be applied **after `open_stage`** or the renderer resets them — an earlier attempt was a silent no-op (182.2 vs 182.3). |
+| sky | ours rendered **0.14× the ground brightness** — 6× darker than the desert it lights. Not tunable (LDR PNG, dome = background AND fill). Fixed with NVIDIA's **procedural HDR sky MDL** bound to the DomeLight: ClearSky 0.78, CumulusLight 1.01, **and the warm-ground invariant held**. |
+| roads | genuinely broken — quads wound CW (signed area −60) so normals pointed DOWN, and `doubleSided` was never set anywhere. Every OSM road was backfacing. |
+
+⚠ The researched `SkyHelper.create_dynamic_sky()` **does not exist** in the installed
+`omni.kit.environment.core 1.4.2`. Downloading `ClearSky.usd` and reading it was the
+honest source — that is how the DomeLight-bound-MDL mechanism was found.
+
+### 2. ⭐ The blade shadow does not exist in pixels — and cannot, at this site
+
+`SC-14` was authored with the stimulus **located first** (`world/bladeshadow.py`):
+22.9% panel coverage, dwell 0.0711, on a real surveyed turbine. Then it was checked in
+pixels and **failed**: 4.9% dip on the most-covered panel against **7.1% on a
+geometrically-clear control** — the control varied more than the target.
+
+The cause is arithmetic. The sun is 0.53° wide and the renderer models it
+(`CreateAngleAttr(0.53)`), so every shadow edge smears by `distance × tan(0.53°)`. At
+this turbine's 780 m throw that is **7.2 m — wider than the 4 m blade**. A caster
+narrower than its own penumbra casts no umbra at all. Ceiling ≈ **432 m**; Khavda's
+nearest real turbine is **546 m**. **No real turbine here can cast a hard blade shadow
+on these modules**, so `SC-05`'s idea is unrecoverable and `SC-06`/`SC-09` inherit it.
+
+What the same run *did* find: the **tower** shadow — 3 tables darkened in proportion
+to distance from the tower's shadow axis (0.6/1.6/2.5 m), **continuously** rather than
+7% of the time. Modelled as `TowerShadow`, measurement pinned by a test.
+
+⚠ A second, independent defect in the same scenario: `tracker_max_rotation_deg: 0.0`
+at an 8.6° sun gives `cos(81.4°) = 0.150`, so the frames read **12.6/255 ≈ 5%
+brightness** — a VLM judging them measures the noise floor.
+
+### 3. ⭐ The world had no floor
+
+Of 81,961 prims, **25 had colliders and all 25 were turbines**. `/World/Ground` had
+none. A body dropped over the array fell **44.66 m** against a 44.15 m free-fall
+prediction — it hit nothing and kept going to z = −32 m. Invisible because nothing had
+ever stepped physics, and `px4_hover.py` flies in `add_default_ground_plane()`.
+
+Fixed: terrain mesh collider (`meshSimplification`, not `convexHull` — a hull over a
+320 × 647 m heightfield is a blob), plus per-**table** boxes and pile colliders.
+Verified by drop test: rests at **1.816 m** against a predicted 1.815.
+
+⚠ I got the collider A/B wrong twice: at 45.9° tracking the body **slid off** onto the
+ground either way, and my isolated probe scene had **no ground**, so sliding off the
+edge looked identical to falling through. A stowed-flat stage separated the two.
+
+A `module` (per-module) collider option was built, measured and **deleted** — applying
+`CollisionAPI` to the panel prototype does not propagate through instancing, so it
+authored 544 colliders while claiming 30,016.
+
+### 4. Physics: it steps now, and it does not scale
+
+`--physics` steps PhysX during a mission, verified to change **no verdict** (same
+panels, same rates, +14% wall). But:
+
+| | realtime |
+|---|---|
+| bare physics, 7.6k prims | 1.06× |
+| **+ Pegasus/PX4, same stage** | **0.11×** |
+| bare physics, 82k prims | **0.07×** |
+
+The 82k cost is **scene-graph sync, not collision** — proved by deactivating
+`/World/Farm` (zero colliders) and getting a **22× speedup**. ⚠ Fabric does **not**
+fix it: `omni.physx.fabric`, `updateToUsd=False` and `useFastSceneDelegate` each left
+it at 13–14 steps/s. Untested lead: the dedicated `isaac-sim.fabric.sh` app.
+
+### 5. ⭐ PX4 flew inside the real plant — first time
+
+Armed at t=12, climbed, **held 2.67–2.73 m** over the array, caught before takeoff by
+the terrain collider added the same day. Three silent failures on the way:
+
+1. **No sensor stream.** `world.step()` advances PhysX but does **not** update the
+   Pegasus vehicle. Without `update_state/update_sensors/update/update_sim_state` per
+   step, PX4 logs `Simulator connected` then `poll timeout 0, 25` forever while the
+   drone free-falls. A connected socket looks exactly like a working link.
+2. **Wrong arm path** — `/opt/px4/bin/px4-commander`, not a pipe into a shell binary
+   that does not exist in that image. Silent, and reads as a controls problem.
+3. Handle pre-warm is **necessary but not sufficient** — all five bound, timeouts continued.
+
+What cracked it was running `px4_hover.py` unchanged as a **control**: it still hovered
+at 2.542 m ± 51 mm, which proved the fault was mine and not the environment.
+
+⚠ 0.11× realtime, so **not a KPI-05 sample** and too slow to film.
+
+### 6. Deliverables
+
+* **`assets/conditions_reel.mp4`** — 45 s, six conditions, every shot labelled
+  BUILT/INFERRED/TODO. Four render passes, because inspecting my own output kept
+  catching overclaims (a 60-table subset captioned "273 tables / 30,016 modules"; the
+  subtitle repeating it; underscores vs hyphens making 6,720 tables; and a `close_up`
+  flag the renderer ignored).
+* **`assets/day_mission.mp4`** — 2:09, six chapters dawn→night, each a **real
+  `scout_dispatch` mission**: the ground bot drives to a panel the scout flagged in
+  that run. Drone-cam inset, verdict captions, labelled cards.
+* **`assets/khavda_4block.usd`** — 117,264 modules over 3.15 km. **Four REAL surveyed
+  blocks**, not four copies: the S05b digest labels every table with its block, so
+  membership is read from the drawing. Tiling would have been faster and would have
+  been an invented plant wearing surveyed coordinates.
+* **`--hold` + `world/viewer.py`** — open the plant in Isaac and fly around it. The fix
+  that mattered was handing the camera back: `chase()` rewrote `/World/Overview` every
+  frame, so the mouse was overwritten each tick.
+* **`tools/cad_to_usd.py`** — CAD→USD verified end to end (STL→USD). `.dwg`/`.dxf`
+  supported, which is what the Khavda drawing already is.
+
+### 7. Isaac ROS feasibility — ✅ GO, but containers only
+
+DGX Spark is in the official test matrix and every version requirement is already met.
+⚠ But the apt debs are **x86_64-only**: arm64 ships 50 packages, all pip-shims plus
+`isaac-ros-cli` (`Architecture: all`), and **zero** compiled Isaac ROS packages.
+Containers are the route — `nvcr.io/nvidia/isaac/ros` has 267 tags, 31 aarch64
+(`-fastos` = DGX OS, `-jetpack` = Jetson); the Jazzy arm64 image is 18 GB, **not
+pulled**.
+
+⚠ **cuVSLAM needs STEREO** (or RGBD) at ≥30 Hz, ≤±100 µs sync. Our drone is
+monocular. Publishing a synced stereo pair is a prerequisite that was not in the
+estimate. Localization risk drops HIGH → MEDIUM but gains a task.
+
+### What is still not real
+
+Robot **motion** is scripted — no localization, no SLAM, no costmap, no path planning.
+ROS 2 is written and smoke-tested but nothing depends on it. Thermal is emissive, not
+IR. No energy model. Ground textures are still flat beige.
+
+**⇢ NEXT SESSION.** In order: (1) fly a **waypoint pass**, not a hover — PX4
+auto:takeoff uses its own altitude, so it needs `MIS_TAKEOFF_ALT` or position
+setpoints; (2) cut the ~10× Pegasus overhead, or real flight and filmable flight stay
+mutually exclusive; (3) ROS 2 as the live transport; (4) stereo → cuVSLAM → Nav2;
+(5) pvlib as the energy pillar. `TASKS.md` carries the full list.
+
+⚠ **All 18 commits are on `overnight/session-17` with NO REMOTE** (the branch name lags the session number — this is Session 18's work on Session 17's branch) — fast-forward onto
+`ID-3-Testing-and-new-features-addin` or the work stays local-only.
+
+
 ## 2026-07-31 — Session 17: ran the render gate Session 16 declared, and it failed — three bugs, and a KPI that landed
 
 **The one-line version: Session 16's PBR/sky work was committed with its own render
