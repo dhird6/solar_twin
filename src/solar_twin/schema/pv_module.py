@@ -138,6 +138,25 @@ def panel_id(row: int, col: int) -> str:
     return f"R{row:02d}-C{col:03d}"
 
 
+def parse_panel_id(pid: str) -> tuple[int, int]:
+    """Inverse of `panel_id`: ``"R12-C047"`` -> ``(12, 47)``.
+
+    ⚠ Widths are MINIMUMS, not fixed: `panel_id` uses `{row:02d}`, so a plot with
+    more than 99 rows produces `R272-C047` and a fixed-width slice would silently
+    mis-parse it. The full Khavda plot has 6,213 tables, so that is the normal case
+    rather than an edge one — hence a regex over an index.
+
+    Raises on anything that is not a panel ID; a caller deriving neighbours from a
+    malformed id would silently inspect the wrong panels.
+    """
+    import re  # noqa: PLC0415 — keeps module import cost where it was
+
+    m = re.fullmatch(r"R(\d+)-C(\d+)", pid.strip())
+    if not m:
+        raise ValueError(f"not a panel id: {pid!r} (expected e.g. 'R12-C047')")
+    return int(m.group(1)), int(m.group(2))
+
+
 def panel_path(root: str, row: int, col: int) -> str:
     """USD prim path for a panel under ``root`` (e.g. ``/World/Farm``)."""
     return f"{root}/Panel_R{row:02d}_C{col:03d}"

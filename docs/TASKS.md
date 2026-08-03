@@ -83,7 +83,7 @@ branch, **71 commits**, and its test count went **74 → 396**. Merged only afte
 Work now happens on **`ID-3-Testing-and-new-features-addin`**, cut from the merged
 `main` (hyphens not spaces — a branch name with spaces needs quoting in every
 command and breaks CI matrices; matches `ID-2-Layout-Integration`'s convention).
-**935 Isaac-free tests** collected off-Isaac — **42 more** run only under
+**979 Isaac-free tests** collected off-Isaac — **42 more** run only under
 Isaac Sim's own Python (`pytest.importorskip("pxr")` across 5 modules), and are
 therefore SKIPPED by both system `python3` and the Isaac-free CI job. Measured
 2026-07-31: Isaac-free **803 passed / 6 skipped**, under Isaac **737 passed / 3

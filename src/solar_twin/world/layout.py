@@ -475,8 +475,73 @@ class FarmLayout:
         seed = int(self.cfg.get("seed", 0))
         rng = random.Random(seed)
         n_fault = round(rate * self.n_panels)
-        chosen = rng.sample(self.sites, k=min(n_fault, self.n_panels))
-        return {site.panel_id: rng.choice(states) for site in chosen}
+        clustering = float(faults_cfg.get("clustering", 0.0))
+        if clustering <= 0.0:
+            # ⚠ UNCHANGED PATH, and it must stay byte-identical: every recorded KPI
+            # was measured with uniform faults, and even drawing an extra number from
+            # `rng` here would move which panels are faulted.
+            chosen = rng.sample(self.sites, k=min(n_fault, self.n_panels))
+            return {site.panel_id: rng.choice(states) for site in chosen}
+        return self._clustered_faults(rng, n_fault, states, clustering, faults_cfg)
+
+    def _clustered_faults(self, rng, n_fault, states, clustering, faults_cfg):
+        """Faults in spatial patches instead of scattered independently.
+
+        **Why this had to exist before adaptive inspection could be believed.**
+        `orchestrator/adaptive.py` expands around a finding because real PV faults
+        cluster — dust drifts, a series string fails together, a shadow crosses a row.
+        Measured on this stage 2026-08-03, the uniform path produces **no** clustering:
+        40.0% of faulted panels had a faulted neighbour within 2, against 38.4%
+        expected by chance. So an expansion strategy could never pay off here, and
+        measuring its benefit would have produced the same hollow null `SC-05` did
+        when a shadow missed the modules entirely.
+
+        The patches are also simply more realistic. Uniform 2% soiling over 30,016
+        modules is not what a desert site looks like; drifts and downwind rows are.
+
+        `clustering` (0..1) is the fraction of faults placed in patches; the rest stay
+        uniform, so a partly-clustered field is expressible. `cluster_radius` sets
+        patch size. ⚠ Patch size and shape are a stated prior, not measured on Khavda —
+        we hold no fault-location data for the site. Same footing as
+        `adaptive.EXPANSION`.
+
+        Deterministic in (seed, rate, states, clustering, radius, grid).
+        """
+        radius = max(1, int(faults_cfg.get("cluster_radius", 2)))
+        clustering = min(1.0, clustering)
+        n_fault = min(n_fault, self.n_panels)
+        n_clustered = int(round(clustering * n_fault))
+
+        by_rc = {(s.row, s.col): s for s in self.sites}
+        chosen: dict[tuple[int, int], object] = {}
+
+        # Grow patches from seeds. Each patch takes ONE state, which is the point:
+        # a soiling drift is soiling throughout, not a lucky dip per module.
+        while len(chosen) < n_clustered:
+            seed_site = rng.choice(self.sites)
+            state = rng.choice(states)
+            r0, c0 = seed_site.row, seed_site.col
+            patch = [
+                (r0 + dr, c0 + dc)
+                for dr in range(-radius, radius + 1)
+                for dc in range(-radius, radius + 1)
+            ]
+            rng.shuffle(patch)
+            for rc in patch:
+                if len(chosen) >= n_clustered:
+                    break
+                if rc in by_rc and rc not in chosen:
+                    chosen[rc] = state
+
+        # Top up uniformly so the TOTAL fault count still matches `rate` exactly —
+        # otherwise clustering would silently change the denominator of every rate.
+        remaining = [s for s in self.sites if (s.row, s.col) not in chosen]
+        n_uniform = n_fault - len(chosen)
+        if n_uniform > 0 and remaining:
+            for site in rng.sample(remaining, k=min(n_uniform, len(remaining))):
+                chosen[(site.row, site.col)] = rng.choice(states)
+
+        return {by_rc[rc].panel_id: st for rc, st in chosen.items()}
 
     def panel_records(self) -> list[PanelRecord]:
         """Panels as records with seeded faults applied (for the fake backend).
@@ -697,3 +762,42 @@ class FarmLayout:
                 )
             )
         return targets
+
+    def target_for(self, panel_id: str, mission_cfg: dict) -> "InspectionTarget | None":
+        """Waypoints for ONE panel by id, or None if this stage has no such panel.
+
+        Adaptive expansion needs this: a neighbour of a faulted module is usually not
+        in the original sweep, so the planner can only ADD a panel if waypoints can be
+        built for it on demand. Building the whole `inspection_targets` list to find
+        one panel is 30k Waypoints on the real block.
+
+        The standoff maths is deliberately NOT duplicated — it is read from the same
+        `mission_cfg` keys `inspection_targets` uses, so a config change moves both or
+        neither. Returns None rather than raising: asking about a panel that is not on
+        this stage is a normal outcome at a block edge, not an error.
+        """
+        site = self._site_by_panel_id().get(panel_id)
+        if site is None:
+            return None
+        kin = mission_cfg.get("kinematics", {})
+        screen_z = float(kin.get("screen_standoff", 2.5))
+        confirm_z = float(kin.get("confirm_standoff", 0.8))
+        scout_z = float(kin.get("scout_standoff", screen_z))
+        x, y, z = site.position
+        top = self.panel_top_z(z, site)
+        return InspectionTarget(
+            panel_id=site.panel_id,
+            approach=Waypoint(x, y - self.row_pitch / 2.0, z),
+            screen=Waypoint(x, y, top + screen_z),
+            confirm=Waypoint(x, y, top + confirm_z),
+            scout=Waypoint(x, y, top + scout_z),
+        )
+
+    def _site_by_panel_id(self) -> dict:
+        """Lazy panel_id -> site index. Built once: the real block has 30,016 sites
+        and adaptive expansion asks about neighbours after every verdict."""
+        cached = getattr(self, "_site_index", None)
+        if cached is None:
+            cached = {s.panel_id: s for s in self.sites}
+            self._site_index = cached
+        return cached

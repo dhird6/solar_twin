@@ -314,31 +314,94 @@ class Mission:
         perception: Perception,
         fleet: Fleet,
         clock: Callable[[], str] = _default_clock,
+        target_factory: Optional[Callable[[str], Optional["InspectionTarget"]]] = None,
     ):
         self.transport = transport
         self.control = control
         self.perception = perception
         self.fleet = fleet
         self.clock = clock
+        #: Builds waypoints for a panel the original sweep never listed. Required for
+        #: adaptive expansion — a neighbour of a faulted module is usually not in the
+        #: sweep, so without this the planner can reorder but never add.
+        #: `layout.target_for(panel_id)` is the real implementation.
+        self._target_factory = target_factory
+
+    @staticmethod
+    def _position_of(target: "InspectionTarget") -> tuple[float, float, float]:
+        """Where the robot ends up after inspecting `target`.
+
+        The CONFIRM standoff, because that is the last pose of the escalation and so
+        the point the next leg starts from. ⚠ When SLAM lands this becomes an
+        estimated pose from the transport rather than a commanded waypoint, and the
+        planner already takes position as an input so only this line changes.
+        """
+        wp = target.confirm
+        return (float(wp.x), float(wp.y), float(wp.z))
 
     def run(
         self,
         targets: list[InspectionTarget],
         on_result: Optional[Callable[[int, PanelResult], None]] = None,
         on_phase: Optional[Callable[[str, str], None]] = None,
+        planner=None,
     ) -> MissionResult:
         """`on_result(i, panel_result)` fires once per finished panel.
+
+        `planner` (an `adaptive.AdaptivePlanner`) closes the loop: after each verdict
+        it may reorder the remaining queue and add panels the sweep never listed —
+        e.g. the neighbours of a soiled module. **None keeps the original fixed-list
+        behaviour exactly**, which is what every recorded KPI was measured with; a
+        planner changes how many panels get inspected and therefore every denominator
+        in the run record.
 
         `on_phase(panel_id, phase_name)` fires as each phase is ENTERED, before
         the robot moves. It exists so an observer can narrate the run while it
         happens (the demo video captions frames with it) without the FSM having
         to know anything about cameras or overlays."""
         result = MissionResult()
-        for i, target in enumerate(targets):
+        if planner is None:
+            # UNCHANGED PATH. Kept as its own branch rather than folded into the
+            # adaptive loop so a run without a planner is byte-identical to one from
+            # before this existed — every recorded KPI stays reproducible.
+            for i, target in enumerate(targets):
+                panel_result = self._inspect(target, result, on_phase)
+                result.results.append(panel_result)
+                if on_result is not None:
+                    on_result(i, panel_result)
+            result.steps = getattr(self.transport, "step_count", 0)
+            return result
+
+        # Adaptive: the queue is rebuilt after every verdict, so a finding at panel 3
+        # can change panels 4..N — including adding panels the sweep never listed.
+        by_id = {t.panel_id: t for t in targets}
+        queue = [t.panel_id for t in targets]
+        i = 0
+        # ⚠ Bounded. An expansion rule that kept firing could otherwise run the robot
+        # over the whole farm; `AdaptivePlanner.max_extra` caps additions, and this
+        # caps iterations even if a planner ignores that.
+        max_visits = len(targets) + getattr(planner, "max_extra", 0) + 1
+        while queue and i < max_visits:
+            pid = queue.pop(0)
+            target = by_id.get(pid)
+            if target is None:
+                target = self._target_factory(pid) if self._target_factory else None
+                if target is None:
+                    # A neighbour we cannot build waypoints for is skipped loudly in
+                    # the stats rather than silently, so the record still adds up.
+                    continue
+                by_id[pid] = target
             panel_result = self._inspect(target, result, on_phase)
             result.results.append(panel_result)
             if on_result is not None:
                 on_result(i, panel_result)
+            i += 1
+            queue = planner.revise(
+                queue,
+                pid,
+                coerce_state(panel_result.detected_state),
+                self._position_of(target),
+            )
         result.steps = getattr(self.transport, "step_count", 0)
         return result
 
