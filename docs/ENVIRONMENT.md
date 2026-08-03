@@ -674,3 +674,57 @@ Tag suffixes distinguish the aarch64 targets: **`-fastos`** (DGX OS / Spark) vs
 The 18 GB image has **not** been pulled — that is a large download and a system
 change, so it needs a decision rather than an assumption. Nothing above required it:
 every line here is from repo metadata and registry manifests.
+
+## PX4 flies inside the plant — ✅ first flight, with a hard caveat (2026-08-03)
+
+`tools/px4_in_plant.py`. Until now `tools/px4_hover.py` was the only real-dynamics
+flight and it flies in `world.scene.add_default_ground_plane()` — an **empty world
+with its own floor**. So the twin's own terrain, racking and modules had never been
+flown over, and the project's one flight number (43 mm altitude hold) was measured in
+a void.
+
+**Result on a 24-table block02 stage (7,638 prims):**
+
+    0.0 s   spawned 8.77 m
+    4.2 s   0.209 m        (unarmed: falls, lands on OUR terrain collider)
+   12.0 s   preflight OK -> armed, auto:takeoff
+   20.8 s   2.382 m        (climbing)
+   25-50 s  2.67 - 2.73 m  (holding)
+
+So PX4 governs a drone over the real hardware, and the terrain mesh collider added the
+same day is what catches it before takeoff.
+
+### ⚠ 0.11x realtime — this is NOT a KPI-05 sample
+
+12,500 steps took 459 s. PX4's control loops run on wall-clock, so at 0.11x the
+autopilot and the sim disagree about time. Compare:
+
+| | realtime |
+|---|---|
+| bare physics, 7.6k prims | 1.06x |
+| + Pegasus/PX4, same stage | **0.11x** |
+| bare physics, 82k prims | 0.07x |
+
+Pegasus + PX4 costs ~10x on top of physics. Flight numbers must still come from
+`px4_hover.py`, which runs near realtime in the empty world.
+
+### Three failures on the way, each silent
+
+1. **No sensor stream.** `world.step()` advances PhysX but does NOT update the Pegasus
+   vehicle. Without `drone.update_state / update_sensors / update / update_sim_state`
+   each step, PX4 logs `Simulator connected on TCP port 4560` and then
+   `poll timeout 0, 25` forever while the drone free-falls. A connected socket looks
+   exactly like a working link.
+2. **Wrong arm path.** `docker exec … /opt/px4/bin/px4-commander`, not a pipe into
+   `./build/px4_sitl_default/bin/px4-shell` (which does not exist in this image). The
+   wrong path fails silently and reads as a controls problem.
+3. **Handle pre-warm** (`px4_hover`'s "rule 3") is still required — all five handles
+   report `bound` before flight. It was not sufficient on its own, though: pre-warming
+   alone still gave poll timeouts until (1) was fixed.
+
+⚠ PX4 auto:takeoff climbs to **its own** altitude (~2.5 m AGL), not `--altitude`. On
+this site that is just below panel height. Raise `MIS_TAKEOFF_ALT` or send position
+setpoints to inspect from above — waypoint following is authored but not yet flown.
+
+⚠ PX4 SITL does not recover from a simulator disconnect: restart the container for
+every flight.
