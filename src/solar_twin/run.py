@@ -95,7 +95,12 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             overview_pose=overview_pose,
             overview_capture=capture_overview,
             livestream=bool(sim_opts.get("livestream")),
+            tonemap=bool(sim_opts.get("tonemap")),
         )
+        # Opt-in PhysX. OFF by default: every KPI on record was measured with physics
+        # inert, and it costs ~1x realtime at 8k prims but 0.07x at 82k.
+        if sim_opts.get("physics"):
+            runtime.start_physics()
         panel_paths = {
             s.panel_id: pv.panel_path("/World/Farm", s.row, s.col)
             for s in layout.sites
@@ -860,6 +865,19 @@ def main(argv: list[str] | None = None) -> int:
         "Streaming Client to this host (signal 49100 / stream 47998).",
     )
     ap.add_argument(
+        "--physics",
+        action="store_true",
+        help="step PhysX during the mission so the authored colliders are live. "
+        "⚠ OFF by default — every recorded KPI was measured with physics inert, and "
+        "it costs ~1x realtime on a ~24-table subset but 0.07x on the full block.",
+    )
+    ap.add_argument(
+        "--tonemap",
+        action="store_true",
+        help="apply the measured photographic exposure (f/9). Off for KPI runs so a "
+        "pixel-scored metric cannot move because of a render setting.",
+    )
+    ap.add_argument(
         "--hold",
         action="store_true",
         help="sim_native + --gui/--livestream: when the mission ends, DON'T close — "
@@ -957,6 +975,8 @@ def main(argv: list[str] | None = None) -> int:
         "livestream": args.livestream,
         "live": args.live,
         "hold": args.hold,
+        "physics": args.physics,
+        "tonemap": args.tonemap,
         "resolution": (args.width, args.height),
         "save_usd": args.save_usd,
         "record": args.record,

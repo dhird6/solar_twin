@@ -59,6 +59,9 @@ class SimRuntime:
                 window_height=1080,
             )
         self._app = SimulationApp(launch)
+        #: PhysX handle, or None when physics has never been started (the default —
+        #: every KPI on record was measured with physics inert).
+        self._world = None
         #: True when a human is watching a viewport (window or stream), which is
         #: what makes the chase camera and interpolated motion worth their cost.
         self.interactive = bool(livestream or not headless)
@@ -219,11 +222,70 @@ class SimRuntime:
             self._Gf.Vec3f(size, size, size)
         )
 
+    def start_physics(self, physics_dt: float = 1.0 / 200.0) -> bool:
+        """Bring PhysX up so the authored colliders are actually live. Returns success.
+
+        **Nothing in this project had ever stepped physics.** `step()` spun rotors,
+        turned turbine hubs and called `app.update()` — there was no
+        `SimulationContext`, no `World`, no `play()` — so `/World/PhysicsScene` and
+        every collider on the stage were inert decoration. `tools/px4_hover.py`, the
+        one place real dynamics run, flies in `add_default_ground_plane()`: an empty
+        world with its own floor. The twin's own terrain had never been stood on.
+
+        ⚠ **`play()` is not optional and its absence is silent.** Without it PhysX
+        never creates a simulation view, every prim read returns the static USD pose,
+        and a body that should be falling reports a perfect hover. That is
+        `px4_hover.py`'s "rule 2", learned the hard way, and it is why this returns a
+        bool and the caller reports it rather than assuming.
+
+        ⚠ **Costs real time at plant scale.** Measured: ~1.0x realtime at 8k prims,
+        **0.07x at 82k** — and the cost is USD scene-graph sync, not collision
+        (`docs/ENVIRONMENT.md`). A full-block mission with physics on will crawl. Use
+        it on a subset.
+        """
+        if self._world is not None:
+            return True
+        try:
+            from isaacsim.core.api import World
+
+            self._world = World(
+                physics_dt=physics_dt,
+                rendering_dt=max(physics_dt, 1.0 / 60.0),
+                stage_units_in_meters=1.0,
+            )
+            self._world.reset()
+            self._world.play()
+            self._world.step(render=False)
+            print(
+                f"  physics ON: dt={self._world.get_physics_dt()} "
+                f"playing={self._world.is_playing()} — colliders are live",
+                flush=True,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — a mission must not die for physics
+            print(
+                f"  [warn] could not start physics ({exc}); continuing WITHOUT it — "
+                "colliders are inert and the fleet is kinematic only",
+                flush=True,
+            )
+            self._world = None
+            return False
+
+    @property
+    def physics_running(self) -> bool:
+        return self._world is not None
+
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             self._spin_turbines()
             self._spin_rotors()
-            self._app.update()
+            if self._world is not None:
+                # Advances PhysX AND renders, so it replaces `app.update()` rather
+                # than joining it — calling both would draw two frames per step and
+                # halve the frame rate of every watched run.
+                self._world.step(render=True)
+            else:
+                self._app.update()
 
     def pump(self) -> None:
         """Draw one frame without advancing anything.

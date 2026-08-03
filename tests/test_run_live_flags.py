@@ -115,3 +115,31 @@ def test_hold_headless_without_a_stream_warns_and_does_not_block(tmp_path, capsy
     # The run still completed and wrote its record — holding is never load-bearing.
     assert json.loads((out / "results.json").read_text())["metrics"]["panels_inspected"] > 0
     assert "hold" in capsys.readouterr().out.lower()
+
+
+# --------------------------------------------------------------------------- #
+# --physics: step PhysX during the mission
+# --------------------------------------------------------------------------- #
+
+
+def test_physics_is_off_by_default(monkeypatch):
+    """⭐ Every KPI on record was measured with physics inert — SimRuntime.step() only
+    spun rotors and drew a frame. Turning it on changes what the world does, so the
+    default must stay off or historic runs stop being reproducible."""
+    assert _sim_opts([], monkeypatch)["physics"] is False
+
+
+def test_physics_flag_reaches_sim_opts(monkeypatch):
+    assert _sim_opts(["--physics"], monkeypatch)["physics"] is True
+
+
+def test_tonemap_is_off_by_default(monkeypatch):
+    """A pixel-scored KPI must not move because of an exposure setting."""
+    assert _sim_opts([], monkeypatch)["tonemap"] is False
+    assert _sim_opts(["--tonemap"], monkeypatch)["tonemap"] is True
+
+
+def test_physics_composes_with_the_watching_flags(monkeypatch):
+    opts = _sim_opts(["--gui", "--live", "--physics", "--tonemap"], monkeypatch)
+    assert opts["physics"] and opts["tonemap"] and opts["live"]
+    assert opts["headless"] is False
