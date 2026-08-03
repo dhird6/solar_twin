@@ -29,7 +29,7 @@ from solar_twin.control.wind_drift import WindDisturbedControl
 from solar_twin.kpi import confound as kpi_confound
 from solar_twin.kpi import gates as kpi_gates_mod
 from solar_twin.kpi import variance as kpi_variance
-from solar_twin.orchestrator import grid_dispatch
+from solar_twin.orchestrator import grid_dispatch, sortie as sortie_mod
 from solar_twin.orchestrator.mission import Fleet, Mission
 from solar_twin.orchestrator.scout_dispatch import BEAT_LABELS, ScoutDispatchMission
 from solar_twin.world.keepout import build_keepouts
@@ -257,6 +257,77 @@ def _perception(name: str, opts: dict | None = None):
     )
 
 
+def _plan_sorties(mission_cfg: dict, targets: list, mode: str = "report"):
+    """Ask whether the fleet could actually FLY this mission, and say so.
+
+    Until this existed nothing in the pipeline knew a robot has a battery: a
+    10-panel sweep and a 30,016-panel sweep were equally acceptable plans. This
+    packs the (already ordered) targets into out-and-back sorties the vehicle can
+    complete, so the run record carries how many trips the work really costs and
+    what does not fit at all.
+
+    **`report` is the default and is the identity.** It returns `targets` unchanged
+    — the mission visits exactly the panels it would have visited before this layer
+    existed, so no recorded KPI moves. Same discipline as `grid_dispatch`, and for
+    the same reason.
+
+    `enforce` truncates to what the first sortie can actually achieve. That DOES
+    change the denominator of every rate in the record, so it is opt-in and loud.
+
+    ⚠ The endurance is a datasheet figure times an assumed derate
+    (`fleet_specs.DEFAULT_ENDURANCE_DERATE`), and **nothing here has been flown**.
+    This tests a plan against a model of a battery, not against a battery.
+    """
+    if mode == "off":
+        return targets, None
+    cfg = (mission_cfg or {}).get("sorties", {}) or {}
+    if not (cfg.get("enabled") or cfg.get("always_report")):
+        return targets, None
+
+    from solar_twin.world import fleet_specs  # noqa: PLC0415 — pure, but keep it local
+
+    platform = str(cfg.get("platform", "m350"))
+    spec = fleet_specs.DRONES.get(platform) or fleet_specs.ROVERS.get(platform)
+    if spec is None:
+        known = sorted([*fleet_specs.DRONES, *fleet_specs.ROVERS])
+        raise ValueError(f"sorties.platform={platform!r} unknown; known: {known}")
+
+    vehicle = sortie_mod.VehicleEndurance.from_spec(
+        spec,
+        dwell_s=float(cfg.get("dwell_s", 20.0)),
+        derate=float(cfg["derate"]) if "derate" in cfg else None,
+        reserve_fraction=float(
+            cfg.get("reserve_fraction", sortie_mod.DEFAULT_RESERVE_FRACTION)
+        ),
+    )
+    base = tuple(float(v) for v in cfg.get("base", (0.0, 0.0, 0.0)))
+    pts = [(t.panel_id, tuple(float(v) for v in t.position)) for t in targets]
+    plan = sortie_mod.plan_sorties(pts, vehicle, base, max_sorties=int(cfg.get("max_sorties", 0)))
+
+    print(
+        f"  [note] sorties ({platform}): {len(plan.sorties)} trip(s) for "
+        f"{plan.n_planned} panels — {plan.total_duration_s/60:.1f} min, "
+        f"{plan.total_travel_m:.0f} m, budget {vehicle.budget_s/60:.1f} min/trip"
+        + (f", {len(plan.unreachable)} unreachable" if plan.unreachable else "")
+        + (f", {len(plan.deferred)} deferred" if plan.deferred else "")
+        + ". ⚠ MODELLED endurance (datasheet x derate); nothing has been flown.",
+        flush=True,
+    )
+
+    if mode == "enforce" and plan.sorties:
+        keep = set(plan.sorties[0].target_ids)
+        if len(keep) < len(targets):
+            print(
+                f"  [note] sorties enforce: cutting {len(targets)} -> {len(keep)} panels, "
+                "what ONE sortie can achieve. ⚠ This changes every denominator in the "
+                "run record.",
+                flush=True,
+            )
+        targets = [t for t in targets if t.panel_id in keep]
+
+    return targets, plan
+
+
 def _dispatch(layout: FarmLayout, farm_cfg: dict, mission_cfg: dict, targets: list):
     """Apply the suspicion-first prioritisation layer. Returns (targets, result).
 
@@ -405,6 +476,13 @@ def run(
             flush=True,
         )
         targets = targets[:max_panels]
+
+    # Feasibility, AFTER --max-panels: the question is whether the fleet can fly the
+    # sweep that will actually happen, not the one that was asked for. Default mode
+    # is report-only and returns `targets` unchanged, so this cannot move a KPI.
+    targets, sortie_plan = _plan_sorties(
+        mission_cfg, targets, str(sim_opts.get("sorties") or "report")
+    )
 
     record_overview = sim_opts.get("record") and hasattr(transport, "capture_overview")
     frames: list = []
@@ -646,6 +724,10 @@ def run(
             # disabled runs (`scada_source: "none"`), so no record is ambiguous
             # about whether a simulated prior influenced what got inspected first.
             "dispatch": dispatch.to_dict(),
+            # Whether the fleet could physically FLY this sweep, and in how many
+            # trips. Null when the layer is off. ⚠ Endurance is a datasheet figure
+            # times an assumed derate — a modelled battery, never a measured one.
+            "sorties": sortie_plan.to_dict() if sortie_plan else None,
             "injected_faults": {pid: s.value for pid, s in faults.items()},
             "metrics": {
                 "panels_inspected": result.panels_inspected,
@@ -914,6 +996,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
     ap.add_argument(
+        "--sorties",
+        choices=["off", "report", "enforce"],
+        default="report",
+        help="whether the fleet could actually FLY this sweep on one battery. "
+        "`report` (default) plans out-and-back sorties and stamps them into the run "
+        "record WITHOUT changing which panels are visited, so no KPI moves. "
+        "`enforce` cuts the sweep to what one sortie achieves — which changes every "
+        "denominator in the record. `off` skips it. Needs `sorties.enabled` (or "
+        "`always_report`) in the mission config to do anything. ⚠ Endurance is a "
+        "datasheet figure times an assumed derate; nothing has been flown.",
+    )
+    ap.add_argument(
         "--route",
         choices=["linear", "serpentine", "fault_zone"],
         help="panel visit order. serpentine turns round at the end of each table "
@@ -984,6 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
         "video_fps": args.video_fps,
         "max_panels": args.max_panels,
         "repeat": args.repeat,
+        "sorties": args.sorties,
     }
     if args.live and not (args.gui or args.livestream or args.video):
         print(

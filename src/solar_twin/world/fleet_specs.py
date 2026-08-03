@@ -22,6 +22,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: Fraction of a published maximum endurance a planner may spend. ⚠ ASSUMPTION.
+#:
+#: Where 0.6 comes from, so it can be argued with rather than inherited: the quoted
+#: maximum is hover / no payload / sea level / mild temperature. Against that, a real
+#: PV sortie carries a radiometric gimbal, flies a stop-and-stare profile with
+#: repeated accel/decel, and at Khavda does it in desert heat that costs both battery
+#: capacity and rotor efficiency. Operators also land on a reserve rather than at
+#: zero. Each of those is a five-to-fifteen percent bite; 0.6 is their rough product.
+#:
+#: It is NOT measured — no sortie has been flown. Override per-scenario the moment a
+#: real flight log exists.
+DEFAULT_ENDURANCE_DERATE = 0.6
+
 
 @dataclass(frozen=True)
 class DroneSpec:
@@ -41,6 +54,13 @@ class DroneSpec:
     body_h_m: float
     mass_kg: float
     note: str = ""
+    #: Manufacturer's **maximum** flight time, seconds — hover, no payload, sea
+    #: level, benign temperature. Nothing flies this. `usable_endurance_s` is what
+    #: a planner may spend; see it for the derate and why it is not folded in here.
+    max_endurance_s: float = 0.0
+    #: Sustained horizontal cruise, m/s. The published *maximum* speed is a sport-mode
+    #: figure that no inspection platform holds while carrying a stabilised payload.
+    cruise_speed_ms: float = 0.0
 
     @property
     def arm_m(self) -> float:
@@ -54,6 +74,27 @@ class DroneSpec:
         """Half-width of the whole spinning machine: arm plus a rotor radius.
         This, not the body, is what must clear a panel."""
         return self.arm_m + self.rotor_diameter_m / 2.0
+
+    def usable_endurance_s(self, derate: float = DEFAULT_ENDURANCE_DERATE) -> float:
+        """Flight time a planner may actually spend, seconds.
+
+        ⚠ The single most over-claimed number on any drone spec sheet. The published
+        figure is hover, no payload, sea level, mild weather. A PV inspection sortie
+        is none of those: a radiometric gimbal is carried, the profile is
+        stop-and-stare rather than hover, and **Khavda is a hot desert** — cell
+        chemistry loses capacity at temperature and hot air is less dense, so the
+        rotors work harder for the same lift.
+
+        The derate is therefore applied HERE, at the point of use, rather than baked
+        into `max_endurance_s`: the datasheet number stays the datasheet number and
+        traceable, and the assumption stays visible and adjustable. `DEFAULT_ENDURANCE_DERATE`
+        documents where 0.6 comes from.
+
+        ⚠ This is a planning figure, not a measurement — nothing here has been flown.
+        """
+        if not 0.0 < derate <= 1.0:
+            raise ValueError(f"derate must be in (0, 1]; got {derate}")
+        return self.max_endurance_s * derate
 
     @property
     def frontal_area_m2(self) -> float:
@@ -84,6 +125,18 @@ class RoverSpec:
     mast_height_m: float
     mass_kg: float
     note: str = ""
+    #: Published runtime, seconds, and a sustained inspection drive speed, m/s.
+    #: Same caveat as `DroneSpec.max_endurance_s`: the quoted runtime is nominal
+    #: load on good ground, and a rover doing stop-and-inspect on soft desert
+    #: surface will not see it.
+    max_endurance_s: float = 0.0
+    cruise_speed_ms: float = 0.0
+
+    def usable_endurance_s(self, derate: float = DEFAULT_ENDURANCE_DERATE) -> float:
+        """Runtime a planner may spend. See `DroneSpec.usable_endurance_s`."""
+        if not 0.0 < derate <= 1.0:
+            raise ValueError(f"derate must be in (0, 1]; got {derate}")
+        return self.max_endurance_s * derate
 
     @property
     def total_height_m(self) -> float:
@@ -107,6 +160,13 @@ DJI_M350 = DroneSpec(
     body_h_m=0.43,
     mass_kg=6.47,
     note="carries a radiometric thermal payload — the standard utility PV IR platform",
+    # DJI publishes 55 min max flight time for the M350 RTK. ⚠ That is hover, no
+    # payload; with an H30T and a stop-and-stare profile in desert heat, expect far
+    # less — which is what DEFAULT_ENDURANCE_DERATE is for.
+    max_endurance_s=55 * 60,
+    # ⚠ NOT the 23 m/s published max: that is sport mode. 8 m/s is a plausible
+    # sustained inspection transit and is an ASSUMPTION, not a datasheet figure.
+    cruise_speed_ms=8.0,
 )
 
 #: A small folding platform. Included because it is a real alternative and the
@@ -121,6 +181,8 @@ DJI_MAVIC3T = DroneSpec(
     body_h_m=0.0906,
     mass_kg=0.92,
     note="compact; lighter non-radiometric-class thermal sensor than an M350 payload",
+    max_endurance_s=45 * 60,  # DJI publishes 45 min max for the Mavic 3T
+    cruise_speed_ms=8.0,      # ⚠ assumption, as above
 )
 
 #: Mid-size differential-drive research/inspection rover. Real published figures
@@ -136,6 +198,12 @@ CLEARPATH_HUSKY = RoverSpec(
     mast_height_m=0.66,
     mass_kg=50.0,
     note="mast height is a payload choice, not a platform dimension",
+    # Clearpath publishes up to 3 h runtime for the A200 at nominal load. ⚠ Soft
+    # desert ground and a stop-and-inspect duty cycle both cost more than nominal.
+    max_endurance_s=3 * 3600,
+    # ⚠ 1.0 m/s of the published 1.0 m/s max — a rover carrying a camera mast over
+    # unimproved ground is speed-limited by image quality, not by the drivetrain.
+    cruise_speed_ms=1.0,
 )
 
 DRONES = {"m350": DJI_M350, "mavic3t": DJI_MAVIC3T}
