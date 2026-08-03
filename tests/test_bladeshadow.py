@@ -10,6 +10,7 @@ that is reported as a hit when a blade never actually dwells there.
 from __future__ import annotations
 
 import math
+import pathlib
 
 import pytest
 
@@ -20,6 +21,21 @@ from solar_twin.world.bladeshadow import (
     best_turbine,
     shadow_direction,
     shadow_offset_m,
+)
+
+#: The DEM patch `khavda_bladeshadow.yaml` stands its tables on. It is **gitignored**
+#: (assets are), so it exists on a machine that has run `tools/dem_fetch.py` and does
+#: NOT exist on CI — where `FarmLayout(cfg)` raises `FileNotFoundError` rather than
+#: skipping. That is what failed the py3.10/py3.12 jobs while the same tests passed
+#: locally: an asset-dependent test with no guard reads as a code failure on the one
+#: machine that cannot have the asset. `tests/test_dem.py` already skips this way.
+_SCENARIO_DEM = (
+    pathlib.Path(__file__).resolve().parents[1] / "assets" / "dem" / "khavda_block02.yaml"
+)
+needs_scenario_dem = pytest.mark.skipif(
+    not _SCENARIO_DEM.exists(),
+    reason="assets/dem/khavda_block02.yaml not fetched (tools/dem_fetch.py); assets "
+    "are gitignored, so the scenario's layout cannot be built here",
 )
 
 #: Non-degenerate reference geometry: sun in the east, wind from the east, so the
@@ -280,6 +296,7 @@ def test_best_turbine_returns_none_when_nothing_reaches():
 # --------------------------------------------------------------------------- #
 
 
+@needs_scenario_dem
 def test_khavda_bladeshadow_scenario_really_has_a_stimulus():
     """The anti-SC-05 guard, and the reason this module exists.
 
@@ -426,6 +443,7 @@ def test_tower_shadow_ends_rather_than_running_forever():
     assert tower.distance_to_axis(10.0, 0.0) is None        # behind the base
 
 
+@needs_scenario_dem
 def test_the_measured_dark_tables_lie_on_the_scenario_tower_shadow():
     """⭐ The measurement, pinned. `tools/verify_shade.py` on the SC-14 stage found
     exactly three tables darker than the other 270 (glass mean 11.9/12.2/12.6 vs a
