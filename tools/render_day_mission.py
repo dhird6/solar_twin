@@ -123,6 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         "fleet reading as an autonomous one, so this is opt-out, not opt-in.",
     )
     ap.add_argument("--card-seconds", type=float, default=3.5)
+    ap.add_argument(
+        "--prepend", default="",
+        help="comma-separated clips to splice in BEFORE the chapters — e.g. a wide "
+        "establishing pass from tools/render_establisher.py. Lets the film carry the "
+        "plant's real scale without re-shooting six missions on a 10x-bigger stage.",
+    )
     args = ap.parse_args(argv)
 
     wanted = {s.strip() for s in args.chapters.split(",") if s.strip()}
@@ -275,6 +281,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {len(clips)} labelled cards rendered", flush=True)
     else:
         segments = [c for _, c in clips]
+
+    pre = [Path(s.strip()) for s in args.prepend.split(",") if s.strip()]
+    missing = [p for p in pre if not p.exists()]
+    if missing:
+        raise SystemExit(f"--prepend clip(s) not found: {missing}")
+    if pre:
+        print(f"  prepending {len(pre)} clip(s): {[p.name for p in pre]}", flush=True)
+    segments = pre + segments
 
     lst = stage_dir / "clips.txt"
     lst.write_text("".join(f"file '{Path(s).resolve()}'\n" for s in segments))
