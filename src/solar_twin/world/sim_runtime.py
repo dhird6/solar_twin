@@ -509,6 +509,91 @@ class SimRuntime:
     #: path. Kit also authors `/OmniverseKit_Top|Front|Right` alongside it.
     _KIT_PERSP_CAMERA = "/OmniverseKit_Persp"
 
+    def frame_geometry(
+        self,
+        prim_path: str = "/World/Farm",
+        *,
+        camera_path: Optional[str] = None,
+        max_samples: int = 2000,
+    ) -> bool:
+        """Park the free camera where the geometry IS, not where the origin is.
+
+        Measured symptom this fixes: `assets/khavda_4block.usd` opened on empty
+        desert. `select_blocks` keeps real surveyed coordinates, so its four blocks
+        span **X 566 -> 3717 m** while Kit's perspective camera opens ~5 m from the
+        stage origin — half a kilometre short of the nearest table, looking at sand.
+        Nothing was broken; the camera was simply somewhere else.
+
+        Bounds come from the direct children's **translate**, sampled (see
+        `framing.sample_stride`): reading 117,264 attributes to place one camera costs
+        seconds for a number a couple of thousand samples already pin down. ⚠ That
+        makes the bound the extent of panel *origins*, slightly inside the true
+        geometric bound — `camera_pose_for_bounds` carries a margin to cover it.
+
+        Best-effort, like `set_viewport_camera`: a failure here costs the view, never
+        the run. Returns whether the camera was moved.
+        """
+        from pxr import UsdGeom
+
+        from solar_twin.world.framing import (
+            bounds_of,
+            camera_pose_for_bounds,
+            sample_stride,
+        )
+
+        prim = self._stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            print(
+                f"  [warn] nothing at {prim_path} to frame; leaving the camera at the "
+                "stage origin (if the stage's geometry is offset, you will be looking "
+                "at empty ground — select it in the Stage tree and press F)",
+                flush=True,
+            )
+            return False
+
+        children = prim.GetChildren()
+        stride = sample_stride(len(children), max_samples)
+        points: list[tuple[float, float, float]] = []
+        for child in children[::stride]:
+            t = child.GetAttribute("xformOp:translate")
+            if t and t.HasAuthoredValue():
+                v = t.Get()
+                if v is not None:
+                    points.append((float(v[0]), float(v[1]), float(v[2])))
+                    continue
+            # Panels authored through a different op order still have to be found.
+            xf = UsdGeom.Xformable(child)
+            if xf:
+                m = xf.ComputeLocalToWorldTransform(0)
+                p = m.ExtractTranslation()
+                points.append((float(p[0]), float(p[1]), float(p[2])))
+
+        if not points:
+            print(f"  [warn] {prim_path} has no placeable children to frame", flush=True)
+            return False
+
+        lo, hi = bounds_of(points)
+        eye, target = camera_pose_for_bounds(lo, hi)
+        try:
+            from isaacsim.core.utils.viewports import set_camera_view
+
+            set_camera_view(
+                eye=eye, target=target,
+                camera_prim_path=camera_path or self._KIT_PERSP_CAMERA,
+            )
+        except Exception as exc:  # noqa: BLE001 — viewing is never worth the run
+            print(f"  [warn] could not move the free camera: {exc}", flush=True)
+            return False
+
+        print(
+            f"  framed {prim_path}: {len(points)} samples (stride {stride}) span "
+            f"{hi[0] - lo[0]:.0f} x {hi[1] - lo[1]:.0f} m centred "
+            f"({(lo[0] + hi[0]) / 2:.0f}, {(lo[1] + hi[1]) / 2:.0f}) — camera at "
+            f"({eye[0]:.0f}, {eye[1]:.0f}, {eye[2]:.0f})",
+            flush=True,
+        )
+        return True
+
     #: RTX post-processing for a photographic image rather than a raw radiance dump.
     #:
     #: Why this is needed at all: with no tonemapping the renderer maps radiance to
@@ -571,7 +656,13 @@ class SimRuntime:
                 flush=True,
             )
 
-    def hold(self, *, free_camera: bool = True, spin_turbines: bool = True) -> None:
+    def hold(
+        self,
+        *,
+        free_camera: bool = True,
+        spin_turbines: bool = True,
+        frame: Optional[str] = "/World/Farm",
+    ) -> None:
         """Keep the app alive and interactive until the window is closed.
 
         Why this exists: `run.py` closed the app the moment the mission ended, so the
@@ -610,6 +701,10 @@ class SimRuntime:
                         "yours; orbit/WASD to fly the plant",
                         flush=True,
                     )
+                # AFTER the handover: framing the geometry is pointless while the
+                # viewport still looks through a camera this code does not drive.
+                if frame:
+                    self.frame_geometry(frame)
             else:
                 # Say so rather than silently leaving the chase camera bound, which
                 # would look like the navigation is broken.

@@ -69,6 +69,14 @@ def main(argv: list[str] | None = None) -> int:
         "without it the desert blows out to paper white (measured f/5 -> 195/255 vs "
         "f/9 -> 118). A viewer exists to be looked at, so it should be exposed.",
     )
+    ap.add_argument(
+        "--frame",
+        default="/World/Farm",
+        help="open with the camera framing this prim's children instead of the stage "
+        "origin. A stage whose geometry does not straddle the origin — khavda_4block "
+        "keeps real surveyed coordinates and starts 566 m east — otherwise opens on "
+        "empty desert. Pass '' to keep Kit's default camera.",
+    )
     args = ap.parse_args(argv)
 
     usd = Path(args.usd)
@@ -96,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
         tonemap=not args.no_tonemap,
     )
     print(f"opened {usd}", flush=True)
-    runtime.hold(free_camera=True, spin_turbines=not args.still)
+    runtime.hold(
+        free_camera=True,
+        spin_turbines=not args.still,
+        frame=args.frame or None,
+    )
     runtime.close()
     return 0
 
