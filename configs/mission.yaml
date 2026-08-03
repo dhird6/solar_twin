@@ -88,3 +88,15 @@ grid_dispatch:
                           # cuOpt is NOT installed here; asking for it explicitly
                           # raises rather than mislabelling a greedy result.
   irradiance: 1.0         # plane-of-array scale for the simulated output model
+
+# Can the fleet actually FLY this sweep on one battery? `always_report` plans
+# out-and-back sorties and stamps them into the run record WITHOUT changing which
+# panels are visited (`--sorties report` is the identity), so turning this on cannot
+# move a recorded KPI. Use `--sorties enforce` to actually cut the sweep to one trip.
+#
+# ⚠ Endurance is a published datasheet figure times an ASSUMED derate
+# (fleet_specs.DEFAULT_ENDURANCE_DERATE = 0.6). Nothing has been flown.
+sorties:
+  always_report: true
+  platform: m350        # m350 | mavic3t | husky
+  dwell_s: 20.0         # approach + settle + capture + verdict, per panel

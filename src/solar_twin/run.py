@@ -301,7 +301,20 @@ def _plan_sorties(mission_cfg: dict, targets: list, mode: str = "report"):
         ),
     )
     base = tuple(float(v) for v in cfg.get("base", (0.0, 0.0, 0.0)))
-    pts = [(t.panel_id, tuple(float(v) for v in t.position)) for t in targets]
+
+    # WHICH waypoint depends on the vehicle, and the distinction is real: a drone
+    # flies to the `screen` standoff above the module, a ground bot drives to the
+    # `approach` pose beside it. Using one for both would cost the rover its drive
+    # distance and give the drone the wrong altitude. `is_ground` is read from the
+    # spec's own registry rather than from the platform string, so adding a rover
+    # to fleet_specs.ROVERS is enough.
+    is_ground = platform in fleet_specs.ROVERS
+
+    def _xyz(t):
+        wp = t.approach if is_ground else t.screen
+        return (float(wp.x), float(wp.y), float(wp.z))
+
+    pts = [(t.panel_id, _xyz(t)) for t in targets]
     plan = sortie_mod.plan_sorties(pts, vehicle, base, max_sorties=int(cfg.get("max_sorties", 0)))
 
     print(
@@ -326,6 +339,93 @@ def _plan_sorties(mission_cfg: dict, targets: list, mode: str = "report"):
         targets = [t for t in targets if t.panel_id in keep]
 
     return targets, plan
+
+
+def _energy_report(farm_cfg: dict, layout: FarmLayout, results: list, faults: dict):
+    """What the faults cost in kWh — and how much of that the mission actually found.
+
+    The pillar's payoff. A verdict of "R12-C047 is soiled" is only actionable next to
+    a number, and the twin now has the geometry, the sun and the shading to compute
+    one. `energy/model.py` is the solver (pvlib as our ETAP, the DSX pattern); this
+    just runs it twice over the same instant.
+
+    **Twice, because the interesting quantity is the gap.** Once over each panel's
+    `injected_state` (what the plant is really losing) and once over its
+    `detected_state` (what the mission concluded it is losing). The difference is the
+    inspection's blind spot expressed in kWh instead of in recall — which matters
+    here specifically, because hotspot recall is 0.40 against soiling's 0.98 and
+    those two states carry different derates. A recall number hides that; a kWh
+    number cannot.
+
+    Both are computed over **the inspected panels only**, so they share a
+    denominator. The whole-stage figure is reported separately and is NOT comparable
+    to them — a mission that visits 12 of 30,016 panels has not measured the plant.
+
+    Returns None (silently) when pvlib is absent: an optional analysis must never
+    fail a mission that completed. ⚠ Every number carries `energy.model`'s four
+    assumptions — clear sky, generic electricals, assumed derates, and no SCADA.
+    """
+    try:
+        from solar_twin.energy import model as energy_model  # noqa: PLC0415
+        from solar_twin.world.solar import parse_timestamp, solar_position  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    sun_cfg = (farm_cfg.get("sun", {}) or {})
+    if "timestamp" not in sun_cfg:
+        # Without a real instant there is no sun, and inventing one would put a
+        # confident kWh next to a scenario that never specified a time of day.
+        return None
+
+    try:
+        plant = energy_model.plant_from_layout_cfg(farm_cfg, layout)
+        when = parse_timestamp(sun_cfg["timestamp"])
+        elev, azim = solar_position(plant.latitude, plant.longitude, when)
+
+        from solar_twin.schema.pv_module import coerce_state  # noqa: PLC0415
+
+        injected = {r.panel_id: coerce_state(r.injected_state) for r in results}
+        detected = {r.panel_id: coerce_state(r.detected_state) for r in results}
+
+        kw = dict(sun_elevation_deg=elev, sun_azimuth_deg=azim)
+        actual = energy_model.fault_cost(plant, when, states=injected, **kw)
+        believed = energy_model.fault_cost(plant, when, states=detected, **kw)
+        stage = energy_model.fault_cost(plant, when, states=faults, **kw)
+    except Exception as exc:  # noqa: BLE001 — analysis must not fail a good mission
+        print(f"  [warn] energy report skipped: {exc}", flush=True)
+        return None
+
+    found = (believed.lost_w / actual.lost_w) if actual.lost_w > 0 else None
+    print(
+        f"  [note] energy @ {sun_cfg['timestamp']}: plant {actual.healthy_ac_w/1e6:.2f} MW "
+        f"healthy; inspected panels losing {actual.lost_w/1000:.1f} kW, mission found "
+        + (f"{found:.0%} of it" if found is not None else "n/a (no injected loss)")
+        + ". ⚠ MODELLED clear-sky, no SCADA — quote the ratio, not the magnitude.",
+        flush=True,
+    )
+    return {
+        "timestamp": sun_cfg["timestamp"],
+        "sun_elevation_deg": round(elev, 3),
+        "plant_healthy_ac_w": round(actual.healthy_ac_w, 1),
+        # Over INSPECTED panels only — these two share a denominator.
+        "inspected": {
+            "n_panels": len(results),
+            "lost_w_actual": round(actual.lost_w, 2),
+            "lost_w_detected": round(believed.lost_w, 2),
+            # ⭐ The mission's blind spot, in watts rather than in recall.
+            "loss_found_fraction": round(found, 4) if found is not None else None,
+            "n_faulted_actual": actual.n_faulted,
+            "n_faulted_detected": believed.n_faulted,
+        },
+        # ⚠ Whole stage, NOT comparable to the block above: a mission that visits
+        # 12 of 30,016 panels has not measured the plant.
+        "whole_stage": {
+            "n_panels": plant.n_modules,
+            "lost_w": round(stage.lost_w, 2),
+            "lost_fraction": round(stage.lost_fraction, 5),
+        },
+        "caveat": energy_model.UNVALIDATED_CAVEAT,
+    }
 
 
 def _dispatch(layout: FarmLayout, farm_cfg: dict, mission_cfg: dict, targets: list):
@@ -728,6 +828,9 @@ def run(
             # trips. Null when the layer is off. ⚠ Endurance is a datasheet figure
             # times an assumed derate — a modelled battery, never a measured one.
             "sorties": sortie_plan.to_dict() if sortie_plan else None,
+            # What the faults cost in kWh, and how much of that the mission found.
+            # Null when pvlib is absent or the scenario names no sun instant.
+            "energy": _energy_report(farm_cfg, layout, result.results, faults),
             "injected_faults": {pid: s.value for pid, s in faults.items()},
             "metrics": {
                 "panels_inspected": result.panels_inspected,
