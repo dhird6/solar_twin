@@ -39,6 +39,7 @@ class SimRuntime:
         overview_resolution: Optional[tuple[int, int]] = None,
         livestream: bool = False,
         tonemap: bool = False,
+        rover_platform: str = "",
     ):
         from isaacsim import SimulationApp
 
@@ -121,6 +122,12 @@ class SimRuntime:
 
         UsdGeom.Xform.Define(self._stage, "/World/Robots")
 
+        #: Empty = our procedural box rover (the default, and what every recorded
+        #: KPI was measured against). A name from `robot_builder.LIBRARY_ROVERS`
+        #: swaps in a real NVIDIA asset — see that dict for why the fleet spec must
+        #: change with it.
+        self._rover_platform = str(rover_platform or "")
+
         self._robot_paths: dict[str, str] = {}
         self._annots: dict[str, object] = {}
         # Articulated parts + last pose, for visual-only motion (rotor spin, wheel
@@ -156,13 +163,28 @@ class SimRuntime:
             self._robot_paths[rid] = path
             self._annots[rid] = annot
 
-        # Robots that are just a moving marker (ground bot): Xform + box.
+        # Robots that are just a moving marker (ground bot): Xform + box, or a real
+        # NVIDIA library asset when `rover_platform` names one.
         for rid in marker_robots:
             path = f"/World/Robots/{rid}"
             UsdGeom.Xform.Define(self._stage, path)
-            from solar_twin.world.robot_builder import build_ugv
+            from solar_twin.world.robot_builder import build_ugv, build_ugv_library
 
-            self._parts[rid] = build_ugv(self._stage, path)
+            if self._rover_platform:
+                # No try/except: a fallback to boxes would mean a run reporting
+                # `nova_carter` while rendering our cube rover. ⚠ This fetches over
+                # https at build time — nothing is cached on this box.
+                self._parts[rid] = build_ugv_library(
+                    self._stage, path, self._rover_platform
+                )
+                print(
+                    f"  rover {rid}: NVIDIA library asset "
+                    f"'{self._rover_platform}' (⚠ fetched over https; the fleet spec "
+                    "is NOT updated to match — see robot_builder.LIBRARY_ROVERS)",
+                    flush=True,
+                )
+            else:
+                self._parts[rid] = build_ugv(self._stage, path)
             self._robot_paths[rid] = path
 
         # Discover turbine hubs authored by farm_builder so we can spin the

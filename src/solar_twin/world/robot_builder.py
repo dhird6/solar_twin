@@ -2,8 +2,26 @@
 
 Replaces the placeholder marker cubes with a quadcopter and a ground rover that
 actually read as vehicles in a rendered frame. Authored procedurally, so it stays
-reproducible from a script + config with no GUI step and no asset download — this
-box has no Isaac robot asset pack and no configured asset root.
+reproducible from a script + config with no GUI step and no asset download.
+
+⚠ **CORRECTION (2026-08-03).** This header used to claim "this box has no Isaac robot
+asset pack and no configured asset root". Both halves were wrong and were never
+checked: the root IS configured —
+`isaacsim.storage.native/config/extension.toml:25` sets
+`persistent.isaac.asset_root.default` to NVIDIA's S3 bucket — and it IS reachable
+from here (30+ vendors listed, three assets downloaded as valid USD crate).
+`build_ugv_library` now uses it. What remains true is that nothing is cached
+locally: `data/` on this build is 8 KB, so a library robot is an **https fetch at
+stage-open time**, which is a real runtime dependency and not a free upgrade.
+
+**Measured, so the choice is on facts** (`tools/probe_library_robots.py`): every
+library candidate is `metersPerUnit=1.0` and articulated with an `ArticulationRoot`
+— no unit trap. But the library has no PV-inspection **drone**. Its only two flying
+assets are Bitcraze's Crazyflie, measured 0.109 x 0.076 x 0.027 m (a 27 g indoor
+research platform that cannot lift a radiometric payload), and `IsaacSim/Quadcopter`,
+measured **6.6 x 20 x 20 m from 9 primitives** — a placeholder demo shape, not a
+vehicle. Our procedural drone is the better of the three, so `build_quadcopter` stays
+procedural on purpose rather than by omission.
 
 Scope, stated plainly (`NFR-07`): this is **appearance and articulation, not
 dynamics**. Rotors spin and wheels roll as visual proxies driven by distance
@@ -245,4 +263,128 @@ def build_ugv(stage, path: str, spec=None) -> RobotParts:
         _LENS,
     )
     parts.gimbal = head
+    return parts
+
+
+# --------------------------------------------------------------------------- #
+# Library robots. Real NVIDIA assets instead of our own boxes — for the GROUND
+# bot only; see this module's header for why the drone stays procedural.
+# --------------------------------------------------------------------------- #
+
+#: NVIDIA's cloud asset root for Isaac 6.0, as configured by this build
+#: (`isaacsim.storage.native/config/extension.toml:25`). Hard-coded rather than read
+#: through `get_assets_root_path()` so a stage build cannot silently pick up a
+#: different asset version than the one these dimensions were measured against.
+ISAAC_ASSET_ROOT = (
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
+    "/Assets/Isaac/6.0"
+)
+
+#: Ground platforms available from the library, with dimensions **we measured**
+#: (`tools/probe_library_robots.py`, 2026-08-03) rather than quoted. All are
+#: `metersPerUnit=1.0` and carry an `ArticulationRoot`.
+#:
+#: ⚠ Note what is absent: Clearpath's **Husky**, which is what `fleet_specs.CLEARPATH_HUSKY`
+#: is derived from. The library ships Jackal and Dingo. So selecting a library rover
+#: is NOT a free visual upgrade — it changes which machine is being simulated, and
+#: the spec must change with the mesh or the twin shows one robot while planning
+#: with another's battery.
+LIBRARY_ROVERS = {
+    "nova_carter": {
+        "url": f"{ISAAC_ASSET_ROOT}/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd",
+        "measured_lwh_m": (0.728, 0.896, 0.695),
+        "wheel_prims": ("wheel_left", "wheel_right"),
+        "note": "NVIDIA reference AMR, 1292 prims, 7 revolute joints, differential drive",
+    },
+    "jackal": {
+        "url": f"{ISAAC_ASSET_ROOT}/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "measured_lwh_m": (0.511, 0.430, 0.435),
+        "wheel_prims": (),  # discovered by name — see `_discover_wheels`
+        "note": "Clearpath Jackal, 4 joints. Smaller than our Husky-derived spec.",
+    },
+    "dingo": {
+        "url": f"{ISAAC_ASSET_ROOT}/Isaac/Robots/Clearpath/Dingo/dingo.usd",
+        "measured_lwh_m": (0.564, 0.517, 0.251),
+        "wheel_prims": (),
+        "note": "Clearpath Dingo, 2 joints",
+    },
+}
+
+
+def _discover_wheels(stage, root_path: str) -> list[str]:
+    """Find wheel prims under a referenced asset by NAME.
+
+    Hard-coding paths would break the moment NVIDIA reorganises an asset, and would
+    do it silently — the rover would render correctly and simply never turn a wheel.
+    Matching on name and excluding `caster` keeps the driven wheels and leaves the
+    passive swivels alone (Nova Carter has both: `wheel_left`/`wheel_right` are
+    driven, `caster_wheel_*` follow).
+    """
+    from pxr import UsdGeom
+
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        return []
+    found = []
+    for prim in _walk(root):
+        name = prim.GetName().lower()
+        if "wheel" in name and "caster" not in name and "material" not in name:
+            if prim.IsA(UsdGeom.Xformable):
+                found.append(prim.GetPath().pathString)
+    return sorted(found)
+
+
+def _walk(prim):
+    """Depth-first walk of `prim` and its descendants."""
+    stack = [prim]
+    while stack:
+        p = stack.pop()
+        yield p
+        stack.extend(p.GetChildren())
+
+
+def build_ugv_library(stage, path: str, platform: str = "nova_carter") -> RobotParts:
+    """Reference a real NVIDIA library rover at `path` instead of building boxes.
+
+    ⚠⚠ **This fetches over https at stage-open time.** `data/` on this build is 8 KB
+    — nothing is cached locally — so an offline box, or NVIDIA reorganising the
+    bucket, changes what this produces. `build_ugv` (procedural) has no such
+    dependency and stays the default for that reason, the same way `realism.enabled`
+    is opt-out: every recorded KPI was measured against the procedural fleet, and a
+    different rover silhouette is a different picture for the VLM to judge.
+
+    ⚠ Selecting a platform here does NOT update `fleet_specs`. A Nova Carter mesh
+    planned against a Husky's published 3 h battery would be a robot wearing another
+    machine's numbers — see `LIBRARY_ROVERS`. Change both together.
+
+    Raises rather than falling back to boxes: a silent fallback would mean a run
+    reporting `nova_carter` while rendering our cube rover, which is the false
+    provenance this project keeps having to retract.
+    """
+    # Validate BEFORE touching pxr: a typo'd platform name is a config error, and
+    # catching it should not require Isaac. (A test caught this ordering — the
+    # Isaac-free suite could not reach the check at all.)
+    entry = LIBRARY_ROVERS.get(platform)
+    if entry is None:
+        raise ValueError(
+            f"unknown library rover {platform!r}; known: {sorted(LIBRARY_ROVERS)}"
+        )
+
+    from pxr import Sdf, UsdGeom
+
+    xform = UsdGeom.Xform.Define(stage, path)
+    refs = xform.GetPrim().GetReferences()
+    if not refs.AddReference(Sdf.Reference(entry["url"])):
+        raise RuntimeError(f"could not reference {entry['url']}")
+
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid() or not prim.GetChildren():
+        raise RuntimeError(
+            f"{platform} referenced from {entry['url']} but resolved to nothing — "
+            "the asset root is an https fetch; check network access before assuming "
+            "the asset moved."
+        )
+
+    parts = RobotParts()
+    parts.wheels = _discover_wheels(stage, path)
     return parts

@@ -96,6 +96,7 @@ def _build_backend(name: str, layout: FarmLayout, mission_cfg: dict, sim_opts: d
             overview_capture=capture_overview,
             livestream=bool(sim_opts.get("livestream")),
             tonemap=bool(sim_opts.get("tonemap")),
+            rover_platform=str(sim_opts.get("rover_platform") or ""),
         )
         # Opt-in PhysX. OFF by default: every KPI on record was measured with physics
         # inert, and it costs ~1x realtime at 8k prims but 0.07x at 82k.
@@ -1099,6 +1100,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--video-fps", type=int, default=15, help="--video frame rate")
     ap.add_argument(
+        "--rover",
+        default="",
+        help="sim_native: render the ground bot as a REAL NVIDIA library asset "
+        "(nova_carter | jackal | dingo) instead of our procedural box rover. "
+        "⚠ Fetches over https at build time — nothing is cached on this box. "
+        "⚠ Does NOT update fleet_specs, so the sortie planner keeps using the "
+        "configured platform's battery: change both together or the twin shows one "
+        "robot while planning with another's numbers. Default (empty) is the "
+        "procedural rover, which is what every recorded KPI was measured against.",
+    )
+    ap.add_argument(
         "--sorties",
         choices=["off", "report", "enforce"],
         default="report",
@@ -1182,6 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_panels": args.max_panels,
         "repeat": args.repeat,
         "sorties": args.sorties,
+        "rover_platform": args.rover,
     }
     if args.live and not (args.gui or args.livestream or args.video):
         print(
