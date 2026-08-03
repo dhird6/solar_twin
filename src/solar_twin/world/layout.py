@@ -339,6 +339,8 @@ class FarmLayout:
             self._init_from_file(
                 str(layout_cfg["path"]),
                 max_tables=int(layout_cfg.get("max_tables", 0) or 0),
+                blocks=int(layout_cfg.get("blocks", 0) or 0),
+                block_names=list(layout_cfg.get("block_names") or []),
             )
             return
 
@@ -350,17 +352,40 @@ class FarmLayout:
         self.origin = tuple(float(v) for v in grid.get("origin", [0.0, 0.0, 0.0]))
         self.sites = self._build_sites()
 
-    def _init_from_file(self, path: str, max_tables: int = 0) -> None:
+    def _init_from_file(
+        self,
+        path: str,
+        max_tables: int = 0,
+        blocks: int = 0,
+        block_names: list | None = None,
+    ) -> None:
         """Expand a CAD-derived site file into per-module panel sites.
 
-        `max_tables > 0` renders only a contiguous southern band of the site —
-        essential while the full 273-table block is ~2.2M USD prims (`IF-09`).
-        Panel coordinates are unchanged by subsetting, so a subset is a genuine
-        crop of the real site rather than a different one.
+        Two ways to render less than the whole plot, and they answer different
+        questions:
+
+        * `max_tables > 0` crops a radius of tables around the south-west corner —
+          right for "prove the pipeline cheaply", wrong for a wide shot, because it
+          cuts blocks in half and the result reads as one ragged field.
+        * `blocks > 0` keeps whole surveyed **DC blocks**, so four blocks look like
+          four blocks with the real aisles between them. This is what makes the plant
+          read at its true scale without inventing anything: every position comes from
+          the S05b digest, nothing is tiled or mirrored.
+
+        Panel coordinates are unchanged by either, so a selection is a genuine crop of
+        the real site rather than a different one. `blocks` is applied first; a
+        `max_tables` after it then crops within the chosen blocks.
         """
-        from solar_twin.world.layout_import import expand_sites, load_site, subset_site
+        from solar_twin.world.layout_import import (
+            expand_sites,
+            load_site,
+            select_blocks,
+            subset_site,
+        )
 
         site = load_site(path)
+        if blocks or block_names:
+            site = select_blocks(site, blocks, block_names or None)
         if max_tables:
             site = subset_site(site, max_tables)
         self.site = site

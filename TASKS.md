@@ -97,6 +97,13 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - Measured the physics ceiling: 1.0× realtime at 8k prims, **0.07× at 82k** — and it's scene-graph sync, not collision.
 - **Conditions reel** — 45 s, six lighting/weather conditions, every shot labelled.
 
+### 3 Aug: physics, colliders, a bigger plant
+- **Gave the hardware colliders** — per-table boxes + piles; verified by drop test (rests at 1.816 m, predicted 1.815).
+- Removed a `module` collider option that silently did nothing — instancing blocks prototype colliders.
+- Measured that collider count costs nothing: 16 → 568 colliders, 212 → 211 steps/s.
+- **Physics now steps during a mission** (`--physics`), and turning it on changes no verdict.
+- **Four-block plant** — 117,264 modules over 3.15 km, all real surveyed positions, nothing tiled.
+
 ### 3 Aug: Isaac ROS feasibility
 - Verified Isaac ROS on this Spark: **GO** — official test matrix, all version requirements met.
 - Found the apt debs are **x86_64-only** (arm64 ships 50 shim packages and zero compiled ones) — containers are the only route.
@@ -108,9 +115,9 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 ## Next
 
 ### Now — make the robots real (2–3 weeks, low/medium risk)
-- Colliders on panels and racking — a drone can currently fly through a module.
-- Decide collider granularity: per-table proxy (~273) vs per-module (30,016).
-- Step physics in the mission loop — it has never been stepped.
+- ~~Colliders on panels and racking~~ ✅ per-table boxes + piles; drop test lands at 1.816 m vs 1.815 predicted.
+- ~~Collider granularity~~ ✅ per-table; `module` removed (instancing blocks it), and count costs nothing measurable.
+- ~~Step physics in the mission loop~~ ✅ `--physics`; verified identical verdicts with it on.
 - Fly one PX4-governed drone through a real inspection pass on a ~24-table subset.
 - Make ROS 2 the live transport instead of an interface that is never exercised.
 
@@ -127,6 +134,7 @@ Live per-person/per-machine tasks live in `docs/TASKS.md`; this is the whole-pro
 - Full-plant physics: try the dedicated `isaac-sim.fabric.sh` app (runtime Fabric enabling did nothing).
 - Ground textures and scatter — the desert is still flat untextured beige.
 - Get a real tracker/module CAD file and put it through the converter; no NVIDIA PV asset exists.
+- Scale the 4-block stage further (24 blocks / 679,616 modules exist in the digest) once physics cost is addressed.
 - Turbine geometry is still a cylinder plus three flat paddles.
 
 ### The missing pillar — the plant as an energy asset

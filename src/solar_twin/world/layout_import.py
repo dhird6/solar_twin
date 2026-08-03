@@ -185,6 +185,74 @@ def subset_site(site: SiteSpec, max_tables: int) -> SiteSpec:
     return replace(site, tables=ordered[:max_tables])
 
 
+def block_of(table: TableSpec) -> str:
+    """Which DC block a table belongs to, from the survey's own layer name.
+
+    The digest labels every table `"MMS Table Block-06"`, so block membership is
+    **read from the drawing**, never inferred from position. Returns `""` for a
+    layout that carries no block structure (the procedural farm, and BLOCK-02's own
+    DXF, which is a single block).
+    """
+    layer = (table.layer or "").strip()
+    if "Block-" not in layer:
+        return ""
+    return "Block-" + layer.split("Block-", 1)[1].strip()
+
+
+def blocks_in(site: SiteSpec) -> list[str]:
+    """Every block on this site, ordered south-west to north-east.
+
+    Ordered by position rather than by name so `select_blocks` picks a contiguous
+    neighbourhood: the digest's block numbering is not spatially sorted, and taking
+    "the first 4 by name" would scatter them across a 4.8 km plot.
+    """
+    seen: dict[str, tuple[float, float]] = {}
+    for t in site.tables:
+        b = block_of(t)
+        if not b:
+            continue
+        cur = seen.get(b)
+        if cur is None or (t.northing, t.easting) < cur:
+            seen[b] = (t.northing, t.easting)
+    return [b for b, _ in sorted(seen.items(), key=lambda kv: kv[1])]
+
+
+def select_blocks(site: SiteSpec, n_blocks: int, names: list[str] | None = None) -> SiteSpec:
+    """Keep whole DC blocks — the honest way to make the plant look bigger.
+
+    `subset_site` crops a radius of tables, which is right for "prove the pipeline
+    cheaply" and wrong for "show the scale of the plant": it cuts blocks in half and
+    the result reads as one ragged field. This keeps **whole surveyed blocks**, so
+    four blocks look like four blocks, with the real aisles and spacing between them.
+
+    Every position here is REAL — from the GatiShakti S05b digest, EPSG:32642, the
+    same CRS as BLOCK-02's own DXF. Nothing is tiled or mirrored, which matters
+    because a duplicated block would be an invented plant wearing surveyed
+    coordinates. ⚠ The digest itself is SECOND-HAND (vendor DWG -> their script,
+    which we do not hold -> JSON), so it is real but not re-derivable here.
+
+    `names` overrides the count for a specific selection. Coordinates are never
+    recomputed, so a selection is a crop of the real plot and a mission flown on it
+    matches full-plot geometry.
+    """
+    available = blocks_in(site)
+    if not available:
+        return site  # single-block or procedural layout: nothing to select
+    if names:
+        wanted = [b for b in names if b in available]
+        missing = [b for b in names if b not in available]
+        if missing:
+            raise ValueError(
+                f"unknown block(s) {missing}; this site has {available}"
+            )
+    elif n_blocks <= 0 or n_blocks >= len(available):
+        return site
+    else:
+        wanted = available[:n_blocks]
+    keep = set(wanted)
+    return replace(site, tables=[t for t in site.tables if block_of(t) in keep])
+
+
 def load_site(path: str) -> SiteSpec:
     """Read + parse a canonical site YAML."""
     import yaml  # noqa: PLC0415 — lazy so importing this module needs no yaml
