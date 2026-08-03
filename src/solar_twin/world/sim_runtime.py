@@ -40,6 +40,7 @@ class SimRuntime:
         livestream: bool = False,
         tonemap: bool = False,
         rover_platform: str = "",
+        stereo_baseline_m: float = 0.0,
     ):
         from isaacsim import SimulationApp
 
@@ -128,6 +129,12 @@ class SimRuntime:
         #: change with it.
         self._rover_platform = str(rover_platform or "")
 
+        #: Stereo eye separation, metres. 0 = monocular (the default, and what every
+        #: recorded KPI was measured with). See the camera loop for why cuVSLAM makes
+        #: this a prerequisite rather than an enhancement.
+        self._stereo_baseline_m = float(stereo_baseline_m or 0.0)
+        self._stereo_annots: dict[str, dict] = {}
+
         self._robot_paths: dict[str, str] = {}
         self._annots: dict[str, object] = {}
         # Articulated parts + last pose, for visual-only motion (rotor spin, wheel
@@ -162,6 +169,37 @@ class SimRuntime:
             annot.attach([rp])
             self._robot_paths[rid] = path
             self._annots[rid] = annot
+
+            # Stereo pair for visual SLAM. OFF by default (baseline 0): the
+            # inspection camera above is monocular and every recorded KPI was
+            # measured through it, so adding cameras must not change that path.
+            #
+            # ⚠ cuVSLAM requires STEREO or RGBD at >=30 Hz with <=+/-100 us sync
+            # (`SESSIONS.md` Session 18 §7). A monocular feed cannot be used at all,
+            # which is why this is a prerequisite rather than a step.
+            #
+            # Both eyes share the inspection camera's intrinsics and look down -Z,
+            # displaced +/-baseline/2 along local X. Rendering them from ONE
+            # `orchestrator.step` is what keeps them synchronised — two separate
+            # steps would put the drone in two places and the disparity would encode
+            # motion rather than depth.
+            if self._stereo_baseline_m > 0.0:
+                eyes = {}
+                for side, sign in (("left", -1.0), ("right", +1.0)):
+                    ep = f"{path}/Camera_{side}"
+                    ecam = UsdGeom.Camera.Define(self._stage, ep)
+                    UsdGeom.XformCommonAPI(ecam).SetTranslate(
+                        Gf.Vec3d(sign * self._stereo_baseline_m / 2.0, 0.0, -0.3)
+                    )
+                    ecam.CreateFocalLengthAttr(14.0)
+                    ecam.CreateHorizontalApertureAttr(20.955)
+                    ecam.CreateVerticalApertureAttr(15.29)
+                    ecam.CreateClippingRangeAttr(Gf.Vec2f(0.01, 1000.0))
+                    erp = rep.create.render_product(ep, resolution)
+                    eannot = rep.AnnotatorRegistry.get_annotator("rgb")
+                    eannot.attach([erp])
+                    eyes[side] = eannot
+                self._stereo_annots[rid] = eyes
 
         # Robots that are just a moving marker (ground bot): Xform + box, or a real
         # NVIDIA library asset when `rover_platform` names one.
@@ -465,6 +503,35 @@ class SimRuntime:
             return None if data.size == 0 else data
 
         return _read(self._overview_annot), _read(self._annots.get(robot_id))
+
+    def capture_stereo(self, robot_id: str):
+        """(left, right) frames from ONE render pass, or None when monocular.
+
+        ⚠ ONE `orchestrator.step` for both eyes is the whole point. Stepping twice
+        would put the drone in two slightly different places, and the disparity would
+        then encode MOTION rather than depth — a stereo rig that silently measures the
+        wrong thing. cuVSLAM's <=+/-100 us sync requirement is the same constraint
+        stated in time rather than in geometry.
+        """
+        import numpy as np
+
+        eyes = self._stereo_annots.get(robot_id)
+        if not eyes:
+            return None
+
+        self._rep.orchestrator.step(
+            rt_subframes=self._rt_subframes, pause_timeline=False
+        )
+
+        def _read(annot):
+            data = np.asarray(annot.get_data())
+            return None if data.size == 0 else data
+
+        return _read(eyes["left"]), _read(eyes["right"])
+
+    @property
+    def stereo_baseline_m(self) -> float:
+        return self._stereo_baseline_m
 
     def chase(self, robot_id: str, back: float = 9.0, up: float = 5.5) -> None:
         """Point the overview camera at `robot_id` from `back` metres south and
