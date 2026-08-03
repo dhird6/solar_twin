@@ -178,3 +178,34 @@ turbines:
 sun:
   timestamp: "2026-06-21T04:00:00Z"
   tracker_max_rotation_deg: 60.0
+
+# ---------------------------------------------------------------------------
+# Energy (pvlib). Turns "R12-C047 is soiled" into kWh. Read
+# `src/solar_twin/energy/model.py`'s header before quoting anything from it:
+# clear-sky only, generic module electricals, and NO SCADA to validate against.
+#
+#   PYTHONPATH=src python3 tools/energy_report.py configs/farm_khavda_block02.yaml
+# ---------------------------------------------------------------------------
+energy:
+  # ⚠ MEASURED from the surveyed layout, and it is not a single number: the
+  # tables stand in PAIRS, so east-west gaps alternate 5.0 m and 6.0 m (28 of
+  # each across the block). `self_shaded_fraction` takes one pitch, so 5.5 is the
+  # mean — which under-states shading on the tight rows and over-states it on the
+  # wide ones. A per-row pitch is the honest upgrade if shading loss ever becomes
+  # a quoted KPI rather than a plant-average energy term.
+  row_pitch_m: 5.5
+  # The CROSS-AISLE chord (2.278 m), NOT the 1.134 m step along the torque tube.
+  # Transposing these two is what silently removed inter-row self-shading once
+  # before (see the header of configs/farm_khavda_4block.yaml).
+  module_width_m: 2.278
+  # Torque tubes run north-south, so the tracker axis bears 0 deg.
+  axis_azimuth_deg: 0.0
+  module:
+    # ⚠ ASSUMPTION, not a datasheet. 30,016 x 550 W = 16.51 MWdc against the
+    # "~18 MWdc block" in docs/TASKS.md — if that figure is right the real module
+    # is nearer 600 W and every absolute kWh here is ~9% low. Not back-fitted,
+    # because reverse-engineering a datasheet from a rounded capacity is how an
+    # assumption becomes a fact. Replace when the MMS datasheet arrives.
+    pdc0_w: 550.0
+    gamma_pdc: -0.0034
+    dc_loss_fraction: 0.06

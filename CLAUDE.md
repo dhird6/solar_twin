@@ -42,6 +42,13 @@ Autonomous solar-farm inspection **digital twin**. A robot fleet (ground bot + d
 - `src/solar_twin/kpi/` — `gates.py` (enforces a scenario's `kpi_gates`, FR-17),
   `variance.py` (run-to-run spread + renderer-vs-model attribution). Pure-python,
   works on live and archived run records; `tools/kpi_variance.py` is the CLI.
+- `src/solar_twin/energy/` — `model.py`: clear-sky PV production off the twin's own
+  geometry (pvlib as our ETAP, per the DSX pattern — USD holds geometry, an external
+  solver computes physics). Turns a verdict into kWh and money. Pure-python; pvlib is
+  imported inside the solver call so the package stays importable without it.
+  `tools/energy_report.py` is the CLI. ⚠ Clear-sky only, generic module electricals,
+  and **no SCADA to validate against** — quote the healthy-vs-faulted RATIO, never the
+  absolute kWh.
 - `src/solar_twin/run.py` — entry point → writes `runs/<ts>/`
 - `tests/` — pytest, Isaac-free · `docs/` — bible, TASKS, ENVIRONMENT, ROS2_CONTRACT · `runs/` — gitignored
 

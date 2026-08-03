@@ -25,6 +25,12 @@ dev = [
     "pytest>=7.0",
     "numpy>=1.24",
     "imageio[ffmpeg]>=2.31",
+    # `energy/model.py` imports pvlib inside the solver call, so the package stays
+    # importable without it — but the tests must actually RUN, not skip. A suite that
+    # silently shrinks on a clean runner is how two blade-shadow tests passed locally
+    # and failed CI on 2026-08-03; `test_energy.py` uses importorskip, so without this
+    # line CI would report green while testing nothing.
+    "pvlib>=0.11",
 ]
 
 [tool.setuptools.packages.find]
