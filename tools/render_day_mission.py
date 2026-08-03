@@ -59,6 +59,30 @@ from pathlib import Path
 #: (name, title, ISO-8601 UTC, sky). Khavda is UTC+5:30, so 01:20Z is ~06:50 local.
 #: Elevations are what `world/solar.py` computes for these instants — printed by the
 #: build, so a viewer can check the caption rather than take it.
+#: What each chapter is evidence FOR, and what it is not. Same three-way status as
+#: `world/tour.py` — BUILT (real, here is the number) / INFERRED (in the picture,
+#: looks real, we invented it) / TODO (not modelled). A rendered frame carries no
+#: provenance: a drone gliding to a flagged panel looks autonomous whether it is
+#: navigating or being teleported, so the card says which.
+CHAPTER_ITEMS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "_shared": (
+        ("survey → dispatch → inspect", "BUILT",
+         "the ground bot's destination is what the SCOUT flagged in this run"),
+        ("verdict", "BUILT", "Cosmos Reason on the real rendered frame, written to pv:state"),
+        ("fleet motion", "TODO",
+         "SCRIPTED — interpolated waypoints. No flight dynamics, no localization, "
+         "no navigation."),
+    ),
+    "dawn": (("tracker limit", "BUILT",
+              "sun 8.6 deg: ideal angle 80.7 deg, so a 60 deg HSAT PINS at its stop"),),
+    "midday": (("tracker angle", "BUILT", "driven by the real NOAA sun, not authored"),),
+    "cloudy": (("sky", "BUILT", "procedural CumulusHeavy — changes the LIGHT, not the backdrop"),
+               ("rain / snow", "TODO", "not modelled")),
+    "night": (("stow", "BUILT", "sun below horizon, trackers flat — as they do in life"),
+              ("hot cells", "BUILT", "emissive, so a thermal anomaly reads when reflectance does not"),
+              ("thermal", "INFERRED", "emissive proxy — Isaac renders no true IR")),
+}
+
 DAY_CYCLE: tuple[tuple[str, str, str, str], ...] = (
     ("dawn", "DAWN — 06:50", "2026-06-21T01:20:00Z", "ClearSky"),
     ("morning", "MORNING — 09:30", "2026-06-21T04:00:00Z", "ClearSky"),
@@ -86,6 +110,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--skip-build", action="store_true", help="reuse stages already in --stage-dir"
     )
+    ap.add_argument(
+        "--assemble-only", action="store_true",
+        help="skip building and flying entirely; find the newest clip per chapter under "
+        "--runs-dir and cut the film from those. Cards cost no render, so re-cutting "
+        "with labels is seconds rather than another hour.",
+    )
+    ap.add_argument("--runs-dir", default="runs/day_mission")
+    ap.add_argument(
+        "--no-cards", action="store_true",
+        help="omit the labelled chapter cards. The labels are what stop a scripted "
+        "fleet reading as an autonomous one, so this is opt-out, not opt-in.",
+    )
+    ap.add_argument("--card-seconds", type=float, default=3.5)
     args = ap.parse_args(argv)
 
     wanted = {s.strip() for s in args.chapters.split(",") if s.strip()}
@@ -161,6 +198,15 @@ def main(argv: list[str] | None = None) -> int:
             },
         }, sort_keys=False))
 
+        if args.assemble_only:
+            found = sorted(Path(args.runs_dir).joinpath(name).rglob("inspection.mp4"))
+            if found:
+                clips.append((title, found[-1]))
+                print(f"  [{name}] reusing clip {found[-1]}", flush=True)
+            else:
+                print(f"  [warn] {name}: no clip under {args.runs_dir}/{name}", flush=True)
+            continue
+
         if not (args.skip_build and usd.exists()):
             r = subprocess.run(
                 [ISAAC, "-m", "solar_twin.world.farm_builder",
@@ -176,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  reusing {usd}", flush=True)
 
-        runs_dir = Path("runs/day_mission") / name
+        runs_dir = Path(args.runs_dir) / name
         r = subprocess.run(
             [ISAAC, "-m", "solar_twin.run",
              "--scenario", str(scn), "--farm-usd", str(usd),
@@ -200,10 +246,38 @@ def main(argv: list[str] | None = None) -> int:
         print("no clips were produced", file=sys.stderr)
         return 1
 
-    # Concatenate. Title cards are burned by ffmpeg's drawtext rather than rendered,
-    # because a card costs nothing and re-rendering one would cost a minute.
+    # A labelled card before each chapter. Rendered with `tour.card`, the same
+    # overlay the conditions reel uses, then encoded to a short clip — no Isaac, no
+    # GPU, a couple of seconds each. Cheap enough that the film can afford to state
+    # what is scripted instead of leaving a viewer to assume it is not.
+    segments: list[Path] = []
+    if not args.no_cards:
+        import numpy as np
+        from solar_twin.world.recorder import RunRecorder
+        from solar_twin.world.tour import Chapter, Item, card
+
+        card_dir = stage_dir / "cards"
+        card_dir.mkdir(parents=True, exist_ok=True)
+        shared = CHAPTER_ITEMS["_shared"]
+        by_title = {title: nm for nm, title, _, _ in DAY_CYCLE}
+        for idx, (title, clip) in enumerate(clips, start=1):
+            nm = by_title.get(title, "")
+            items = [Item(a, b, c) for a, b, c in (CHAPTER_ITEMS.get(nm, ()) + shared)]
+            ch = Chapter(title=title, subtitle="scout → dispatch → converge → inspect",
+                         items=items, seconds=args.card_seconds)
+            img = card(ch, idx, len(clips), canvas=(1280, 720))
+            cpath = card_dir / f"{idx:02d}_{nm or idx}.mp4"
+            rec = RunRecorder(fps=args.fps, stream_path=str(cpath))
+            for _ in range(int(round(args.card_seconds * args.fps))):
+                rec.add_composed(np.asarray(img))
+            rec.write(str(cpath))
+            segments.extend([cpath, clip])
+        print(f"  {len(clips)} labelled cards rendered", flush=True)
+    else:
+        segments = [c for _, c in clips]
+
     lst = stage_dir / "clips.txt"
-    lst.write_text("".join(f"file '{c.resolve()}'\n" for _, c in clips))
+    lst.write_text("".join(f"file '{Path(s).resolve()}'\n" for s in segments))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
